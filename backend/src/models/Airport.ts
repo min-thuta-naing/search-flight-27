@@ -236,18 +236,22 @@ export class AirportModel {
           SELECT dep_airport AS code
           FROM departure_flight_paths
           WHERE dep_airport IN (SELECT code FROM country_airports)
+            AND status != 'cancelled'
           UNION ALL
           SELECT arr_airport AS code
           FROM departure_flight_paths
           WHERE arr_airport IN (SELECT code FROM country_airports)
+            AND status != 'cancelled'
           UNION ALL
           SELECT dep_airport AS code
           FROM arrival_flight_paths
           WHERE dep_airport IN (SELECT code FROM country_airports)
+            AND status != 'cancelled'
           UNION ALL
           SELECT arr_airport AS code
           FROM arrival_flight_paths
           WHERE arr_airport IN (SELECT code FROM country_airports)
+            AND status != 'cancelled'
         ) active_pool
         WHERE code IS NOT NULL
       )

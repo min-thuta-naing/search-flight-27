@@ -17,6 +17,7 @@
     "import-flights-from-csv": "npx tsx src/scripts/import-flights-from-csv.ts",
     "import-airpaz-flights": "npx tsx src/scripts/import-airpaz-flights.ts",
     "import-intl-flights": "npx tsx src/scripts/import-intl-flights.ts",
+    "test-crosscheck": "npx tsx src/scripts/test_crosscheck.ts",
     "import-airports": "npx tsx src/scripts/import-airports.ts",
     "generate:mock-flights": "tsx src/scripts/generate-mock-flights.ts",
     "docker:up": "docker-compose up -d",

@@ -4,6 +4,7 @@
  */
 
 import * as cron from 'node-cron';
+import { initFlightCrossCheckJobs } from '../jobs/flightCrossCheckJob';
 
 export class SchedulerService {
   private jobs: cron.ScheduledTask[] = [];
@@ -15,7 +16,8 @@ export class SchedulerService {
     console.log('\n📅 Starting scheduled jobs...');
     console.log('='.repeat(60));
 
-    // No scheduled jobs currently configured
+    // Start background scraped cross-checks
+    initFlightCrossCheckJobs();
 
     console.log('='.repeat(60));
     console.log(`✅ Started scheduled jobs\n`);

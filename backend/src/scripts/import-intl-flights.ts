@@ -409,6 +409,7 @@ async function importIntlCSVFile(
                 airline_name: airline.name,
                 airline_code: airlineCode,
                 aircraft: row.aircraft || null,
+                status: 'planned',
                 stops: 0
             };
 

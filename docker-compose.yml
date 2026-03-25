@@ -52,7 +52,7 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./backend/data:/app/data:ro
+      - ./backend/data:/app/data
     networks:
       - flight_search_network
     healthcheck:

@@ -9,7 +9,7 @@ import { flightScrapeIntegration } from '../services/FlightScrapeIntegration';
  */
 export function initFlightCrossCheckJobs() {
     // Daily schedule: 00:05 Thailand Time (17:05 UTC)
-    cron.schedule('3 9 * * *', async () => {
+    cron.schedule('5 17 * * *', async () => {
         console.log('[CRON] Running daily 00:05 TH flight cross-check (Today only)...');
         await runScheduledCrossCheck();
     });

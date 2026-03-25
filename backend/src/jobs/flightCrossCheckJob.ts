@@ -200,24 +200,21 @@ export async function getAllAirports(): Promise<string[]> {
  * The Schedulers
  */
 export function initFlightCrossCheckJobs() {
-    // Schedule: 21:00 Thailand Time (14:00 UTC)
-    cron.schedule('0 14 * * *', async () => {
-        console.log('[CRON] Running daily 21:00 TH flight cross-check for today and next 2 days...');
+    // Schedule: 00:05 Thailand Time (17:05 UTC)
+    cron.schedule('5 17 * * *', async () => {
+        console.log('[CRON] Running daily 00:05 TH flight cross-check for today only...');
         
         const airports = await getAllAirports();
         console.log(`[CRON] Detected ${airports.length} airports for cross-check: ${airports.join(', ')}`);
         
-        const today = new Date();
-        for (let i = 0; i <= 2; i++) {
-            const targetDate = format(addDays(today, i), 'yyyy-MM-dd');
-            for (const airport of airports) {
-                await runCrosscheckForDate(targetDate, airport);
-                // Production Safety: 10s pause between airports to release RAM/CPU
-                console.log(`[CRON]   Waiting 10s before next airport...`);
-                await new Promise(resolve => setTimeout(resolve, 10000));
-            }
+        const todayStr = format(new Date(), 'yyyy-MM-dd');
+        for (const airport of airports) {
+            await runCrosscheckForDate(todayStr, airport);
+            // Production Safety: 10s pause between airports to release RAM/CPU
+            console.log(`[CRON]   Waiting 10s before next airport...`);
+            await new Promise(resolve => setTimeout(resolve, 10000));
         }
     });
     
-    console.log('✅ Registered Flight Cross-Check Scheduled Jobs (21:00 TH)');
+    console.log('✅ Registered Flight Cross-Check Scheduled Jobs (00:05 TH)');
 }

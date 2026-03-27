@@ -413,7 +413,7 @@ def ensure_date_selected(driver, d, max_attempts=3):
 
         has_fp = wait_for_flatpickr(driver, timeout=10)
         if has_fp and set_date_via_js(driver, d):
-            time.sleep(3) 
+            time.sleep(1) 
             if page_date_matches(driver, d):
                 return True
             
@@ -430,7 +430,7 @@ def ensure_date_selected(driver, d, max_attempts=3):
                     }
                 }
             """)
-            time.sleep(3)
+            time.sleep(1)
             if page_date_matches(driver, d):
                 return True
 
@@ -454,7 +454,7 @@ def ensure_date_selected(driver, d, max_attempts=3):
                 EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
             )
             driver.execute_script("arguments[0].click();", day_el)
-            time.sleep(3)
+            time.sleep(1)
 
             if page_date_matches(driver, d):
                 return True
@@ -464,14 +464,14 @@ def ensure_date_selected(driver, d, max_attempts=3):
 
         if attempt < max_attempts:
             driver.get(f"https://www.flightsfrom.com/{AIRPORT}")
-            time.sleep(8)
+            time.sleep(3)
 
     return False
 
 
 # ================== SCRAPE ==================
 def perform_hard_recovery(driver, direction, d):
-    target_url = f"https://www.flightsfrom.com/{AIRPORT}?from={AIRPORT}&entityType=departures&take=250&selectedDate={d}"
+    target_url = f"https://www.flightsfrom.com/{AIRPORT}?from={AIRPORT}&entityType=departures&take=1000&selectedDate={d}"
     driver.get(target_url)
     time.sleep(8)
     
@@ -566,7 +566,7 @@ def scrape_current_view(driver, direction, d):
             })
             
             if idx % 25 == 0:
-                time.sleep(3.5)
+                time.sleep(1.0)
 
         except Exception as e:
             skipped += 1
@@ -577,7 +577,7 @@ def scrape_current_view(driver, direction, d):
 
 
 
-# =# ================= LIVE SCRAPE ONLY =================
+# ================= LIVE SCRAPE ONLY =================
 def scrape_day_flights(driver, d, airport=AIRPORT):
     """
     Output: Only the freshly scraped flights.
@@ -586,7 +586,8 @@ def scrape_day_flights(driver, d, airport=AIRPORT):
     out_json = os.path.join(OUT_DIR, f"flightsfrom_{airport}_{d.isoformat()}_live.json")
 
     print(f"[SCRAPE] Live scraping {airport} {d}")
-    driver.get(f"https://www.flightsfrom.com/{airport}")
+    target_url = f"https://www.flightsfrom.com/{airport}?from={airport}&entityType=departures&take=1000&selectedDate={d}"
+    driver.get(target_url)
     time.sleep(5)
 
     # --- DEPARTURE ---
@@ -702,6 +703,12 @@ def main():
     options.add_argument(f"--user-data-dir={USER_DATA_DIR}")
     options.add_argument("--window-size=1920,1080")
     
+    # Resource Blocking for Speed (Images Only for stability)
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+    }
+    options.add_experimental_option("prefs", prefs)
+    
     # Crucial for Docker headless environment
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -740,7 +747,7 @@ def main():
 
         total_days = (END_DATE - START_DATE).days + 1
         
-        target_url = f"https://www.flightsfrom.com/{AIRPORT}?from={AIRPORT}&entityType=departures&take=250&selectedDate={START_DATE}"
+        target_url = f"https://www.flightsfrom.com/{AIRPORT}?from={AIRPORT}&entityType=departures&take=1000&selectedDate={START_DATE}"
         driver.get(target_url)
         time.sleep(10) 
 

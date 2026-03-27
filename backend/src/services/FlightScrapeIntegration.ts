@@ -13,8 +13,8 @@ export class FlightScrapeIntegration {
     /**
      * Entry point for scraping a specific date/airport
      */
-    async runCrosscheckForDate(dateStr: string, airportCode: string): Promise<ScrapedFlight[]> {
-        await this.executePythonCrosscheck(dateStr, airportCode);
+    async runCrosscheckForDate(dateStr: string, airportCode: string, workerId: number = 0): Promise<ScrapedFlight[]> {
+        await this.executePythonCrosscheck(dateStr, airportCode, workerId);
         const results = this.readScrapeResult(dateStr, airportCode);
         this.cleanupResultFile(dateStr, airportCode);
         return results;
@@ -23,11 +23,12 @@ export class FlightScrapeIntegration {
     /**
      * Executes the Python script
      */
-    private async executePythonCrosscheck(dateStr: string, airportCode: string): Promise<void> {
-        console.log(`[SCRAPER] Executing Python crosscheck for ${airportCode} on ${dateStr}...`);
-        // Clean up any stale Xvfb lock files
-        const cleanupCommand = 'rm -rf /tmp/.X* /tmp/.X11-unix/*';
-        const command = `${cleanupCommand} && HOME=/tmp xvfb-run -a python3 ${this.pythonScriptPath} --crosscheck ${dateStr} --airport ${airportCode}`;
+    private async executePythonCrosscheck(dateStr: string, airportCode: string, workerId: number): Promise<void> {
+        console.log(`[SCRAPER] Executing Python crosscheck for ${airportCode} on ${dateStr} (Worker ${workerId})...`);
+        
+        // Use xvfb-run -a for stability in Docker. 
+        // We pass --worker-id to ensure separate Chrome profiles for parallel runs.
+        const command = `HOME=/tmp xvfb-run -a python3 ${this.pythonScriptPath} --crosscheck ${dateStr} --airport ${airportCode} --worker-id ${workerId}`;
         
         try {
             const { stdout, stderr } = await execPromise(command, { timeout: 1200000 }); // 20 min

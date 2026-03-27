@@ -81,7 +81,6 @@ From the root directory:
 Run the following command: 
 ```bash 
 docker compose -f docker-compose.yml up --build
-
 ``` 
 
 But if you want it to be down 
@@ -125,7 +124,7 @@ docker exec -it flight_search_backend sh
 npm run import-intl-flights -- --dir=/app/data/intl_flight_data/asia/americansamoa 
 npm run import-intl-flights -- --drive
 npm run import-intl-flights -- --drive --folder-id=YOUR_FOLDER_ID
-npm run import-intl-flights -- --drive --folder-id=1rEfw831Sr8DjRGnEluGjJTkle4bltUBe
+npm run import-intl-flights -- --drive --folder-id=1JRowqzZEA8TO38U65Z7a2ksDizUD3FBC
 
 ```
 for running migration 

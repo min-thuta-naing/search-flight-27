@@ -42,20 +42,42 @@ export class FlightCrossCheckRepository {
 
     /**
      * Updates flight record with new data and marks as 'updated'
+     * Now supports updating flight_number (for fuzzy matching)
      */
-    async updateFlight(id: number, direction: 'departure' | 'arrival', data: { time: Date, duration: number }): Promise<void> {
+    async updateFlight(id: number, direction: 'departure' | 'arrival', data: { time: Date, duration: number, flight_number?: string }): Promise<void> {
         const tableName = direction === 'departure' ? 'departure_flight_paths' : 'arrival_flight_paths';
         const timeColumn = direction === 'departure' ? 'departure_time' : 'arrival_time';
 
-        const query = `
-            UPDATE ${tableName} SET
-                ${timeColumn} = $1,
-                duration = $2,
-                status = 'updated',
-                updated_at = NOW()
-            WHERE id = $3
-        `;
-        await pool.query(query, [data.time, data.duration, id]);
+        let query = `UPDATE ${tableName} SET ${timeColumn} = $1, duration = $2`;
+        const params: any[] = [data.time, data.duration];
+        
+        if (data.flight_number) {
+            query += `, flight_number = $${params.length + 1}`;
+            params.push(data.flight_number);
+        }
+
+        query += `, status = 'updated', updated_at = NOW() WHERE id = $${params.length + 1}`;
+        params.push(id);
+
+        await pool.query(query, params);
+    }
+
+    /**
+     * Gets a route ID based on origin and destination
+     */
+    async getRouteId(origin: string, destination: string): Promise<number | null> {
+        const query = `SELECT id FROM routes WHERE origin = $1 AND destination = $2`;
+        const { rows } = await pool.query(query, [origin, destination]);
+        return rows[0]?.id || null;
+    }
+
+    /**
+     * Gets airline info by its 2-3 letter code
+     */
+    async getAirlineByCode(code: string): Promise<{ id: number, name: string } | null> {
+        const query = `SELECT id, name FROM airlines WHERE code = $1`;
+        const { rows } = await pool.query(query, [code]);
+        return rows[0] || null;
     }
 
     /**

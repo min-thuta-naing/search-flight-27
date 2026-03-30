@@ -4,6 +4,7 @@ import {
   savePriceStat,
   getStatistics,
   getPriceStatistics,
+  getDashboardSummary,
 } from '../controllers/statisticsController';
 
 const router = Router();
@@ -19,6 +20,9 @@ router.get('/', getStatistics);
 
 // Get price statistics
 router.get('/price', getPriceStatistics);
+
+// Get world dashboard summary from flight data
+router.get('/dashboard-summary', getDashboardSummary);
 
 export default router;
 

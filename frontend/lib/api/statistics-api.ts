@@ -56,6 +56,36 @@ export interface PriceStatisticsResponse {
   } | null;
 }
 
+export interface DashboardSummaryResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  totalFlights: number;
+  activeAirports: number;
+  averageFlightsPerDay: number;
+  busiestContinent: {
+    key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+    label: string;
+    icon: string;
+    flights: number;
+    previousFlights: number;
+    deltaFlights: number;
+    deltaPercent: number;
+  };
+  continentBreakdown: Array<{
+    key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+    label: string;
+    icon: string;
+    flights: number;
+    previousFlights: number;
+    deltaFlights: number;
+    deltaPercent: number;
+  }>;
+}
+
 export class StatisticsApi {
   /**
    * Save a search query to the database
@@ -85,6 +115,20 @@ export class StatisticsApi {
     return apiClient.get<PriceStatisticsResponse>('/statistics/price', {
       origin,
       destination,
+    }, { signal });
+  }
+
+  /**
+   * Get world dashboard summary from flight data
+   */
+  async getDashboardSummary(
+    date?: string,
+    windowDays: number = 15,
+    signal?: AbortSignal
+  ): Promise<DashboardSummaryResponse> {
+    return apiClient.get<DashboardSummaryResponse>('/statistics/dashboard-summary', {
+      date,
+      window_days: windowDays,
     }, { signal });
   }
 }

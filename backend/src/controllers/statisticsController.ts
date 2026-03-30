@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { SearchStatisticsModel, PriceStatisticsModel } from '../models/SearchStatistics';
 import { AirportModel } from '../models/Airport';
 import { convertToAirportCode } from '../utils/airportCodeConverter';
+import { DashboardSummaryService } from '../services/dashboardSummaryService';
 
 /**
  * Save a search query to the database
@@ -167,6 +168,34 @@ export async function getPriceStatistics(req: Request, res: Response, next: Next
       priceTrend,
       searchTrend, // ✅ เพิ่ม search trend (จำนวนคนค้นหาเพิ่มขึ้น/ลดลง)
     });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get world dashboard summary for the preset +/- date window
+ * GET /api/statistics/dashboard-summary?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+      res.status(400).json({
+        error: 'Invalid window_days parameter',
+        message: 'window_days must be a number between 1 and 3650',
+      });
+      return;
+    }
+
+    const summary = await DashboardSummaryService.getWorldSummary(
+      typeof date === 'string' ? date : undefined,
+      windowDays,
+    );
+
+    res.json(summary);
   } catch (error) {
     next(error);
   }

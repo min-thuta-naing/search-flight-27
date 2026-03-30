@@ -86,6 +86,45 @@ export interface DashboardSummaryResponse {
   }>;
 }
 
+export interface DashboardContinentCardResponse {
+  key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+  label: string;
+  icon: string;
+  airports: string;
+  airportCount: number;
+  countryCount: number;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+  delta: string;
+  highlight: boolean;
+  yoy: number;
+  yoyN: number;
+  mom: number;
+  momN: number;
+  wow: number;
+  wowN: number;
+}
+
+export interface DashboardContinentsResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  continents: DashboardContinentCardResponse[];
+}
+
+export interface DashboardQueryOptions {
+  date?: string;
+  windowDays?: number;
+  startDate?: string;
+  endDate?: string;
+  signal?: AbortSignal;
+}
+
 export class StatisticsApi {
   /**
    * Save a search query to the database
@@ -121,14 +160,40 @@ export class StatisticsApi {
   /**
    * Get world dashboard summary from flight data
    */
-  async getDashboardSummary(
-    date?: string,
-    windowDays: number = 15,
-    signal?: AbortSignal
-  ): Promise<DashboardSummaryResponse> {
+  async getDashboardSummary(options: DashboardQueryOptions = {}): Promise<DashboardSummaryResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+    } = options;
+
     return apiClient.get<DashboardSummaryResponse>('/statistics/dashboard-summary', {
       date,
       window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal });
+  }
+
+  /**
+   * Get continent cards for the world dashboard
+   */
+  async getDashboardContinents(options: DashboardQueryOptions = {}): Promise<DashboardContinentsResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+    } = options;
+
+    return apiClient.get<DashboardContinentsResponse>('/statistics/dashboard-continents', {
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
     }, { signal });
   }
 }

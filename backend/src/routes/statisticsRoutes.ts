@@ -5,6 +5,7 @@ import {
   getStatistics,
   getPriceStatistics,
   getDashboardSummary,
+  getDashboardContinents,
 } from '../controllers/statisticsController';
 
 const router = Router();
@@ -23,6 +24,9 @@ router.get('/price', getPriceStatistics);
 
 // Get world dashboard summary from flight data
 router.get('/dashboard-summary', getDashboardSummary);
+
+// Get continent cards for the world dashboard
+router.get('/dashboard-continents', getDashboardContinents);
 
 export default router;
 

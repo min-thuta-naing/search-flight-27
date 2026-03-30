@@ -1,7 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { addDays, differenceInCalendarDays, format, subDays } from 'date-fns';
+import { ChevronDown } from 'lucide-react';
+import type { DateRange } from 'react-day-picker';
 import { Button } from '@/components/ui/button';
+import { Calendar } from '@/components/ui/calendar';
+import { Label } from '@/components/ui/label';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   BUSIEST_AIRPORTS,
   WORLD_TOP_DEP,
@@ -11,16 +17,20 @@ import {
   compareToPriorPeriodPhraseTh,
   fmtWorldKpiDeltaTh,
   getChangeForMode,
-  growthCardBadgeClasses,
   growthDeltaTypeFromPct,
   modeLabel,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import { enrichTopAirlinesWithListing } from '@/lib/dashboard/airline-ticker-map';
 import { airportInfoFromBusiest } from '@/lib/dashboard/services/drilldown';
-import { statisticsApi, type DashboardSummaryResponse } from '@/lib/api/statistics-api';
+import {
+  statisticsApi,
+  type DashboardSummaryResponse,
+  type DashboardContinentCardResponse,
+} from '@/lib/api/statistics-api';
 import { useDrillDown, KPIRow, ChangePill } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
+import { cn } from '@/lib/utils';
 
 type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';
 
@@ -34,40 +44,95 @@ const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   '365': '1 ปี',
 };
 
-const RANGE_PRESET_DAYS: Record<RangePreset, number> = {
-  focus: 15,
-  '7': 7,
-  '30': 30,
-  all: 3650,
-  '90': 90,
-  '180': 180,
-  '365': 365,
-};
+function buildPresetRange(mode: RangePreset, baseDate = new Date()): DateRange {
+  if (mode === 'focus') {
+    return { from: subDays(baseDate, 15), to: addDays(baseDate, 15) };
+  }
+
+  if (mode === '7') {
+    return { from: baseDate, to: addDays(baseDate, 6) };
+  }
+
+  if (mode === '30') {
+    return { from: baseDate, to: addDays(baseDate, 29) };
+  }
+
+  if (mode === '90') {
+    return { from: baseDate, to: addDays(baseDate, 89) };
+  }
+
+  if (mode === '180') {
+    return { from: baseDate, to: addDays(baseDate, 179) };
+  }
+
+  if (mode === '365') {
+    return { from: baseDate, to: addDays(baseDate, 364) };
+  }
+
+  return { from: subDays(baseDate, 1), to: addDays(baseDate, 365) };
+}
+
+function formatRangeLabel(range?: DateRange) {
+  if (!range?.from) {
+    return 'กำลังเลือกช่วงวันที่';
+  }
+
+  const from = format(range.from, 'dd/MM/yyyy');
+  const to = format(range.to || range.from, 'dd/MM/yyyy');
+  return `${from} – ${to}`;
+}
 
 export function WorldView() {
   const { drillTo, timeMode } = useDrillDown();
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
-  const [rangePreset, setRangePreset] = useState<RangePreset>('focus');
+  const [continentCards, setContinentCards] = useState<DashboardContinentCardResponse[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(() => buildPresetRange('focus'));
+  const [durationMode, setDurationMode] = useState<RangePreset | null>('focus');
+  const [showCustomDateRange, setShowCustomDateRange] = useState(false);
+  const [isExtendedRangeOpen, setIsExtendedRangeOpen] = useState(false);
+  const [fromCalendarMonth, setFromCalendarMonth] = useState(() => subDays(new Date(), 15));
+  const [toCalendarMonth, setToCalendarMonth] = useState(() => addDays(new Date(), 15));
+  const [dateError, setDateError] = useState(false);
 
   useEffect(() => {
     let mounted = true;
-    const today = formatLocalDateInput(new Date());
-    const windowDays = RANGE_PRESET_DAYS[rangePreset];
+    setLoading(true);
+    setDateError(false);
 
-    statisticsApi
-      .getDashboardSummary(today, windowDays)
-      .then((data) => {
-        if (mounted) setSummary(data);
+    if (!dateRange?.from) {
+      setDateError(true);
+      setLoading(false);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    const startDate = formatLocalDateInput(dateRange.from);
+    const endDate = formatLocalDateInput(dateRange.to || dateRange.from);
+
+    Promise.all([
+      statisticsApi.getDashboardSummary({ startDate, endDate }),
+      statisticsApi.getDashboardContinents({ startDate, endDate }),
+    ])
+      .then(([summaryData, continentData]) => {
+        if (!mounted) return;
+        setSummary(summaryData);
+        setContinentCards(continentData.continents);
+        setLoading(false);
       })
       .catch((error) => {
-        console.warn('[WorldView] Failed to load dashboard summary from API, falling back to mock data.', error);
-        if (mounted) setSummary(null);
+        console.warn('[WorldView] Failed to load dashboard data from API, falling back to mock data.', error);
+        if (!mounted) return;
+        setSummary(null);
+        setContinentCards(null);
+        setLoading(false);
       });
 
     return () => {
       mounted = false;
     };
-  }, [rangePreset]);
+  }, [dateRange]);
 
   const fallbackTotalFlights = CONTINENTS.reduce((sum, continent) => sum + continent.flights, 0);
   const fallbackBusiestContinent = [...CONTINENTS].sort((a, b) => b.flights - a.flights)[0];
@@ -80,6 +145,26 @@ export function WorldView() {
     fallbackChange.num,
     timeMode,
   );
+  const continentList: DashboardContinentCardResponse[] = continentCards ?? CONTINENTS.map((continent) => ({
+    key: continent.name as DashboardContinentCardResponse['key'],
+    label: continent.name,
+    icon: continent.icon,
+    airports: continent.airports,
+    airportCount: 0,
+    countryCount: 0,
+    flights: continent.flights,
+    previousFlights: 0,
+    deltaFlights: continent.yoyN,
+    deltaPercent: continent.yoy,
+    delta: continent.delta,
+    highlight: !!continent.highlight,
+    yoy: continent.yoy,
+    yoyN: continent.yoyN,
+    mom: continent.mom,
+    momN: continent.momN,
+    wow: continent.wow,
+    wowN: continent.wowN,
+  }));
 
   const totalFlights = summary?.totalFlights ?? fallbackTotalFlights;
   const activeAirports = summary?.activeAirports ?? fallbackActiveAirports;
@@ -106,7 +191,7 @@ export function WorldView() {
         {
           label: 'เที่ยวบินเฉลี่ย/วัน',
           value: avgPerDay.toLocaleString(),
-          delta: `คำนวณจาก ${summary.windowDays * 2 + 1} วัน`,
+          delta: `คำนวณจาก ${dateRange?.from && dateRange?.to ? differenceInCalendarDays(dateRange.to, dateRange.from) + 1 : 1} วัน`,
           deltaType: 'neutral',
           growthColored: false,
           accentColor: KPI_ACCENT.average,
@@ -152,76 +237,265 @@ export function WorldView() {
         },
       ];
 
-  const summaryStart = summary ? formatDateThai(summary.periodStart) : '21 ต.ค. 2026';
-  const summaryEnd = summary ? formatDateThai(summary.periodEnd) : '24 ต.ค. 2026';
+  const summaryStatusText = loading
+    ? 'กำลังโหลดข้อมูลจากฐานข้อมูล'
+    : summary
+      ? 'ดึงจากฐานข้อมูล'
+      : 'ยังใช้ mock สำรองอยู่';
+  const summaryRangeText = formatRangeLabel(dateRange);
+  const activePresetLabel = durationMode ? RANGE_PRESET_LABELS[durationMode] : 'กำหนดเอง';
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 flex-1">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0 w-full flex-1">
           <h2 className="text-xl font-bold mb-1">ภาพรวมเที่ยวบินทั่วโลก</h2>
           <p className="text-sm text-muted-foreground">
-            แสดงข้อมูลสำหรับ <strong>{summaryStart}{'\u2013'}{summaryEnd}</strong> {'\u00B7'} {summary ? 'ดึงจากฐานข้อมูล' : 'ยังใช้ mock สำรองอยู่'} {'\u00B7'} ช่วงปัจจุบัน: {RANGE_PRESET_LABELS[rangePreset]}
+            แสดงข้อมูลสำหรับ <strong>{summaryRangeText}</strong> {'\u00B7'} {summaryStatusText} {'\u00B7'} ช่วงปัจจุบัน: {activePresetLabel}
           </p>
+        </div>
+        <div className="min-w-0 w-full xl:w-auto xl:max-w-[48rem]">
+          <Label className="mb-2 text-sm font-medium text-muted-foreground">ช่วงวันที่ (Start - End)</Label>
+          <div className="flex min-h-[52px] max-w-full min-w-0 flex-wrap content-start items-end gap-2.5 border-b border-border/70 pb-1">
+            <Button
+              type="button"
+              variant={durationMode === 'focus' ? 'default' : 'outline'}
+              size="sm"
+              className="h-9 px-3.5 text-xs sm:text-sm"
+              onClick={() => applyPresetRange('focus', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+            >
+              ± 15 วัน
+            </Button>
+            <Button
+              type="button"
+              variant={durationMode === '7' ? 'default' : 'outline'}
+              size="sm"
+              className="h-9 px-3.5 text-xs sm:text-sm"
+              onClick={() => applyPresetRange('7', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+            >
+              7 วัน
+            </Button>
+            <Button
+              type="button"
+              variant={durationMode === '30' ? 'default' : 'outline'}
+              size="sm"
+              className="h-9 px-3.5 text-xs sm:text-sm"
+              onClick={() => applyPresetRange('30', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+            >
+              30 วัน
+            </Button>
+            <Button
+              type="button"
+              variant={durationMode === 'all' ? 'default' : 'outline'}
+              size="sm"
+              className="h-9 px-3.5 text-xs sm:text-sm"
+              onClick={() => applyPresetRange('all', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+            >
+              ทั้งหมด
+            </Button>
+            <Popover open={isExtendedRangeOpen} onOpenChange={setIsExtendedRangeOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant={durationMode === '90' || durationMode === '180' || durationMode === '365' ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-9 px-3.5 text-xs sm:text-sm"
+                >
+                  {durationMode === '90' ? 'ไตรมาสนี้' : durationMode === '180' ? '6 เดือน' : durationMode === '365' ? '1 ปี' : 'รอบเดือน'}
+                  <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-44 p-1" align="start">
+                <div className="flex flex-col gap-1">
+                  <Button
+                    type="button"
+                    variant={durationMode === '90' ? 'default' : 'ghost'}
+                    size="sm"
+                    className="justify-start"
+                    onClick={() => applyPresetRange('90', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+                  >
+                    ไตรมาสนี้
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={durationMode === '180' ? 'default' : 'ghost'}
+                    size="sm"
+                    className="justify-start"
+                    onClick={() => applyPresetRange('180', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+                  >
+                    6 เดือน
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={durationMode === '365' ? 'default' : 'ghost'}
+                    size="sm"
+                    className="justify-start"
+                    onClick={() => applyPresetRange('365', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+                  >
+                    1 ปี
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
+            <button
+              type="button"
+              className={cn(
+                'inline-flex h-9 items-center gap-1 rounded-md border px-3.5 text-xs sm:text-sm font-medium leading-none transition-colors',
+                showCustomDateRange
+                  ? 'border-primary/20 bg-muted/30 text-foreground'
+                  : 'border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground'
+              )}
+              onClick={() => handleCustomDateToggle(setShowCustomDateRange, setDurationMode, setDateError)}
+            >
+              <span>กำหนดเอง</span>
+              <ChevronDown className={cn('h-4 w-4 transition-transform duration-200', showCustomDateRange && 'rotate-180')} />
+            </button>
+          </div>
+          <div className="space-y-2 pt-0">
+            <div
+              className={cn(
+                'overflow-hidden transition-all duration-300 ease-in-out',
+                showCustomDateRange ? 'max-h-48 opacity-100' : 'max-h-0 opacity-0'
+              )}
+            >
+              <div className="grid w-full min-w-0 grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        'min-w-0 justify-start text-left font-normal h-11 sm:h-12 bg-white border-gray-300 focus-visible:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500/10 px-2.5 sm:px-3',
+                        !dateRange?.from && 'text-muted-foreground',
+                        dateError && !dateRange?.from && 'border-red-500 ring-1 ring-red-500/20'
+                      )}
+                    >
+                      <span className="truncate">{dateRange?.from ? format(dateRange.from, 'dd/MM/yyyy') : 'วันเริ่มต้น'}</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0 flight-routes-accent" align="start">
+                    <Calendar
+                      mode="single"
+                      month={fromCalendarMonth}
+                      onMonthChange={setFromCalendarMonth}
+                      selected={dateRange?.from}
+                      captionLayout="label"
+                      hideNavigation
+                      onSelect={(date) => {
+                        setDurationMode(null);
+                        setDateError(false);
+                        if (date) setFromCalendarMonth(date);
+                        setDateRange((prev) => ({
+                          from: date,
+                          to: prev?.to && date && prev.to < date ? date : prev?.to,
+                        }));
+                      }}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        'min-w-0 justify-start text-left font-normal h-11 sm:h-12 bg-white border-gray-300 focus-visible:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500/10 px-2.5 sm:px-3',
+                        !dateRange?.to && 'text-muted-foreground'
+                      )}
+                    >
+                      <span className="truncate">{dateRange?.to ? format(dateRange.to, 'dd/MM/yyyy') : 'วันสิ้นสุด'}</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0 flight-routes-accent" align="start">
+                    <Calendar
+                      mode="single"
+                      month={toCalendarMonth}
+                      onMonthChange={setToCalendarMonth}
+                      selected={dateRange?.to}
+                      captionLayout="label"
+                      hideNavigation
+                      onSelect={(date) => {
+                        setDurationMode(null);
+                        setDateError(false);
+                        if (date) setToCalendarMonth(date);
+                        setDateRange((prev) => ({ from: prev?.from, to: date }));
+                      }}
+                      disabled={(date) => (dateRange?.from ? date < dateRange.from : false)}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-border/70 pb-2">
-        {(Object.keys(RANGE_PRESET_LABELS) as RangePreset[]).map((preset) => (
-          <Button
-            key={preset}
-            type="button"
-            variant={rangePreset === preset ? 'default' : 'outline'}
-            size="sm"
-            className="h-9 px-3.5 text-xs sm:text-sm"
-            onClick={() => setRangePreset(preset)}
-          >
-            {RANGE_PRESET_LABELS[preset]}
-          </Button>
-        ))}
-      </div>
+      {loading ? (
+        <WorldViewSkeleton />
+      ) : (
+        <>
+          <KPIRow items={kpis} />
 
-      <KPIRow items={kpis} />
+          {/* Continent Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {continentList.map((continent) => {
+              const continentKey = continent.key as DashboardContinentCardResponse['key'];
+              const isBusiest = continent.highlight || summary?.busiestContinent.key === continentKey;
+              const continentName = continent.label;
+              return (
+                <button
+                  key={continentKey}
+                  type="button"
+                  aria-label={`สำรวจ ${continentName}`}
+                  onClick={() =>
+                    drillTo('continent', {
+                      continent: {
+                        name: continentName,
+                        icon: continent.icon,
+                        airports: continent.airports,
+                        flights: continent.flights,
+                        delta: continent.delta,
+                        highlight: isBusiest,
+                        yoy: continent.deltaPercent,
+                        yoyN: continent.deltaFlights,
+                        mom: continent.deltaPercent,
+                        momN: continent.deltaFlights,
+                        wow: continent.deltaPercent,
+                        wowN: continent.deltaFlights,
+                      } as any,
+                    })
+                  }
+                  className={`relative overflow-hidden bg-card border rounded-[10px] p-4 sm:p-6 text-left transition-all hover:border-primary hover:-translate-y-1 hover:shadow-lg cursor-pointer group ${
+                    isBusiest ? 'border-primary' : 'border-border'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3 mb-2 sm:mb-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-base sm:text-lg font-bold mb-1 sm:mb-1.5 truncate">{continentName}</div>
+                      <div className="flex items-baseline gap-2 mt-0.5">
+                        <div className="text-xl sm:text-2xl font-bold text-primary">{continent.flights.toLocaleString()}</div>
+                        <div className="text-[13px] sm:text-[15px] text-muted-foreground">เที่ยวบิน</div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-[32px] sm:text-[40px] ml-2" role="img" aria-hidden="true">
+                      {continent.icon}
+                    </div>
+                  </div>
+                  <div className="text-[13px] sm:text-[14px] text-primary mt-2 sm:mt-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                    {'\u25B6'} สำรวจ {continentName}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
 
-      {/* Continent Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {CONTINENTS.map((continent) => {
-          const continentTone = growthDeltaTypeFromPct(getChangeForMode(continent, timeMode).pct, timeMode);
-          return (
-            <button
-              key={continent.name}
-              type="button"
-              aria-label={`สำรวจ ${continent.name}`}
-              onClick={() => drillTo('continent', { continent })}
-              className={`relative overflow-hidden bg-card border rounded-[10px] p-4 sm:p-6 text-left transition-all hover:border-primary hover:-translate-y-1 hover:shadow-lg cursor-pointer group ${
-                continent.highlight ? 'border-primary' : 'border-border'
-              }`}
-            >
-              <span
-                className={`absolute top-3 right-3 sm:top-4 sm:right-4 text-[12px] sm:text-[14px] font-bold py-0.5 px-2 rounded-full ${growthCardBadgeClasses(continentTone)}`}
-              >
-                {continent.delta.includes(' (') ? continent.delta.replace(' (', ' เที่ยวบิน (') : continent.delta}
-              </span>
-              <div className="text-[32px] sm:text-[40px] mb-2 sm:mb-3">{continent.icon}</div>
-              <div className="text-base sm:text-lg font-bold mb-1 sm:mb-1.5">{continent.name}</div>
-              <div className="text-[14px] sm:text-[16px] text-muted-foreground mb-3 sm:mb-4">{continent.airports}</div>
-              <div className="flex items-baseline gap-2 mt-0.5">
-                <div className="text-xl sm:text-2xl font-bold text-primary">{continent.flights.toLocaleString()}</div>
-                <div className="text-[13px] sm:text-[15px] text-muted-foreground">เที่ยวบิน</div>
-              </div>
-              <div className="text-[13px] sm:text-[14px] text-primary mt-2 sm:mt-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                {'\u25B6'} สำรวจ {continent.name}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
-        <BusiestAirportsTable />
-        <TopAirlinesTable />
-      </div>
-      <TopDestinations />
+          <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
+            <BusiestAirportsTable />
+            <TopAirlinesTable />
+          </div>
+          <TopDestinations />
+        </>
+      )}
     </div>
   );
 }
@@ -239,6 +513,64 @@ function formatLocalDateInput(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function applyPresetRange(
+  mode: RangePreset,
+  setDateRange: (range: DateRange | undefined) => void,
+  setDurationMode: (mode: RangePreset | null) => void,
+  setFromCalendarMonth: (date: Date) => void,
+  setToCalendarMonth: (date: Date) => void,
+  setShowCustomDateRange: (show: boolean | ((prev: boolean) => boolean)) => void,
+  setIsExtendedRangeOpen: (open: boolean) => void,
+  setDateError: (error: boolean) => void,
+) {
+  const range = buildPresetRange(mode);
+  const from = range.from || new Date();
+  const to = range.to || from;
+
+  setDateRange({ from, to });
+  setFromCalendarMonth(from);
+  setToCalendarMonth(to);
+  setDurationMode(mode);
+  setShowCustomDateRange(false);
+  setIsExtendedRangeOpen(false);
+  setDateError(false);
+}
+
+function handleCustomDateToggle(
+  setShowCustomDateRange: (show: boolean | ((prev: boolean) => boolean)) => void,
+  setDurationMode: (mode: RangePreset | null) => void,
+  setDateError: (error: boolean) => void,
+) {
+  setShowCustomDateRange((prev) => !prev);
+  setDurationMode(null);
+  setDateError(false);
+}
+
+function WorldViewSkeleton() {
+  return (
+    <div className="space-y-6 animate-pulse">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="h-[126px] rounded-[10px] border border-border bg-card p-4 sm:p-6" />
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div key={index} className="h-[160px] rounded-[10px] border border-border bg-card p-4 sm:p-6" />
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
+        <div className="h-[340px] rounded-[10px] border border-border bg-card" />
+        <div className="h-[340px] rounded-[10px] border border-border bg-card" />
+      </div>
+
+      <div className="h-[240px] rounded-[10px] border border-border bg-card" />
+    </div>
+  );
 }
 
 function BusiestAirportsTable() {

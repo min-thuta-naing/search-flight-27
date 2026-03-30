@@ -32,7 +32,15 @@ class ApiClient {
       clearTimeout(timeoutId)
 
       if (!response.ok) {
-        throw new Error(`API Error: ${response.status} ${response.statusText}`)
+        const error = new Error(`API Error: ${response.status} ${response.statusText}`) as Error & {
+          status?: number;
+          statusText?: string;
+          url?: string;
+        }
+        error.status = response.status
+        error.statusText = response.statusText
+        error.url = url
+        throw error
       }
 
       return await response.json()
@@ -50,7 +58,13 @@ class ApiClient {
 
   async get<T>(endpoint: string, params?: Record<string, any>, options: { signal?: AbortSignal } = {}): Promise<T> {
     const queryString = params
-      ? '?' + new URLSearchParams(params).toString()
+      ? (() => {
+          const filtered = Object.fromEntries(
+            Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== '')
+          );
+          const search = new URLSearchParams(filtered as Record<string, string>).toString();
+          return search ? `?${search}` : '';
+        })()
       : ''
     return this.request<T>(endpoint + queryString, { ...options, method: 'GET' })
   }

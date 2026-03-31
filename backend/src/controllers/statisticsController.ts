@@ -237,3 +237,35 @@ export async function getDashboardContinents(req: Request, res: Response, next: 
   }
 }
 
+/**
+ * Get top country and airport ranks for the world dashboard
+ * GET /api/statistics/dashboard-top-ranks?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardTopRanks(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const topRanks = await DashboardSummaryService.getWorldTopRanks({
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+    });
+
+    res.json(topRanks);
+  } catch (error) {
+    next(error);
+  }
+}
+

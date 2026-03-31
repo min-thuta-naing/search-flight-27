@@ -109,127 +109,80 @@ export function TimeToggle() {
   );
 }
 
-// ── Status Line (Circle Stepper) ──
+// -- Status Line (Circle Stepper) --
 function StatusLine() {
   const { level, drillTo, selections } = useDrillDown();
 
   const steps = [
     {
       id: 'world' as DrillLevel,
-      display: 'โลก',
-      icon: '🌎',
+      display: '\u0e42\u0e25\u0e01',
+      icon: '\u{1F30E}',
       step: 1,
     },
     {
       id: 'continent' as DrillLevel,
-      display: selections.continent?.name || 'ทวีป',
-      icon: selections.continent?.icon || '🌐',
+      display: selections.continent?.name || '\u0e17\u0e27\u0e35\u0e1b',
+      icon: selections.continent?.icon || '\u{1F310}',
       step: 2,
     },
     {
       id: 'country' as DrillLevel,
-      display: selections.country?.name || 'ประเทศ',
-      icon: selections.country?.flag || '🏳️',
+      display: selections.country?.name || '\u0e1b\u0e23\u0e30\u0e40\u0e17\u0e28',
+      icon: selections.country?.flag || '\u{1F3F3}\uFE0F',
       step: 3,
     },
     {
       id: 'airport' as DrillLevel,
-      display: selections.airport?.iata || 'สนามบิน',
-      icon: '🛫',
+      display: selections.airport?.iata || '\u0e2a\u0e19\u0e32\u0e21\u0e1a\u0e34\u0e19',
+      icon: '\u{1F6EB}',
       step: 4,
-    }
+    },
   ];
 
   const LEVELS: DrillLevel[] = ['world', 'continent', 'country', 'airport'];
   const currentIdx = LEVELS.indexOf(level);
 
   return (
-    <div className="flex w-full min-w-0 justify-center px-1 sm:px-2">
-      <div className="flex max-w-full min-w-0 flex-col items-center gap-2">
-      <div className="relative flex w-full max-w-full min-w-0 flex-nowrap items-start justify-start gap-x-0 overflow-x-auto overflow-y-visible pb-1 [scrollbar-width:thin] sm:justify-center">
-        {/* Connector lines layer — sits behind circles, vertically centered on them */}
-        <div className="absolute top-5 sm:top-6 left-0 right-0 flex items-center pointer-events-none" aria-hidden="true">
-          {steps.map((step, i) => {
-            if (i === 0) {
-              /* spacer for the first circle width */
-              return <div key={step.id} className="w-10 sm:w-12 shrink-0" />;
-            }
-            return (
-              <div key={step.id} className="flex items-center flex-1">
-                <div
-                  className={`h-[3px] w-full transition-colors ${
-                    i <= currentIdx ? 'bg-primary' : 'bg-border'
-                  }`}
-                />
-                {/* spacer for circle width */}
-                <div className="w-10 sm:w-12 shrink-0" />
-              </div>
-            );
-          })}
-        </div>
+    <div className="w-full px-2 sm:px-4">
+      <div className="rounded-xl bg-slate-100/80 px-2 py-2 shadow-sm ring-1 ring-slate-200/70">
+        <div className="flex w-full items-center justify-center overflow-x-auto [scrollbar-width:thin]">
+          <div className="flex min-w-max items-center gap-2">
+            {steps.map((step, i) => {
+              const isActive = i === currentIdx;
+              const isPast = i < currentIdx;
+              const isClickable = isPast;
 
-        {/* Steps layer */}
-        {steps.map((step, i) => {
-          const isActive = i === currentIdx;
-          const isPast = i < currentIdx;
-          const multilineLabel = step.id === 'continent' || step.id === 'country';
-          const labelClass = multilineLabel
-            ? 'whitespace-normal text-center leading-snug [overflow-wrap:anywhere] max-w-[10rem] sm:max-w-[12rem] md:max-w-[15rem] lg:max-w-[18rem]'
-            : 'whitespace-nowrap max-w-[5rem] sm:max-w-[6rem] truncate';
-
-          return (
-            <div key={step.id} className="flex shrink-0 items-start">
-              {/* Gap between steps */}
-              {i > 0 && <div className="w-4 shrink-0 sm:w-6 md:w-8" />}
-
-              <button
-                type="button"
-                disabled={!isPast}
-                onClick={() => isPast && drillTo(step.id)}
-                className={`relative z-10 flex shrink-0 flex-col items-center gap-1.5 px-0.5 group ${
-                  multilineLabel ? 'max-w-[min(18rem,calc(100vw-2.5rem))]' : 'max-w-[6.5rem]'
-                } ${isPast ? 'cursor-pointer hover:-translate-y-0.5 transition-transform' : 'cursor-default'}`}
-              >
-                <div
-                  className={`flex shrink-0 items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-full border-[3px] transition-all ${
-                    isPast
-                      ? 'bg-primary/10 border-primary shadow-md group-hover:scale-110 group-hover:shadow-[0_0_0_4px_rgba(37,99,235,0.18),0_10px_18px_rgba(37,99,235,0.28)]'
-                      : isActive
-                        ? 'bg-primary/15 border-primary shadow-lg ring-4 ring-primary/20'
-                        : 'bg-muted/50 border-border'
-                  }`}
-                >
-                  <span className="text-lg leading-none" role="img">{step.icon}</span>
-                </div>
-                <span
-                  className={`text-xs sm:text-sm font-semibold transition-colors ${labelClass} ${
-                    multilineLabel ? 'w-full' : ''
-                  } ${
+              return (
+                <button
+                  key={step.id}
+                  type="button"
+                  disabled={!isClickable}
+                  onClick={() => isClickable && drillTo(step.id)}
+                  className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-all ${
                     isActive
-                      ? 'text-primary'
+                      ? 'border-primary bg-primary/10 text-primary shadow-sm'
                       : isPast
-                        ? 'text-primary/80 group-hover:text-primary'
-                        : 'text-muted-foreground/40'
-                  }`}
-                  title={multilineLabel ? step.display : undefined}
+                        ? 'border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:bg-primary/5 hover:text-primary'
+                        : 'border-slate-200 bg-slate-50 text-slate-400'
+                  } ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
+                  aria-pressed={isActive}
                 >
-                  {step.display}
-                </span>
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      {currentIdx > 0 && (
-        <div className="text-[15px] text-muted-foreground font-medium">
-          {'\u2190'} คลิกอันก่อนหน้าเพื่อย้อนกลับ
+                  <span className="text-base leading-none" role="img" aria-hidden="true">
+                    {step.icon}
+                  </span>
+                  <span className="whitespace-nowrap">{step.display}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
-      )}
       </div>
     </div>
   );
 }
 
+// -- KPI Row (shared) --
 // ── KPI Row (shared) ──
 export interface KPIItem {
   label: string;
@@ -338,3 +291,4 @@ export function ChangePill({
     </span>
   );
 }
+

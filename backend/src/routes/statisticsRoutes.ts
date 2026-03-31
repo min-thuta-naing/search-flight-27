@@ -6,6 +6,7 @@ import {
   getPriceStatistics,
   getDashboardSummary,
   getDashboardContinents,
+  getDashboardTopRanks,
 } from '../controllers/statisticsController';
 
 const router = Router();
@@ -27,6 +28,9 @@ router.get('/dashboard-summary', getDashboardSummary);
 
 // Get continent cards for the world dashboard
 router.get('/dashboard-continents', getDashboardContinents);
+
+// Get top rank tables for the world dashboard
+router.get('/dashboard-top-ranks', getDashboardTopRanks);
 
 export default router;
 

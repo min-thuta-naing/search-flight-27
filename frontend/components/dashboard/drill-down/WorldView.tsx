@@ -10,22 +10,22 @@ import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   BUSIEST_AIRPORTS,
+  COUNTRIES,
   WORLD_TOP_DEP,
   WORLD_TOP_ARR,
   CONTINENTS,
-  TOP_AIRLINES_WORLD,
   fmtWorldKpiDeltaTh,
   getChangeForMode,
   growthDeltaTypeFromPct,
   modeLabel,
+  parsePercentFromDelta,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
-import { enrichTopAirlinesWithListing } from '@/lib/dashboard/airline-ticker-map';
-import { airportInfoFromBusiest } from '@/lib/dashboard/services/drilldown';
 import {
   statisticsApi,
   type DashboardSummaryResponse,
   type DashboardContinentCardResponse,
+  type DashboardTopRanksResponse,
 } from '@/lib/api/statistics-api';
 import { useDrillDown, KPIRow, ChangePill } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
@@ -33,6 +33,28 @@ import { cn } from '@/lib/utils';
 
 type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';
 type RankSortKey = 'label' | 'routeCount' | 'flights' | 'deltaPercent';
+
+type TopCountryViewRow = {
+  countryCode: string | null;
+  name: string;
+  flag?: string;
+  airportCount: number;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+};
+
+type TopAirportViewRow = {
+  iata: string;
+  airportName: string;
+  city: string;
+  country: string;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+};
 
 const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   focus: '± 15 วัน',
@@ -105,6 +127,8 @@ export function WorldView() {
   const [dateError, setDateError] = useState(false);
   const [rankSortKey, setRankSortKey] = useState<RankSortKey>('flights');
   const [rankSortDirection, setRankSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [topRanks, setTopRanks] = useState<DashboardTopRanksResponse | null>(null);
+  const [topRanksLoading, setTopRanksLoading] = useState(true);
   const selectPreset = (mode: RangePreset) => {
     applyPresetRange(
       mode,
@@ -121,11 +145,13 @@ export function WorldView() {
   useEffect(() => {
     let mounted = true;
     setLoading(true);
+    setTopRanksLoading(true);
     setDateError(false);
 
     if (!dateRange?.from) {
       setDateError(true);
       setLoading(false);
+      setTopRanksLoading(false);
       return () => {
         mounted = false;
       };
@@ -133,17 +159,17 @@ export function WorldView() {
 
     const startDate = formatLocalDateInput(dateRange.from);
     const endDate = formatLocalDateInput(dateRange.to || dateRange.from);
-    console.debug('[WorldView] calling dashboard-summary', { startDate, endDate });
-    void statisticsApi.getDashboardSummary({ startDate, endDate })
-      .then((summaryData) => {
+    void (async () => {
+      console.debug('[WorldView] calling dashboard-summary', { startDate, endDate });
+      try {
+        const summaryData = await statisticsApi.getDashboardSummary({ startDate, endDate });
         if (!mounted) return;
         setSummary(summaryData);
         console.debug('[WorldView] summary fetch success', {
           totalFlights: summaryData.totalFlights,
           busiestContinent: summaryData.busiestContinent?.label,
         });
-      })
-      .catch((error) => {
+      } catch (error) {
         console.warn('[WorldView] Failed to load dashboard data from API, falling back to mock data.', {
           status: (error as { status?: number }).status,
           statusText: (error as { statusText?: string }).statusText,
@@ -151,12 +177,35 @@ export function WorldView() {
         });
         if (!mounted) return;
         setSummary(null);
-      })
-      .finally(() => {
+      } finally {
         if (mounted) {
           setLoading(false);
         }
-      });
+      }
+
+      console.debug('[WorldView] calling dashboard-top-ranks', { startDate, endDate });
+      try {
+        const topRanksData = await statisticsApi.getDashboardTopRanks({ startDate, endDate });
+        if (!mounted) return;
+        setTopRanks(topRanksData);
+        console.debug('[WorldView] top ranks fetch success', {
+          countries: topRanksData.countries.length,
+          airports: topRanksData.airports.length,
+        });
+      } catch (error) {
+        console.warn('[WorldView] Failed to load top ranks from API, falling back to mock data.', {
+          status: (error as { status?: number }).status,
+          statusText: (error as { statusText?: string }).statusText,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        if (!mounted) return;
+        setTopRanks(null);
+      } finally {
+        if (mounted) {
+          setTopRanksLoading(false);
+        }
+      }
+    })();
 
     return () => {
       mounted = false;
@@ -258,6 +307,44 @@ export function WorldView() {
     ? differenceInCalendarDays(dateRange.to, dateRange.from) + 1
     : 1;
   const previousPresetDaysText = `${currentPresetDays} วันก่อนหน้า`;
+  const topCountryRows = useMemo<TopCountryViewRow[]>(() => {
+    if (topRanks?.countries?.length) {
+      return topRanks.countries;
+    }
+
+    return [...COUNTRIES]
+      .sort((a, b) => b.flights - a.flights)
+      .slice(0, 5)
+      .map((country) => ({
+        countryCode: null as string | null,
+        name: country.name,
+        flag: country.flag,
+        airportCount: country.airports,
+        flights: country.flights,
+        previousFlights: Math.max(country.flights - country.deltaN, 0),
+        deltaFlights: country.deltaN,
+        deltaPercent: parsePercentFromDelta(country.delta) ?? 0,
+      }));
+  }, [topRanks]);
+  const topAirportRows = useMemo<TopAirportViewRow[]>(() => {
+    if (topRanks?.airports?.length) {
+      return topRanks.airports;
+    }
+
+      return [...BUSIEST_AIRPORTS]
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5)
+      .map((airport) => ({
+        iata: airport.iata,
+        airportName: airport.city,
+        city: airport.city,
+        country: airport.country,
+        flights: airport.total,
+        previousFlights: Math.max(airport.total - airport.yoyN, 0),
+        deltaFlights: airport.yoyN,
+        deltaPercent: airport.yoy,
+      }));
+  }, [topRanks]);
 
   const kpis: KPIItem[] = summary
     ? [
@@ -286,7 +373,7 @@ export function WorldView() {
           accentColor: KPI_ACCENT.average,
         },
         {
-          label: 'ทวีปที่คึกคักที่สุด',
+          label: 'ทวีปที่มีปริมาณการบินหนาแน่นที่สุด',
           value: `${summary.busiestContinent.icon} ${summary.busiestContinent.label}`,
           delta: `${summary.busiestContinent.deltaFlights >= 0 ? '▲' : '▼'} ${summary.busiestContinent.deltaFlights >= 0 ? '+' : ''}${summary.busiestContinent.deltaFlights.toLocaleString()} flights · เทียบกับช่วง ${previousPresetDaysText}`,
           deltaType: summary.busiestContinent.deltaFlights >= 0 ? 'up' : 'down',
@@ -585,7 +672,7 @@ export function WorldView() {
             <div className="overflow-hidden rounded-[10px] border border-border bg-card">
               <div className="flex flex-col gap-1 border-b border-border px-4 py-4 sm:flex-row sm:items-end sm:justify-between sm:px-5">
                 <div>
-                  <h3 className="text-[16px] font-bold">Rank ทวีป</h3>
+                  <h3 className="text-[16px] font-bold">ภาพรวมทวีป</h3>
                   <p className="text-sm text-muted-foreground">
                     เรียงลำดับตามชื่อทวีป, จำนวนเส้นทางการบิน, เที่ยวบินทั้งหมด หรือ KPI จากช่วงวันที่ที่เลือก
                   </p>
@@ -635,7 +722,7 @@ export function WorldView() {
                           className="inline-flex items-center gap-1 hover:text-foreground"
                           onClick={() => handleRankSort('deltaPercent')}
                         >
-                          <span>KPI เพิ่มขึ้น/ลดลง</span>
+                          <span>ความเปลี่ยนแปลงจากช่วงที่เลือก</span>
                           <span aria-hidden="true">{rankSortKey === 'deltaPercent' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
                         </button>
                       </th>
@@ -708,8 +795,8 @@ export function WorldView() {
           </section>
 
           <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
-            <BusiestAirportsTable />
-            <TopAirlinesTable />
+            <TopCountriesTable rows={topCountryRows} loading={topRanksLoading} />
+            <TopAirportsTable rows={topAirportRows} loading={topRanksLoading} />
           </div>
           <TopDestinations />
         </>
@@ -731,6 +818,24 @@ function formatLocalDateInput(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function renderRankDeltaPill(deltaFlights: number, deltaPercent: number) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-sm font-semibold ${
+        deltaPercent >= 0 ? 'bg-emerald-500/10 text-emerald-600' : 'bg-rose-500/10 text-rose-600'
+      }`}
+    >
+      <span aria-hidden="true">{deltaFlights >= 0 ? '▲' : '▼'}</span>
+      <span>{deltaFlights >= 0 ? '+' : ''}{deltaFlights.toLocaleString()}</span>
+      <span>({deltaPercent >= 0 ? '+' : ''}{deltaPercent.toFixed(1)}%)</span>
+    </span>
+  );
+}
+
+function formatAirportDisplayName(name: string) {
+  return name.replace(/\s+Airport$/i, '').trim();
 }
 
 function applyPresetRange(
@@ -791,15 +896,14 @@ function WorldViewSkeleton() {
   );
 }
 
-function BusiestAirportsTable() {
-  const { timeMode, drillTo } = useDrillDown();
-
+function TopCountriesTable({ rows, loading }: { rows: TopCountryViewRow[]; loading: boolean }) {
   return (
     <div className="flex flex-col gap-3 min-w-0">
       <div className="flex items-center justify-between">
         <h3 className="text-[16px] font-bold flex items-center gap-2">
-          {'🏆'} 5 อันดับสนามบินที่คึกคักที่สุดในโลก
+          {'\u{1F310}'} Top ประเทศ
         </h3>
+        <span className="text-[13px] text-muted-foreground">Top 5</span>
       </div>
       <div className="bg-card border border-border rounded-[10px] overflow-hidden flex-1 min-w-0">
         <div className="overflow-x-auto min-w-0">
@@ -807,41 +911,52 @@ function BusiestAirportsTable() {
             <thead>
               <tr className="border-b border-border">
                 <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">#</th>
-                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">สนามบิน</th>
-                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">เมือง / ประเทศ</th>
-                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">รวม</th>
-                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">ขาออก</th>
-                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">ขาเข้า</th>
-                <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">
-                  {timeMode === 'wow' ? 'รายสัปดาห์' : timeMode === 'mom' ? 'รายเดือน' : 'รายปี'}
-                </th>
+                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">ประเทศ</th>
+                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">สนามบินที่ใช้งาน</th>
+                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">เที่ยวบินทั้งหมด</th>
+                <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">KPI เปลี่ยนแปลง</th>
               </tr>
             </thead>
             <tbody>
-              {BUSIEST_AIRPORTS.map((airport) => {
-                const { pct, num } = getChangeForMode(airport, timeMode);
-                return (
-                  <tr
-                    key={airport.iata}
-                    onClick={() => drillTo('airport', { airport: airportInfoFromBusiest(airport) })}
-                    className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03] cursor-pointer group/row"
-                  >
-                    <td className="py-2.5 px-2.5 font-bold text-muted-foreground w-8 text-[14px] group-hover/row:text-primary transition-colors">{airport.rank}</td>
-                    <td className="py-2.5 px-2.5">
-                      <span className="font-extrabold text-primary tracking-tight">{airport.iata}</span>{' '}
-                      <span className="text-base">{airport.flag}</span>
-                    </td>
-                    <td className="py-2.5 px-2.5">
-                      <div className="font-medium">{airport.city}</div>
-                      <div className="text-[13px] text-muted-foreground">{airport.country}</div>
-                    </td>
-                    <td className="py-2.5 px-2.5 text-right font-bold tabular-nums">{airport.total.toLocaleString()}</td>
-                    <td className="py-2.5 px-2.5 text-right tabular-nums">{airport.dep.toLocaleString()}</td>
-                    <td className="py-2.5 px-2.5 text-right tabular-nums">{airport.arr.toLocaleString()}</td>
-                    <td className="py-2.5 px-2.5 text-right"><ChangePill pct={pct} num={num} active timeMode={timeMode} /></td>
-                  </tr>
-                );
-              })}
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-10">
+                    <div className="flex items-center justify-center gap-3 text-muted-foreground">
+                      <span className="h-5 w-5 rounded-full border-2 border-emerald-500/30 border-t-emerald-500 animate-spin" />
+                      <span className="text-sm">กำลังโหลด top ประเทศ</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : rows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    ไม่มีข้อมูลในช่วงวันที่ที่เลือก
+                  </td>
+                </tr>
+              ) : (
+                rows.map((country, index) => {
+                  return (
+                    <tr key={`${country.name}-${country.countryCode ?? index}`} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
+                      <td className="py-2.5 px-2.5 font-bold text-muted-foreground w-8 text-[14px] transition-colors">{index + 1}</td>
+                      <td className="py-2.5 px-2.5">
+                        <div className="min-w-0">
+                          <div className="text-[14px] font-extrabold tracking-wide text-primary">
+                            {country.countryCode?.toUpperCase() || '--'}
+                          </div>
+                          <div className="text-[14px] font-semibold text-foreground truncate">
+                            {country.name}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-2.5 text-right tabular-nums">{country.airportCount.toLocaleString()}</td>
+                      <td className="py-2.5 px-2.5 text-right tabular-nums font-bold text-primary">{country.flights.toLocaleString()}</td>
+                      <td className="py-2.5 px-2.5 text-right">
+                        {renderRankDeltaPill(country.deltaFlights, country.deltaPercent)}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
@@ -850,60 +965,66 @@ function BusiestAirportsTable() {
   );
 }
 
-function TopAirlinesTable() {
-  const { timeMode } = useDrillDown();
-  const topAirlines = enrichTopAirlinesWithListing(TOP_AIRLINES_WORLD);
-
+function TopAirportsTable({ rows, loading }: { rows: TopAirportViewRow[]; loading: boolean }) {
   return (
-    <div className="flex h-full flex-col gap-3">
+    <div className="flex flex-col gap-3 min-w-0">
       <div className="flex items-center justify-between">
         <h3 className="text-[16px] font-bold flex items-center gap-2">
-          {'✈️'} 5 อันดับสายการบินทั่วโลก
+          {'\u2708\ufe0f'} Top
         </h3>
-        <span className="text-[14px] text-muted-foreground">ตามจำนวนเที่ยวบิน</span>
+        <span className="text-[13px] text-muted-foreground">Top 5</span>
       </div>
-      <div className="bg-card border border-border rounded-[10px] overflow-hidden">
+      <div className="bg-card border border-border rounded-[10px] overflow-hidden flex-1 min-w-0">
         <div className="overflow-x-auto min-w-0">
-          <table className="w-full min-w-[640px] border-collapse text-sm table-fixed">
+          <table className="w-full min-w-[720px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-border">
-                <th className="w-7 max-w-7 px-1 text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 text-center">#</th>
-                <th className="w-[27%] text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">สายการบิน</th>
-                <th className="w-[9%] text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">Ticker</th>
-                <th className="w-[28%] text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">ตลาดหลักทรัพย์</th>
-                <th className="w-[18%] text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">เที่ยวบิน</th>
-                <th className="w-[18%] min-w-[7.5rem] text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">
-                  {timeMode === 'wow' ? 'รายสัปดาห์' : timeMode === 'mom' ? 'รายเดือน' : 'รายปี'}
-                </th>
+                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">#</th>
+                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">Code</th>
+                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">เมือง / ประเทศ</th>
+                <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">เที่ยวบินทั้งหมด</th>
+                <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">KPI เปลี่ยนแปลง</th>
               </tr>
             </thead>
             <tbody>
-              {topAirlines.map((airline) => {
-                const { pct, num } = getChangeForMode(airline, timeMode);
-                return (
-                  <tr key={airline.iata} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
-                    <td className="w-7 max-w-7 px-1 py-2.5 text-center font-bold tabular-nums text-muted-foreground text-[14px] align-middle">{airline.rank}</td>
-                    <td className="py-2.5 px-2.5 align-middle">
-                      <div className="flex items-center gap-2">
-                        <span className="text-base">{airline.flag}</span>
-                        <div className="min-w-0">
-                          <div className="font-semibold text-[15px] whitespace-normal break-words leading-tight">{airline.name}</div>
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-10">
+                    <div className="flex items-center justify-center gap-3 text-muted-foreground">
+                      <span className="h-5 w-5 rounded-full border-2 border-emerald-500/30 border-t-emerald-500 animate-spin" />
+                      <span className="text-sm">กำลังโหลด top airport</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : rows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    ไม่มีข้อมูลในช่วงวันที่ที่เลือก
+                  </td>
+                </tr>
+              ) : (
+                rows.map((airport, index) => (
+                  <tr key={airport.iata} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
+                    <td className="py-2.5 px-2.5 font-bold text-muted-foreground w-8 text-[14px] transition-colors">{index + 1}</td>
+                    <td className="py-2.5 px-2.5">
+                      <div className="min-w-0">
+                        <div className="text-[14px] font-extrabold tracking-wide text-primary">{airport.iata}</div>
+                        <div className="text-[14px] font-semibold text-foreground truncate">
+                          {formatAirportDisplayName(airport.airportName)}
                         </div>
                       </div>
                     </td>
-                    <td className="py-2.5 px-2.5 text-right font-bold tabular-nums text-[14px] align-middle">{airline.ticker || '-'}</td>
-                    <td className="py-2.5 px-2.5 text-[13px] text-muted-foreground align-middle">
-                      <span className="block whitespace-normal break-words leading-tight" title={airline.exchange || '-'}>
-                        {airline.exchange || '-'}
-                      </span>
+                    <td className="py-2.5 px-2.5">
+                      <div className="font-medium truncate">{airport.city}</div>
+                      <div className="text-[13px] text-muted-foreground truncate">{airport.country}</div>
                     </td>
-                    <td className="py-2.5 px-2.5 text-right font-bold tabular-nums text-[15px] align-middle">{airline.flights.toLocaleString()}</td>
-                    <td className="py-2.5 px-2.5 text-right align-middle">
-                      <ChangePill pct={pct} num={num} active timeMode={timeMode} />
+                    <td className="py-2.5 px-2.5 text-right font-bold tabular-nums text-primary">{airport.flights.toLocaleString()}</td>
+                    <td className="py-2.5 px-2.5 text-right">
+                      {renderRankDeltaPill(airport.deltaFlights, airport.deltaPercent)}
                     </td>
                   </tr>
-                );
-              })}
+                ))
+              )}
             </tbody>
           </table>
         </div>

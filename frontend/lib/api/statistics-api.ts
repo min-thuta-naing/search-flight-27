@@ -124,6 +124,38 @@ export interface DashboardContinentsResponse {
   continents: DashboardContinentCardResponse[];
 }
 
+export interface DashboardTopCountryRankResponse {
+  countryCode: string | null;
+  name: string;
+  airportCount: number;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+}
+
+export interface DashboardTopAirportRankResponse {
+  iata: string;
+  airportName: string;
+  city: string;
+  country: string;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+}
+
+export interface DashboardTopRanksResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  countries: DashboardTopCountryRankResponse[];
+  airports: DashboardTopAirportRankResponse[];
+}
+
 export interface DashboardQueryOptions {
   date?: string;
   windowDays?: number;
@@ -197,6 +229,26 @@ export class StatisticsApi {
     } = options;
 
     return apiClient.get<DashboardContinentsResponse>('/statistics/dashboard-continents', {
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal });
+  }
+
+  /**
+   * Get top country and airport ranks for the world dashboard
+   */
+  async getDashboardTopRanks(options: DashboardQueryOptions = {}): Promise<DashboardTopRanksResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+    } = options;
+
+    return apiClient.get<DashboardTopRanksResponse>('/statistics/dashboard-top-ranks', {
       date,
       window_days: windowDays,
       start_date: startDate,

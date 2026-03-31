@@ -3,5 +3,5 @@ export const KPI_ACCENT = {
   flights: 'var(--chart-1)',
   airports: 'var(--chart-2)',
   average: 'var(--chart-3)',
-  highlight: 'var(--chart-5)',
+  highlight: '#16a34a',
 } as const;

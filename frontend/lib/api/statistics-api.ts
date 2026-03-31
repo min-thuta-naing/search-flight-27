@@ -156,6 +156,37 @@ export interface DashboardTopRanksResponse {
   airports: DashboardTopAirportRankResponse[];
 }
 
+export interface DashboardTopCountriesResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  countries: DashboardTopCountryRankResponse[];
+}
+
+export interface DashboardTopAirportsResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  airports: DashboardTopAirportRankResponse[];
+}
+
+export interface DashboardTopDestinationsResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  departures: DashboardTopAirportRankResponse[];
+  arrivals: DashboardTopAirportRankResponse[];
+}
+
 export interface DashboardQueryOptions {
   date?: string;
   windowDays?: number;
@@ -249,6 +280,66 @@ export class StatisticsApi {
     } = options;
 
     return apiClient.get<DashboardTopRanksResponse>('/statistics/dashboard-top-ranks', {
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal });
+  }
+
+  /**
+   * Get top countries for the world dashboard
+   */
+  async getDashboardTopCountries(options: DashboardQueryOptions = {}): Promise<DashboardTopCountriesResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+    } = options;
+
+    return apiClient.get<DashboardTopCountriesResponse>('/statistics/dashboard-top-countries', {
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal });
+  }
+
+  /**
+   * Get top airports for the world dashboard
+   */
+  async getDashboardTopAirports(options: DashboardQueryOptions = {}): Promise<DashboardTopAirportsResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+    } = options;
+
+    return apiClient.get<DashboardTopAirportsResponse>('/statistics/dashboard-top-airports', {
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal });
+  }
+
+  /**
+   * Get top destinations for the world dashboard
+   */
+  async getDashboardTopDestinations(options: DashboardQueryOptions = {}): Promise<DashboardTopDestinationsResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+    } = options;
+
+    return apiClient.get<DashboardTopDestinationsResponse>('/statistics/dashboard-top-destinations', {
       date,
       window_days: windowDays,
       start_date: startDate,

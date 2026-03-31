@@ -306,26 +306,26 @@ export function parsePercentFromDelta(delta: string): number | null {
 }
 
 export function growthTextClass(kind: GrowthDeltaKind): string {
-  if (kind === 'up') return 'text-accent';
+  if (kind === 'up') return 'text-[#16a34a]';
   if (kind === 'down') return 'text-destructive';
   return 'text-primary';
 }
 
 export function growthCardBadgeClasses(kind: GrowthDeltaKind): string {
-  if (kind === 'up') return 'bg-accent/15 text-accent';
+  if (kind === 'up') return 'bg-[#16a34a]/15 text-[#16a34a]';
   if (kind === 'down') return 'bg-destructive/15 text-destructive';
   return 'bg-primary/15 text-primary';
 }
 
 export function growthPillSurfaceClasses(kind: GrowthDeltaKind): string {
-  if (kind === 'up') return 'bg-accent/10 text-accent';
+  if (kind === 'up') return 'bg-[#16a34a]/10 text-[#16a34a]';
   if (kind === 'down') return 'bg-destructive/10 text-destructive';
   return 'bg-primary/10 text-primary';
 }
 
 /** Solid bar fill for compact charts (e.g. route growth bars). */
 export function growthBarFillClasses(kind: GrowthDeltaKind): string {
-  if (kind === 'up') return 'bg-accent';
+  if (kind === 'up') return 'bg-[#16a34a]';
   if (kind === 'down') return 'bg-destructive';
   return 'bg-primary';
 }

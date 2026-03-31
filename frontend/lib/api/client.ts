@@ -12,6 +12,10 @@ class ApiClient {
     options: RequestInit & { signal?: AbortSignal } = {}
   ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`
+    console.debug('[ApiClient] request start', {
+      method: options.method || 'GET',
+      url,
+    })
 
     // Create AbortController for timeout
     const controller = new AbortController()
@@ -30,6 +34,12 @@ class ApiClient {
       })
 
       clearTimeout(timeoutId)
+      console.debug('[ApiClient] response received', {
+        method: options.method || 'GET',
+        url,
+        status: response.status,
+        statusText: response.statusText,
+      })
 
       if (!response.ok) {
         const error = new Error(`API Error: ${response.status} ${response.statusText}`) as Error & {

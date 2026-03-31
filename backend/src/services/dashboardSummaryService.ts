@@ -5,6 +5,9 @@ export interface DashboardContinentSummary {
   key: ContinentMeta['key'];
   label: string;
   icon: string;
+  airportCount: number;
+  countryCount: number;
+  routeCount: number;
   flights: number;
   previousFlights: number;
   deltaFlights: number;
@@ -66,6 +69,12 @@ type AirportRow = {
   country_code: string | null;
   country_name: string | null;
   country: string | null;
+};
+
+type RouteRow = {
+  country_code: string | null;
+  country_name: string | null;
+  route_id: number | string | null;
 };
 
 interface WorldRangeInput {
@@ -290,6 +299,40 @@ function sumAirportRows(rows: AirportRow[]) {
   return grouped;
 }
 
+function sumRouteRows(rows: RouteRow[]) {
+  const grouped = new Map<
+    ContinentMeta['key'],
+    {
+      routeIds: Set<string>;
+      meta: ContinentMeta;
+    }
+  >();
+
+  for (const meta of CONTINENT_ORDER) {
+    grouped.set(meta.key, {
+      routeIds: new Set<string>(),
+      meta,
+    });
+  }
+
+  for (const row of rows) {
+    const routeId = row.route_id == null ? '' : String(row.route_id).trim();
+    if (!routeId) {
+      continue;
+    }
+
+    const meta = getContinentMeta(row.country_code, row.country_name);
+    const existing = grouped.get(meta.key);
+    if (!existing) {
+      continue;
+    }
+
+    existing.routeIds.add(routeId);
+  }
+
+  return grouped;
+}
+
 function formatDeltaLine(deltaFlights: number, deltaPercent: number) {
   const deltaSign = deltaFlights >= 0 ? '+' : '';
   const pctSign = deltaPercent >= 0 ? '+' : '';
@@ -339,6 +382,39 @@ export class DashboardSummaryService {
         ) AS active_airports
     `;
 
+    const airportsQuery = `
+      SELECT
+        country_code,
+        country_name,
+        country
+      FROM airports
+    `;
+
+    const routesQuery = `
+      SELECT
+        a.country_code,
+        COALESCE(a.country_name, a.country, a.code) AS country_name,
+        flight_rows.route_id
+      FROM (
+        SELECT route_id, dep_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT route_id, arr_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT route_id, dep_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT route_id, arr_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+      ) flight_rows
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
+    `;
+
     const continentQuery = `
       SELECT
         a.country_code,
@@ -357,25 +433,42 @@ export class DashboardSummaryService {
       GROUP BY a.country_code, COALESCE(a.country_name, a.country, a.code)
     `;
 
-    const [summaryResult, currentContinentResult, previousContinentResult] = await Promise.all([
+    const [summaryResult, currentContinentResult, previousContinentResult, airportsResult, routesResult] = await Promise.all([
       pool.query(totalFlightsQuery, [periodStart, periodEnd]),
       pool.query(continentQuery, [periodStart, periodEnd]),
       pool.query(continentQuery, [comparisonStart, comparisonEnd]),
+      pool.query(airportsQuery),
+      pool.query(routesQuery, [periodStart, periodEnd]),
     ]);
 
     const totalFlights = Number(summaryResult.rows[0]?.total_flights) || 0;
     const activeAirports = Number(summaryResult.rows[0]?.active_airports) || 0;
     const averageFlightsPerDay = Math.round(totalFlights / (windowDays * 2 + 1));
+    const airportMap = sumAirportRows(airportsResult.rows);
+    const routeMap = sumRouteRows(routesResult.rows);
 
     const continentBreakdown = mergeCurrentAndPrevious(
       currentContinentResult.rows,
       previousContinentResult.rows,
-    );
+    ).map((row) => {
+      const airportSummary = airportMap.get(row.key);
+      const routeSummary = routeMap.get(row.key);
+
+      return {
+        ...row,
+        airportCount: airportSummary?.airportCount || 0,
+        countryCount: airportSummary?.countryKeys.size || 0,
+        routeCount: routeSummary?.routeIds.size || 0,
+      };
+    });
 
     const busiestContinent = continentBreakdown[0] || {
       key: 'Other' as const,
       label: 'Other',
       icon: '🌐',
+      airportCount: 0,
+      countryCount: 0,
+      routeCount: 0,
       flights: 0,
       previousFlights: 0,
       deltaFlights: 0,

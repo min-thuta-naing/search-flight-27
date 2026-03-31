@@ -70,6 +70,9 @@ export interface DashboardSummaryResponse {
     key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
     label: string;
     icon: string;
+    airportCount: number;
+    countryCount: number;
+    routeCount: number;
     flights: number;
     previousFlights: number;
     deltaFlights: number;
@@ -79,6 +82,9 @@ export interface DashboardSummaryResponse {
     key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
     label: string;
     icon: string;
+    airportCount: number;
+    countryCount: number;
+    routeCount: number;
     flights: number;
     previousFlights: number;
     deltaFlights: number;
@@ -93,6 +99,7 @@ export interface DashboardContinentCardResponse {
   airports: string;
   airportCount: number;
   countryCount: number;
+  routeCount?: number;
   flights: number;
   previousFlights: number;
   deltaFlights: number;

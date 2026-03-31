@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { addDays, differenceInCalendarDays, format, subDays } from 'date-fns';
 import { ChevronDown } from 'lucide-react';
 import type { DateRange } from 'react-day-picker';
@@ -14,7 +14,6 @@ import {
   WORLD_TOP_ARR,
   CONTINENTS,
   TOP_AIRLINES_WORLD,
-  compareToPriorPeriodPhraseTh,
   fmtWorldKpiDeltaTh,
   getChangeForMode,
   growthDeltaTypeFromPct,
@@ -33,6 +32,7 @@ import type { KPIItem } from './DrillDownDashboard';
 import { cn } from '@/lib/utils';
 
 type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';
+type RankSortKey = 'label' | 'routeCount' | 'flights' | 'deltaPercent';
 
 const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   focus: '± 15 วัน',
@@ -69,7 +69,7 @@ function buildPresetRange(mode: RangePreset, baseDate = new Date()): DateRange {
     return { from: baseDate, to: addDays(baseDate, 364) };
   }
 
-  return { from: subDays(baseDate, 1), to: addDays(baseDate, 365) };
+  return { from: subDays(baseDate, 3650), to: baseDate };
 }
 
 function formatRangeLabel(range?: DateRange) {
@@ -82,10 +82,19 @@ function formatRangeLabel(range?: DateRange) {
   return `${from} – ${to}`;
 }
 
+function parseContinentAirportCount(value: string) {
+  const match = value.match(/([\d,]+)\s*สนามบิน/);
+  return match ? Number(match[1].replace(/,/g, '')) : 0;
+}
+
+function parseContinentCountryCount(value: string) {
+  const match = value.match(/([\d,]+)\s*ประเทศ/);
+  return match ? Number(match[1].replace(/,/g, '')) : 0;
+}
+
 export function WorldView() {
   const { drillTo, timeMode } = useDrillDown();
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
-  const [continentCards, setContinentCards] = useState<DashboardContinentCardResponse[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [dateRange, setDateRange] = useState<DateRange | undefined>(() => buildPresetRange('focus'));
   const [durationMode, setDurationMode] = useState<RangePreset | null>('focus');
@@ -94,6 +103,20 @@ export function WorldView() {
   const [fromCalendarMonth, setFromCalendarMonth] = useState(() => subDays(new Date(), 15));
   const [toCalendarMonth, setToCalendarMonth] = useState(() => addDays(new Date(), 15));
   const [dateError, setDateError] = useState(false);
+  const [rankSortKey, setRankSortKey] = useState<RankSortKey>('flights');
+  const [rankSortDirection, setRankSortDirection] = useState<'asc' | 'desc'>('desc');
+  const selectPreset = (mode: RangePreset) => {
+    applyPresetRange(
+      mode,
+      setDateRange,
+      setDurationMode,
+      setFromCalendarMonth,
+      setToCalendarMonth,
+      setShowCustomDateRange,
+      setIsExtendedRangeOpen,
+      setDateError,
+    );
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -110,23 +133,29 @@ export function WorldView() {
 
     const startDate = formatLocalDateInput(dateRange.from);
     const endDate = formatLocalDateInput(dateRange.to || dateRange.from);
-
-    Promise.all([
-      statisticsApi.getDashboardSummary({ startDate, endDate }),
-      statisticsApi.getDashboardContinents({ startDate, endDate }),
-    ])
-      .then(([summaryData, continentData]) => {
+    console.debug('[WorldView] calling dashboard-summary', { startDate, endDate });
+    void statisticsApi.getDashboardSummary({ startDate, endDate })
+      .then((summaryData) => {
         if (!mounted) return;
         setSummary(summaryData);
-        setContinentCards(continentData.continents);
-        setLoading(false);
+        console.debug('[WorldView] summary fetch success', {
+          totalFlights: summaryData.totalFlights,
+          busiestContinent: summaryData.busiestContinent?.label,
+        });
       })
       .catch((error) => {
-        console.warn('[WorldView] Failed to load dashboard data from API, falling back to mock data.', error);
+        console.warn('[WorldView] Failed to load dashboard data from API, falling back to mock data.', {
+          status: (error as { status?: number }).status,
+          statusText: (error as { statusText?: string }).statusText,
+          message: error instanceof Error ? error.message : String(error),
+        });
         if (!mounted) return;
         setSummary(null);
-        setContinentCards(null);
-        setLoading(false);
+      })
+      .finally(() => {
+        if (mounted) {
+          setLoading(false);
+        }
       });
 
     return () => {
@@ -145,30 +174,90 @@ export function WorldView() {
     fallbackChange.num,
     timeMode,
   );
-  const continentList: DashboardContinentCardResponse[] = continentCards ?? CONTINENTS.map((continent) => ({
-    key: continent.name as DashboardContinentCardResponse['key'],
-    label: continent.name,
-    icon: continent.icon,
-    airports: continent.airports,
-    airportCount: 0,
-    countryCount: 0,
-    flights: continent.flights,
-    previousFlights: 0,
-    deltaFlights: continent.yoyN,
-    deltaPercent: continent.yoy,
-    delta: continent.delta,
-    highlight: !!continent.highlight,
-    yoy: continent.yoy,
-    yoyN: continent.yoyN,
-    mom: continent.mom,
-    momN: continent.momN,
-    wow: continent.wow,
-    wowN: continent.wowN,
-  }));
+  const continentList: DashboardContinentCardResponse[] = summary
+    ? summary.continentBreakdown.map((continent) => ({
+        key: continent.key as DashboardContinentCardResponse['key'],
+        label: continent.label,
+        icon: continent.icon,
+        airports: `${continent.airportCount.toLocaleString()} สนามบิน · ${continent.countryCount.toLocaleString()} ประเทศ`,
+        airportCount: continent.airportCount,
+        countryCount: continent.countryCount,
+        routeCount: continent.routeCount,
+        flights: continent.flights,
+        previousFlights: continent.previousFlights,
+        deltaFlights: continent.deltaFlights,
+        deltaPercent: continent.deltaPercent,
+        delta: `${continent.deltaFlights >= 0 ? '▲' : '▼'} ${continent.deltaFlights >= 0 ? '+' : ''}${continent.deltaFlights.toLocaleString()} (${continent.deltaPercent >= 0 ? '+' : ''}${continent.deltaPercent.toFixed(1)}%)`,
+        highlight: summary.busiestContinent.key === continent.key,
+        yoy: continent.deltaPercent,
+        yoyN: continent.deltaFlights,
+        mom: continent.deltaPercent,
+        momN: continent.deltaFlights,
+        wow: continent.deltaPercent,
+        wowN: continent.deltaFlights,
+      }))
+    : CONTINENTS.map((continent) => ({
+        key: continent.name as DashboardContinentCardResponse['key'],
+        label: continent.name,
+        icon: continent.icon,
+        airports: continent.airports,
+        airportCount: parseContinentAirportCount(continent.airports),
+        countryCount: parseContinentCountryCount(continent.airports),
+        routeCount: Math.max(1, Math.round(parseContinentAirportCount(continent.airports) * 2)),
+        flights: continent.flights,
+        previousFlights: 0,
+        deltaFlights: continent.yoyN,
+        deltaPercent: continent.yoy,
+        delta: continent.delta,
+        highlight: !!continent.highlight,
+        yoy: continent.yoy,
+        yoyN: continent.yoyN,
+        mom: continent.mom,
+        momN: continent.momN,
+        wow: continent.wow,
+        wowN: continent.wowN,
+      }));
+  const renderContinentList = continentList.filter((continent) => continent.key !== 'Other');
+
+  const continentRankList = useMemo(() => {
+    const direction = rankSortDirection === 'asc' ? 1 : -1;
+
+    return [...renderContinentList].sort((a, b) => {
+      if (rankSortKey === 'label') {
+        return a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }) * direction;
+      }
+
+      if (rankSortKey === 'routeCount') {
+        return ((a.routeCount ?? 0) - (b.routeCount ?? 0)) * direction;
+      }
+
+      if (rankSortKey === 'deltaPercent') {
+        return (a.deltaPercent - b.deltaPercent) * direction;
+      }
+
+      return (a.flights - b.flights || (a.routeCount ?? 0) - (b.routeCount ?? 0)) * direction;
+    });
+  }, [rankSortDirection, rankSortKey, renderContinentList]);
+
+  const handleRankSort = (key: RankSortKey) => {
+    setRankSortKey((currentKey) => {
+      if (currentKey === key) {
+        setRankSortDirection((currentDirection) => (currentDirection === 'asc' ? 'desc' : 'asc'));
+        return currentKey;
+      }
+
+      setRankSortDirection(key === 'label' ? 'asc' : 'desc');
+      return key;
+    });
+  };
 
   const totalFlights = summary?.totalFlights ?? fallbackTotalFlights;
   const activeAirports = summary?.activeAirports ?? fallbackActiveAirports;
   const avgPerDay = summary?.averageFlightsPerDay ?? fallbackAvgPerDay;
+  const currentPresetDays = dateRange?.from && dateRange?.to
+    ? differenceInCalendarDays(dateRange.to, dateRange.from) + 1
+    : 1;
+  const previousPresetDaysText = `${currentPresetDays} วันก่อนหน้า`;
 
   const kpis: KPIItem[] = summary
     ? [
@@ -199,7 +288,7 @@ export function WorldView() {
         {
           label: 'ทวีปที่คึกคักที่สุด',
           value: `${summary.busiestContinent.icon} ${summary.busiestContinent.label}`,
-          delta: `${summary.busiestContinent.deltaFlights >= 0 ? '▲' : '▼'} ${summary.busiestContinent.deltaFlights >= 0 ? '+' : ''}${summary.busiestContinent.deltaFlights.toLocaleString()} (${summary.busiestContinent.deltaPercent >= 0 ? '+' : ''}${summary.busiestContinent.deltaPercent.toFixed(1)}%) · ${summary.busiestContinent.previousFlights.toLocaleString()} ก่อนหน้า`,
+          delta: `${summary.busiestContinent.deltaFlights >= 0 ? '▲' : '▼'} ${summary.busiestContinent.deltaFlights >= 0 ? '+' : ''}${summary.busiestContinent.deltaFlights.toLocaleString()} flights · เทียบกับช่วง ${previousPresetDaysText}`,
           deltaType: summary.busiestContinent.deltaFlights >= 0 ? 'up' : 'down',
           accentColor: KPI_ACCENT.highlight,
         },
@@ -231,7 +320,7 @@ export function WorldView() {
         {
           label: 'ทวีปที่คึกคักที่สุด',
           value: `${fallbackBusiestContinent.icon} ${fallbackBusiestContinent.name}`,
-          delta: `${fallbackDeltaLine} · ${compareToPriorPeriodPhraseTh(timeMode)}`,
+          delta: `mock สำรอง · ${fallbackDeltaLine} · เทียบกับช่วง ${previousPresetDaysText}`,
           deltaType: fallbackGrowthTone,
           accentColor: KPI_ACCENT.highlight,
         },
@@ -262,7 +351,7 @@ export function WorldView() {
               variant={durationMode === 'focus' ? 'default' : 'outline'}
               size="sm"
               className="h-9 px-3.5 text-xs sm:text-sm"
-              onClick={() => applyPresetRange('focus', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+              onClick={() => selectPreset('focus')}
             >
               ± 15 วัน
             </Button>
@@ -271,7 +360,7 @@ export function WorldView() {
               variant={durationMode === '7' ? 'default' : 'outline'}
               size="sm"
               className="h-9 px-3.5 text-xs sm:text-sm"
-              onClick={() => applyPresetRange('7', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+              onClick={() => selectPreset('7')}
             >
               7 วัน
             </Button>
@@ -280,7 +369,7 @@ export function WorldView() {
               variant={durationMode === '30' ? 'default' : 'outline'}
               size="sm"
               className="h-9 px-3.5 text-xs sm:text-sm"
-              onClick={() => applyPresetRange('30', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+              onClick={() => selectPreset('30')}
             >
               30 วัน
             </Button>
@@ -289,7 +378,7 @@ export function WorldView() {
               variant={durationMode === 'all' ? 'default' : 'outline'}
               size="sm"
               className="h-9 px-3.5 text-xs sm:text-sm"
-              onClick={() => applyPresetRange('all', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+              onClick={() => selectPreset('all')}
             >
               ทั้งหมด
             </Button>
@@ -312,7 +401,7 @@ export function WorldView() {
                     variant={durationMode === '90' ? 'default' : 'ghost'}
                     size="sm"
                     className="justify-start"
-                    onClick={() => applyPresetRange('90', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+                    onClick={() => selectPreset('90')}
                   >
                     ไตรมาสนี้
                   </Button>
@@ -321,7 +410,7 @@ export function WorldView() {
                     variant={durationMode === '180' ? 'default' : 'ghost'}
                     size="sm"
                     className="justify-start"
-                    onClick={() => applyPresetRange('180', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+                    onClick={() => selectPreset('180')}
                   >
                     6 เดือน
                   </Button>
@@ -330,7 +419,7 @@ export function WorldView() {
                     variant={durationMode === '365' ? 'default' : 'ghost'}
                     size="sm"
                     className="justify-start"
-                    onClick={() => applyPresetRange('365', setDateRange, setDurationMode, setFromCalendarMonth, setToCalendarMonth, setShowCustomDateRange, setIsExtendedRangeOpen, setDateError)}
+                    onClick={() => selectPreset('365')}
                   >
                     1 ปี
                   </Button>
@@ -438,7 +527,7 @@ export function WorldView() {
 
           {/* Continent Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {continentList.map((continent) => {
+            {renderContinentList.map((continent) => {
               const continentKey = continent.key as DashboardContinentCardResponse['key'];
               const isBusiest = continent.highlight || summary?.busiestContinent.key === continentKey;
               const continentName = continent.label;
@@ -476,6 +565,9 @@ export function WorldView() {
                         <div className="text-xl sm:text-2xl font-bold text-primary">{continent.flights.toLocaleString()}</div>
                         <div className="text-[13px] sm:text-[15px] text-muted-foreground">เที่ยวบิน</div>
                       </div>
+                      <div className="mt-2 text-[13px] sm:text-[14px] text-muted-foreground">
+                        {(continent.airportCount || parseContinentAirportCount(continent.airports)).toLocaleString()} สนามบิน · {(continent.countryCount || parseContinentCountryCount(continent.airports)).toLocaleString()} ประเทศ
+                      </div>
                     </div>
                     <div className="shrink-0 text-[32px] sm:text-[40px] ml-2" role="img" aria-hidden="true">
                       {continent.icon}
@@ -488,6 +580,132 @@ export function WorldView() {
               );
             })}
           </div>
+
+          <section>
+            <div className="overflow-hidden rounded-[10px] border border-border bg-card">
+              <div className="flex flex-col gap-1 border-b border-border px-4 py-4 sm:flex-row sm:items-end sm:justify-between sm:px-5">
+                <div>
+                  <h3 className="text-[16px] font-bold">Rank ทวีป</h3>
+                  <p className="text-sm text-muted-foreground">
+                    เรียงลำดับตามชื่อทวีป, จำนวนเส้นทางการบิน, เที่ยวบินทั้งหมด หรือ KPI จากช่วงวันที่ที่เลือก
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    ชุดข้อมูล `Other` ยังเก็บไว้ใน summary สำหรับ debug mapping แต่จะไม่แสดงในตารางนี้
+                  </p>
+                </div>
+                <span className="text-sm text-muted-foreground">คลิกหัวตารางเพื่อ sort</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30">
+                      <th className="px-4 py-3 text-left font-bold text-muted-foreground">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          onClick={() => handleRankSort('label')}
+                        >
+                          <span>ชื่อทวีป</span>
+                          <span aria-hidden="true">{rankSortKey === 'label' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
+                        </button>
+                      </th>
+                      <th className="px-4 py-3 text-right font-bold text-muted-foreground">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          onClick={() => handleRankSort('routeCount')}
+                        >
+                          <span>จำนวนเส้นทางการบิน</span>
+                          <span aria-hidden="true">{rankSortKey === 'routeCount' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
+                        </button>
+                      </th>
+                      <th className="px-4 py-3 text-right font-bold text-muted-foreground">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          onClick={() => handleRankSort('flights')}
+                        >
+                          <span>เที่ยวบินทั้งหมด</span>
+                          <span aria-hidden="true">{rankSortKey === 'flights' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
+                        </button>
+                      </th>
+                      <th className="px-4 py-3 text-right font-bold text-muted-foreground">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          onClick={() => handleRankSort('deltaPercent')}
+                        >
+                          <span>KPI เพิ่มขึ้น/ลดลง</span>
+                          <span aria-hidden="true">{rankSortKey === 'deltaPercent' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
+                        </button>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading ? (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-10">
+                          <div className="flex items-center justify-center gap-3 text-muted-foreground">
+                            <span className="h-5 w-5 rounded-full border-2 border-emerald-500/30 border-t-emerald-500 animate-spin" />
+                            <span className="text-sm">กำลังโหลด rank ทวีป</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      continentRankList.map((continent) => {
+                        const continentKey = continent.key as DashboardContinentCardResponse['key'];
+                        const isBusiest = continent.highlight || summary?.busiestContinent.key === continentKey;
+                        const deltaSign = continent.deltaPercent >= 0 ? '+' : '';
+                        const deltaArrow = continent.deltaPercent >= 0 ? '▲' : '▼';
+                        return (
+                          <tr
+                            key={continentKey}
+                            className={`border-b border-border/60 last:border-b-0 transition-colors hover:bg-primary/[0.03] ${isBusiest ? 'bg-primary/[0.02]' : ''}`}
+                          >
+                            <td className="px-4 py-3">
+                              <button
+                                type="button"
+                                className="flex min-w-0 items-center gap-2 text-left"
+                                onClick={() =>
+                                  drillTo('continent', {
+                                    continent: {
+                                      name: continent.label,
+                                      icon: continent.icon,
+                                      airports: continent.airports,
+                                      flights: continent.flights,
+                                      delta: continent.delta,
+                                      highlight: isBusiest,
+                                      yoy: continent.deltaPercent,
+                                      yoyN: continent.deltaFlights,
+                                      mom: continent.deltaPercent,
+                                      momN: continent.deltaFlights,
+                                      wow: continent.deltaPercent,
+                                      wowN: continent.deltaFlights,
+                                    } as any,
+                                  })
+                                }
+                              >
+                                <span className="text-base sm:text-lg" aria-hidden="true">{continent.icon}</span>
+                                <span className="truncate font-semibold text-foreground">{continent.label}</span>
+                              </button>
+                            </td>
+                            <td className="px-4 py-3 text-right tabular-nums">{(continent.routeCount ?? continent.airportCount).toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right tabular-nums font-bold text-primary">{continent.flights.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right">
+                              <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-sm font-semibold ${continent.deltaPercent >= 0 ? 'bg-emerald-500/10 text-emerald-600' : 'bg-rose-500/10 text-rose-600'}`}>
+                                <span aria-hidden="true">{deltaArrow}</span>
+                                <span>{deltaSign}{continent.deltaPercent.toFixed(1)}%</span>
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
 
           <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
             <BusiestAirportsTable />

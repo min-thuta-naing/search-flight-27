@@ -2322,7 +2322,7 @@ export class DashboardSummaryService {
     input: ContinentTrendAveragesInput,
   ): Promise<DashboardContinentTrendsResponse> {
     const continentMeta = resolveContinentMetaFromInput(input.continent);
-    const cacheKey = `${continentMeta.key}|v3`;
+    const cacheKey = `${continentMeta.key}|v4`;
 
     const cached = continentTrendsCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -2369,64 +2369,66 @@ export class DashboardSummaryService {
     }
 
     const dayAverageQuery = `
-      WITH continent_airports AS (
-        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
-        FROM airports
-        WHERE UPPER(TRIM(code)) = ANY($1::text[])
-      ),
-      flight_dates AS (
-        SELECT departure_date::date AS flight_date
+      WITH flight_events AS (
+        SELECT
+          departure_date::date AS flight_date,
+          COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
+          CASE
+            WHEN dep_airport IS NOT NULL
+              AND TRIM(dep_airport) <> ''
+              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END AS outbound_count,
+          CASE
+            WHEN arr_airport IS NOT NULL
+              AND TRIM(arr_airport) <> ''
+              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END AS inbound_count
         FROM departure_flight_paths
         WHERE departure_date IS NOT NULL
-        UNION
-        SELECT departure_date::date AS flight_date
+          AND (
+            (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
+            OR
+            (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
+          )
+
+        UNION ALL
+
+        SELECT
+          departure_date::date AS flight_date,
+          COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
+          CASE
+            WHEN dep_airport IS NOT NULL
+              AND TRIM(dep_airport) <> ''
+              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END AS outbound_count,
+          CASE
+            WHEN arr_airport IS NOT NULL
+              AND TRIM(arr_airport) <> ''
+              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END AS inbound_count
         FROM arrival_flight_paths
         WHERE departure_date IS NOT NULL
+          AND (
+            (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
+            OR
+            (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
+          )
       ),
       day_span AS (
-        SELECT GREATEST(COUNT(*)::numeric, 1) AS days_count
-        FROM flight_dates
-      ),
-      flight_rows AS (
-        SELECT
-          COALESCE(EXTRACT(HOUR FROM d.departure_time)::int, 0) AS hour_num,
-          0::int AS inbound_count,
-          1::int AS outbound_count
-        FROM departure_flight_paths d
-        JOIN continent_airports ca ON UPPER(TRIM(d.dep_airport)) = ca.airport_code
-        WHERE d.dep_airport IS NOT NULL AND TRIM(d.dep_airport) <> ''
-        UNION ALL
-        SELECT
-          COALESCE(EXTRACT(HOUR FROM d.departure_time)::int, 0) AS hour_num,
-          1::int AS inbound_count,
-          0::int AS outbound_count
-        FROM departure_flight_paths d
-        JOIN continent_airports ca ON UPPER(TRIM(d.arr_airport)) = ca.airport_code
-        WHERE d.arr_airport IS NOT NULL AND TRIM(d.arr_airport) <> ''
-        UNION ALL
-        SELECT
-          COALESCE(EXTRACT(HOUR FROM a.departure_time)::int, 0) AS hour_num,
-          0::int AS inbound_count,
-          1::int AS outbound_count
-        FROM arrival_flight_paths a
-        JOIN continent_airports ca ON UPPER(TRIM(a.dep_airport)) = ca.airport_code
-        WHERE a.dep_airport IS NOT NULL AND TRIM(a.dep_airport) <> ''
-        UNION ALL
-        SELECT
-          COALESCE(EXTRACT(HOUR FROM a.departure_time)::int, 0) AS hour_num,
-          1::int AS inbound_count,
-          0::int AS outbound_count
-        FROM arrival_flight_paths a
-        JOIN continent_airports ca ON UPPER(TRIM(a.arr_airport)) = ca.airport_code
-        WHERE a.arr_airport IS NOT NULL AND TRIM(a.arr_airport) <> ''
+        SELECT GREATEST(COUNT(DISTINCT flight_date)::numeric, 1) AS days_count
+        FROM flight_events
       ),
       bucketed AS (
         SELECT
-          FLOOR(fr.hour_num / 4.0)::int AS bucket_idx,
-          SUM(fr.inbound_count)::numeric AS inbound_total,
-          SUM(fr.outbound_count)::numeric AS outbound_total
-        FROM flight_rows fr
-        GROUP BY FLOOR(fr.hour_num / 4.0)::int
+          FLOOR(hour_num / 4.0)::int AS bucket_idx,
+          SUM(inbound_count)::numeric AS inbound_total,
+          SUM(outbound_count)::numeric AS outbound_total
+        FROM flight_events
+        GROUP BY FLOOR(hour_num / 4.0)::int
       ),
       bucket_grid AS (
         SELECT generate_series(0, 5)::int AS bucket_idx
@@ -2442,70 +2444,63 @@ export class DashboardSummaryService {
     `;
 
     const monthAverageQueryTypedDate = `
-      WITH outbound_year_month AS (
+      WITH flight_events AS (
         SELECT
           EXTRACT(YEAR FROM departure_date)::int AS year_num,
           EXTRACT(MONTH FROM departure_date)::int AS month_num,
-          COUNT(*)::numeric AS outbound_total
+          CASE
+            WHEN dep_airport IS NOT NULL
+              AND TRIM(dep_airport) <> ''
+              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END::numeric AS outbound_total,
+          CASE
+            WHEN arr_airport IS NOT NULL
+              AND TRIM(arr_airport) <> ''
+              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END::numeric AS inbound_total
         FROM departure_flight_paths
         WHERE departure_date IS NOT NULL
-          AND dep_airport IS NOT NULL
-          AND TRIM(dep_airport) <> ''
-          AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
-        GROUP BY EXTRACT(YEAR FROM departure_date)::int, EXTRACT(MONTH FROM departure_date)::int
+          AND (
+            (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
+            OR
+            (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
+          )
 
         UNION ALL
 
         SELECT
           EXTRACT(YEAR FROM departure_date)::int AS year_num,
           EXTRACT(MONTH FROM departure_date)::int AS month_num,
-          COUNT(*)::numeric AS outbound_total
+          CASE
+            WHEN dep_airport IS NOT NULL
+              AND TRIM(dep_airport) <> ''
+              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END::numeric AS outbound_total,
+          CASE
+            WHEN arr_airport IS NOT NULL
+              AND TRIM(arr_airport) <> ''
+              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END::numeric AS inbound_total
         FROM arrival_flight_paths
         WHERE departure_date IS NOT NULL
-          AND dep_airport IS NOT NULL
-          AND TRIM(dep_airport) <> ''
-          AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
-        GROUP BY EXTRACT(YEAR FROM departure_date)::int, EXTRACT(MONTH FROM departure_date)::int
-      ),
-      inbound_year_month AS (
-        SELECT
-          EXTRACT(YEAR FROM departure_date)::int AS year_num,
-          EXTRACT(MONTH FROM departure_date)::int AS month_num,
-          COUNT(*)::numeric AS inbound_total
-        FROM departure_flight_paths
-        WHERE departure_date IS NOT NULL
-          AND arr_airport IS NOT NULL
-          AND TRIM(arr_airport) <> ''
-          AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
-        GROUP BY EXTRACT(YEAR FROM departure_date)::int, EXTRACT(MONTH FROM departure_date)::int
-
-        UNION ALL
-
-        SELECT
-          EXTRACT(YEAR FROM departure_date)::int AS year_num,
-          EXTRACT(MONTH FROM departure_date)::int AS month_num,
-          COUNT(*)::numeric AS inbound_total
-        FROM arrival_flight_paths
-        WHERE departure_date IS NOT NULL
-          AND arr_airport IS NOT NULL
-          AND TRIM(arr_airport) <> ''
-          AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
-        GROUP BY EXTRACT(YEAR FROM departure_date)::int, EXTRACT(MONTH FROM departure_date)::int
+          AND (
+            (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
+            OR
+            (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
+          )
       ),
       monthly_totals AS (
         SELECT
-          ym.year_num,
-          ym.month_num,
-          SUM(ym.inbound_total)::numeric AS inbound_total,
-          SUM(ym.outbound_total)::numeric AS outbound_total
-        FROM (
-          SELECT year_num, month_num, inbound_total, 0::numeric AS outbound_total
-          FROM inbound_year_month
-          UNION ALL
-          SELECT year_num, month_num, 0::numeric AS inbound_total, outbound_total
-          FROM outbound_year_month
-        ) ym
-        GROUP BY ym.year_num, ym.month_num
+          year_num,
+          month_num,
+          SUM(inbound_total)::numeric AS inbound_total,
+          SUM(outbound_total)::numeric AS outbound_total
+        FROM flight_events
+        GROUP BY year_num, month_num
       ),
       month_avg AS (
         SELECT
@@ -2528,78 +2523,75 @@ export class DashboardSummaryService {
     `;
 
     const monthAverageQueryTextDate = `
-      WITH outbound_year_month AS (
+      WITH departure_events AS (
         SELECT
-          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS year_num,
-          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS month_num,
-          COUNT(*)::numeric AS outbound_total
+          TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD') AS parsed_date,
+          dep_airport,
+          arr_airport
         FROM departure_flight_paths
         WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
-          AND dep_airport IS NOT NULL
-          AND TRIM(dep_airport) <> ''
-          AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
-        GROUP BY
-          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int,
-          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int
-
-        UNION ALL
-
-        SELECT
-          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS year_num,
-          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS month_num,
-          COUNT(*)::numeric AS outbound_total
-        FROM arrival_flight_paths
-        WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
-          AND dep_airport IS NOT NULL
-          AND TRIM(dep_airport) <> ''
-          AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
-        GROUP BY
-          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int,
-          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int
       ),
-      inbound_year_month AS (
+      arrival_events AS (
         SELECT
-          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS year_num,
-          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS month_num,
-          COUNT(*)::numeric AS inbound_total
-        FROM departure_flight_paths
+          TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD') AS parsed_date,
+          dep_airport,
+          arr_airport
+        FROM arrival_flight_paths
         WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
-          AND arr_airport IS NOT NULL
-          AND TRIM(arr_airport) <> ''
-          AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
-        GROUP BY
-          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int,
-          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int
+      ),
+      flight_events AS (
+        SELECT
+          EXTRACT(YEAR FROM parsed_date)::int AS year_num,
+          EXTRACT(MONTH FROM parsed_date)::int AS month_num,
+          CASE
+            WHEN dep_airport IS NOT NULL
+              AND TRIM(dep_airport) <> ''
+              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END::numeric AS outbound_total,
+          CASE
+            WHEN arr_airport IS NOT NULL
+              AND TRIM(arr_airport) <> ''
+              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END::numeric AS inbound_total
+        FROM departure_events
+        WHERE
+          (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
+          OR
+          (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
 
         UNION ALL
 
         SELECT
-          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS year_num,
-          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS month_num,
-          COUNT(*)::numeric AS inbound_total
-        FROM arrival_flight_paths
-        WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
-          AND arr_airport IS NOT NULL
-          AND TRIM(arr_airport) <> ''
-          AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
-        GROUP BY
-          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int,
-          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int
+          EXTRACT(YEAR FROM parsed_date)::int AS year_num,
+          EXTRACT(MONTH FROM parsed_date)::int AS month_num,
+          CASE
+            WHEN dep_airport IS NOT NULL
+              AND TRIM(dep_airport) <> ''
+              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END::numeric AS outbound_total,
+          CASE
+            WHEN arr_airport IS NOT NULL
+              AND TRIM(arr_airport) <> ''
+              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+            THEN 1 ELSE 0
+          END::numeric AS inbound_total
+        FROM arrival_events
+        WHERE
+          (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
+          OR
+          (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
       ),
       monthly_totals AS (
         SELECT
-          ym.year_num,
-          ym.month_num,
-          SUM(ym.inbound_total)::numeric AS inbound_total,
-          SUM(ym.outbound_total)::numeric AS outbound_total
-        FROM (
-          SELECT year_num, month_num, inbound_total, 0::numeric AS outbound_total
-          FROM inbound_year_month
-          UNION ALL
-          SELECT year_num, month_num, 0::numeric AS inbound_total, outbound_total
-          FROM outbound_year_month
-        ) ym
-        GROUP BY ym.year_num, ym.month_num
+          year_num,
+          month_num,
+          SUM(inbound_total)::numeric AS inbound_total,
+          SUM(outbound_total)::numeric AS outbound_total
+        FROM flight_events
+        GROUP BY year_num, month_num
       ),
       month_avg AS (
         SELECT
@@ -2627,6 +2619,10 @@ export class DashboardSummaryService {
     let dayStatus: 'ready' | 'unavailable' = departureTimeAvailable ? 'ready' : 'unavailable';
     let dayMessage: string | null = departureTimeAvailable ? null : 'ข้อมูลยังไม่พร้อมให้บริการ';
 
+    let monthRows: Array<Record<string, any>> = [];
+    const monthStatus: 'ready' | 'unavailable' = 'unavailable';
+    const monthMessage: string | null = 'ข้อมูลยังไม่พร้อมให้บริการ';
+
     if (departureTimeAvailable) {
       try {
         const dayResult = await pool.query(dayAverageQuery, [continentAirportCodes]);
@@ -2635,22 +2631,6 @@ export class DashboardSummaryService {
         dayStatus = 'unavailable';
         dayMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
       }
-    }
-
-    let monthRows: Array<Record<string, any>> = [];
-    let monthStatus: 'ready' | 'unavailable' = 'ready';
-    let monthMessage: string | null = null;
-    try {
-      const departureDateTypes = await getFlightPathColumnTypes('departure_date');
-      const hasTextDateType = departureDateTypes.some((type) => type.includes('text') || type.includes('character'));
-      const monthResult = await pool.query(
-        hasTextDateType ? monthAverageQueryTextDate : monthAverageQueryTypedDate,
-        [continentAirportCodes],
-      );
-      monthRows = monthResult.rows as Array<Record<string, any>>;
-    } catch {
-      monthStatus = 'unavailable';
-      monthMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
     }
 
     const monthLabels = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -2710,7 +2690,7 @@ export class DashboardSummaryService {
           mode: 'month',
           status: monthStatus,
           message: monthMessage,
-          points: monthStatus === 'ready' ? monthPoints : [],
+          points: [],
         },
         year: {
           mode: 'year',

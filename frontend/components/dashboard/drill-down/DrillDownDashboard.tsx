@@ -46,7 +46,7 @@ export function useDrillDown() {
 export function DrillDownDashboard() {
   const [level, setLevel] = useState<DrillLevel>('world');
   const [timeMode, setTimeMode] = useState<TimeMode>('yoy');
-  const [rangePreset, setRangePreset] = useState<RangePreset>(() => readSharedRangePreset('focus'));
+  const [rangePreset, setRangePreset] = useState<RangePreset>('focus');
   const [selections, setSelections] = useState<SelectionState>({});
 
   const LEVEL_ORDER: DrillLevel[] = ['world', 'continent', 'country', 'airport'];
@@ -64,6 +64,15 @@ export function DrillDownDashboard() {
       return { ...cleaned, ...selection };
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  useEffect(() => {
+    const stored = readSharedRangePreset('focus');
+    if (stored !== rangePreset) {
+      setRangePreset(stored);
+    }
+    // Run once on mount to avoid SSR/CSR mismatch from sessionStorage.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

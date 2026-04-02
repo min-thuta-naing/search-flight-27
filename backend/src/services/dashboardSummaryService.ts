@@ -225,6 +225,38 @@ export interface DashboardContinentTopRoutesResponse {
   routes: DashboardContinentTopRouteRank[];
 }
 
+export type DashboardContinentTrendMode = 'day' | 'month' | 'year';
+
+export interface DashboardContinentTrendPoint {
+  key: string;
+  label: string;
+  inboundAvg: number;
+  outboundAvg: number;
+  totalAvg: number;
+  highlight: boolean;
+}
+
+export interface DashboardContinentTrendModeData {
+  mode: DashboardContinentTrendMode;
+  status: 'ready' | 'unavailable';
+  message: string | null;
+  points: DashboardContinentTrendPoint[];
+}
+
+export interface DashboardContinentTrendsResponse {
+  continent: {
+    key: ContinentMeta['key'];
+    label: string;
+    icon: string;
+  };
+  generatedAt: string;
+  modes: {
+    day: DashboardContinentTrendModeData;
+    month: DashboardContinentTrendModeData;
+    year: DashboardContinentTrendModeData;
+  };
+}
+
 type PeriodRow = {
   country_code: string | null;
   country_name: string | null;
@@ -283,6 +315,10 @@ interface ContinentTopRoutesInput extends WorldRangeInput {
   limit?: number;
 }
 
+interface ContinentTrendAveragesInput {
+  continent: string;
+}
+
 const CONTINENT_ORDER: ContinentMeta[] = [
   { key: 'Europe', label: 'Europe', icon: '🏰' },
   { key: 'Asia-Pacific', label: 'Asia-Pacific', icon: '🌏' },
@@ -300,8 +336,14 @@ const CONTINENT_TOP_AIRPORTS_CACHE_TTL_MS = 5 * 60 * 1000;
 const continentTopAirportsCache = new Map<string, { expiresAt: number; payload: DashboardContinentTopAirportsResponse }>();
 const CONTINENT_TOP_ROUTES_CACHE_TTL_MS = 5 * 60 * 1000;
 const continentTopRoutesCache = new Map<string, { expiresAt: number; payload: DashboardContinentTopRoutesResponse }>();
+const CONTINENT_TRENDS_CACHE_TTL_MS = 5 * 60 * 1000;
+const continentTrendsCache = new Map<string, { expiresAt: number; payload: DashboardContinentTrendsResponse }>();
 const CONTINENT_AIRPORT_CODES_CACHE_TTL_MS = 60 * 60 * 1000;
 const continentAirportCodesCache = new Map<string, { expiresAt: number; codes: string[] }>();
+const FLIGHT_PATH_COLUMN_CACHE_TTL_MS = 60 * 60 * 1000;
+const flightPathColumnCache = new Map<string, { expiresAt: number; exists: boolean }>();
+const FLIGHT_PATH_COLUMN_TYPES_CACHE_TTL_MS = 60 * 60 * 1000;
+const flightPathColumnTypesCache = new Map<string, { expiresAt: number; types: string[] }>();
 
 function formatDateForQuery(date: Date): string {
   const year = date.getUTCFullYear();
@@ -528,6 +570,67 @@ async function getContinentAirportCodes(continentKey: ContinentMeta['key']): Pro
   return codes;
 }
 
+async function hasFlightPathColumn(columnName: string): Promise<boolean> {
+  const cacheKey = columnName.trim().toLowerCase();
+  const cached = flightPathColumnCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.exists;
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT COUNT(*)::int AS count
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name IN ('departure_flight_paths', 'arrival_flight_paths')
+          AND column_name = $1
+      `,
+      [cacheKey],
+    );
+
+    const exists = (Number(result.rows[0]?.count) || 0) >= 2;
+    flightPathColumnCache.set(cacheKey, {
+      expiresAt: Date.now() + FLIGHT_PATH_COLUMN_CACHE_TTL_MS,
+      exists,
+    });
+    return exists;
+  } catch {
+    // If schema introspection is unavailable, disable the dependent mode instead of failing the request.
+    return false;
+  }
+}
+
+async function getFlightPathColumnTypes(columnName: string): Promise<string[]> {
+  const cacheKey = columnName.trim().toLowerCase();
+  const cached = flightPathColumnTypesCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.types;
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT DISTINCT data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name IN ('departure_flight_paths', 'arrival_flight_paths')
+          AND column_name = $1
+      `,
+      [cacheKey],
+    );
+
+    const types = (result.rows as Array<{ data_type: string }>).map((row) => String(row.data_type || '').toLowerCase()).filter(Boolean);
+    flightPathColumnTypesCache.set(cacheKey, {
+      expiresAt: Date.now() + FLIGHT_PATH_COLUMN_TYPES_CACHE_TTL_MS,
+      types,
+    });
+    return types;
+  } catch {
+    return [];
+  }
+}
+
 function resolveContinentMetaFromInput(continentInput: string) {
   const normalized = continentInput.trim().toLowerCase();
   const thaiAliases: Record<string, ContinentMeta['key']> = {
@@ -662,13 +765,7 @@ export class DashboardSummaryService {
         WHERE departure_date >= $1 AND departure_date <= $2
       )
       SELECT
-        (SELECT COUNT(*)::int
-         FROM (
-           SELECT 1 FROM departure_flight_paths WHERE departure_date >= $1 AND departure_date <= $2
-           UNION ALL
-           SELECT 1 FROM arrival_flight_paths WHERE departure_date >= $1 AND departure_date <= $2
-         ) all_flights
-        ) AS total_flights,
+        (SELECT COUNT(*)::int FROM flight_rows) AS total_flights,
         (SELECT COUNT(DISTINCT airport_code)::int
          FROM flight_rows
          WHERE airport_code IS NOT NULL AND airport_code <> ''
@@ -718,7 +815,15 @@ export class DashboardSummaryService {
         FROM departure_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
         UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
         SELECT dep_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT arr_airport AS airport_code
         FROM arrival_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
       ) flight_rows
@@ -811,7 +916,15 @@ export class DashboardSummaryService {
         FROM departure_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
         UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
         SELECT dep_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT arr_airport AS airport_code
         FROM arrival_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
       ) flight_rows
@@ -2199,6 +2312,417 @@ export class DashboardSummaryService {
 
     continentTopRoutesCache.set(cacheKey, {
       expiresAt: Date.now() + CONTINENT_TOP_ROUTES_CACHE_TTL_MS,
+      payload,
+    });
+
+    return payload;
+  }
+
+  static async getContinentTrendAverages(
+    input: ContinentTrendAveragesInput,
+  ): Promise<DashboardContinentTrendsResponse> {
+    const continentMeta = resolveContinentMetaFromInput(input.continent);
+    const cacheKey = `${continentMeta.key}|v3`;
+
+    const cached = continentTrendsCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.payload;
+    }
+
+    const continentAirportCodes = await getContinentAirportCodes(continentMeta.key);
+    if (!continentAirportCodes.length) {
+      const emptyPayload: DashboardContinentTrendsResponse = {
+        continent: {
+          key: continentMeta.key,
+          label: continentMeta.label,
+          icon: continentMeta.icon,
+        },
+        generatedAt: new Date().toISOString(),
+        modes: {
+          day: {
+            mode: 'day',
+            status: 'unavailable',
+            message: 'ข้อมูลยังไม่พร้อมให้บริการ',
+            points: [],
+          },
+          month: {
+            mode: 'month',
+            status: 'unavailable',
+            message: 'ข้อมูลยังไม่พร้อมให้บริการ',
+            points: [],
+          },
+          year: {
+            mode: 'year',
+            status: 'unavailable',
+            message: 'ข้อมูลยังไม่พร้อมให้บริการ',
+            points: [],
+          },
+        },
+      };
+
+      continentTrendsCache.set(cacheKey, {
+        expiresAt: Date.now() + CONTINENT_TRENDS_CACHE_TTL_MS,
+        payload: emptyPayload,
+      });
+
+      return emptyPayload;
+    }
+
+    const dayAverageQuery = `
+      WITH continent_airports AS (
+        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
+        FROM airports
+        WHERE UPPER(TRIM(code)) = ANY($1::text[])
+      ),
+      flight_dates AS (
+        SELECT departure_date::date AS flight_date
+        FROM departure_flight_paths
+        WHERE departure_date IS NOT NULL
+        UNION
+        SELECT departure_date::date AS flight_date
+        FROM arrival_flight_paths
+        WHERE departure_date IS NOT NULL
+      ),
+      day_span AS (
+        SELECT GREATEST(COUNT(*)::numeric, 1) AS days_count
+        FROM flight_dates
+      ),
+      flight_rows AS (
+        SELECT
+          COALESCE(EXTRACT(HOUR FROM d.departure_time)::int, 0) AS hour_num,
+          0::int AS inbound_count,
+          1::int AS outbound_count
+        FROM departure_flight_paths d
+        JOIN continent_airports ca ON UPPER(TRIM(d.dep_airport)) = ca.airport_code
+        WHERE d.dep_airport IS NOT NULL AND TRIM(d.dep_airport) <> ''
+        UNION ALL
+        SELECT
+          COALESCE(EXTRACT(HOUR FROM d.departure_time)::int, 0) AS hour_num,
+          1::int AS inbound_count,
+          0::int AS outbound_count
+        FROM departure_flight_paths d
+        JOIN continent_airports ca ON UPPER(TRIM(d.arr_airport)) = ca.airport_code
+        WHERE d.arr_airport IS NOT NULL AND TRIM(d.arr_airport) <> ''
+        UNION ALL
+        SELECT
+          COALESCE(EXTRACT(HOUR FROM a.departure_time)::int, 0) AS hour_num,
+          0::int AS inbound_count,
+          1::int AS outbound_count
+        FROM arrival_flight_paths a
+        JOIN continent_airports ca ON UPPER(TRIM(a.dep_airport)) = ca.airport_code
+        WHERE a.dep_airport IS NOT NULL AND TRIM(a.dep_airport) <> ''
+        UNION ALL
+        SELECT
+          COALESCE(EXTRACT(HOUR FROM a.departure_time)::int, 0) AS hour_num,
+          1::int AS inbound_count,
+          0::int AS outbound_count
+        FROM arrival_flight_paths a
+        JOIN continent_airports ca ON UPPER(TRIM(a.arr_airport)) = ca.airport_code
+        WHERE a.arr_airport IS NOT NULL AND TRIM(a.arr_airport) <> ''
+      ),
+      bucketed AS (
+        SELECT
+          FLOOR(fr.hour_num / 4.0)::int AS bucket_idx,
+          SUM(fr.inbound_count)::numeric AS inbound_total,
+          SUM(fr.outbound_count)::numeric AS outbound_total
+        FROM flight_rows fr
+        GROUP BY FLOOR(fr.hour_num / 4.0)::int
+      ),
+      bucket_grid AS (
+        SELECT generate_series(0, 5)::int AS bucket_idx
+      )
+      SELECT
+        LPAD((bg.bucket_idx * 4)::text, 2, '0') || ':00 - ' || LPAD(((bg.bucket_idx + 1) * 4)::text, 2, '0') || ':00' AS hour_bucket,
+        ROUND(COALESCE(b.inbound_total, 0) / ds.days_count, 2)::float AS inbound_avg,
+        ROUND(COALESCE(b.outbound_total, 0) / ds.days_count, 2)::float AS outbound_avg
+      FROM bucket_grid bg
+      CROSS JOIN day_span ds
+      LEFT JOIN bucketed b ON b.bucket_idx = bg.bucket_idx
+      ORDER BY bg.bucket_idx ASC
+    `;
+
+    const monthAverageQueryTypedDate = `
+      WITH outbound_year_month AS (
+        SELECT
+          EXTRACT(YEAR FROM departure_date)::int AS year_num,
+          EXTRACT(MONTH FROM departure_date)::int AS month_num,
+          COUNT(*)::numeric AS outbound_total
+        FROM departure_flight_paths
+        WHERE departure_date IS NOT NULL
+          AND dep_airport IS NOT NULL
+          AND TRIM(dep_airport) <> ''
+          AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+        GROUP BY EXTRACT(YEAR FROM departure_date)::int, EXTRACT(MONTH FROM departure_date)::int
+
+        UNION ALL
+
+        SELECT
+          EXTRACT(YEAR FROM departure_date)::int AS year_num,
+          EXTRACT(MONTH FROM departure_date)::int AS month_num,
+          COUNT(*)::numeric AS outbound_total
+        FROM arrival_flight_paths
+        WHERE departure_date IS NOT NULL
+          AND dep_airport IS NOT NULL
+          AND TRIM(dep_airport) <> ''
+          AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+        GROUP BY EXTRACT(YEAR FROM departure_date)::int, EXTRACT(MONTH FROM departure_date)::int
+      ),
+      inbound_year_month AS (
+        SELECT
+          EXTRACT(YEAR FROM departure_date)::int AS year_num,
+          EXTRACT(MONTH FROM departure_date)::int AS month_num,
+          COUNT(*)::numeric AS inbound_total
+        FROM departure_flight_paths
+        WHERE departure_date IS NOT NULL
+          AND arr_airport IS NOT NULL
+          AND TRIM(arr_airport) <> ''
+          AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+        GROUP BY EXTRACT(YEAR FROM departure_date)::int, EXTRACT(MONTH FROM departure_date)::int
+
+        UNION ALL
+
+        SELECT
+          EXTRACT(YEAR FROM departure_date)::int AS year_num,
+          EXTRACT(MONTH FROM departure_date)::int AS month_num,
+          COUNT(*)::numeric AS inbound_total
+        FROM arrival_flight_paths
+        WHERE departure_date IS NOT NULL
+          AND arr_airport IS NOT NULL
+          AND TRIM(arr_airport) <> ''
+          AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+        GROUP BY EXTRACT(YEAR FROM departure_date)::int, EXTRACT(MONTH FROM departure_date)::int
+      ),
+      monthly_totals AS (
+        SELECT
+          ym.year_num,
+          ym.month_num,
+          SUM(ym.inbound_total)::numeric AS inbound_total,
+          SUM(ym.outbound_total)::numeric AS outbound_total
+        FROM (
+          SELECT year_num, month_num, inbound_total, 0::numeric AS outbound_total
+          FROM inbound_year_month
+          UNION ALL
+          SELECT year_num, month_num, 0::numeric AS inbound_total, outbound_total
+          FROM outbound_year_month
+        ) ym
+        GROUP BY ym.year_num, ym.month_num
+      ),
+      month_avg AS (
+        SELECT
+          month_num,
+          ROUND(AVG(inbound_total), 2)::float AS inbound_avg,
+          ROUND(AVG(outbound_total), 2)::float AS outbound_avg
+        FROM monthly_totals
+        GROUP BY month_num
+      ),
+      month_grid AS (
+        SELECT generate_series(1, 12)::int AS month_num
+      )
+      SELECT
+        mg.month_num,
+        ROUND(COALESCE(ma.inbound_avg, 0), 2)::float AS inbound_avg,
+        ROUND(COALESCE(ma.outbound_avg, 0), 2)::float AS outbound_avg
+      FROM month_grid mg
+      LEFT JOIN month_avg ma ON ma.month_num = mg.month_num
+      ORDER BY mg.month_num ASC
+    `;
+
+    const monthAverageQueryTextDate = `
+      WITH outbound_year_month AS (
+        SELECT
+          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS year_num,
+          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS month_num,
+          COUNT(*)::numeric AS outbound_total
+        FROM departure_flight_paths
+        WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
+          AND dep_airport IS NOT NULL
+          AND TRIM(dep_airport) <> ''
+          AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+        GROUP BY
+          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int,
+          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int
+
+        UNION ALL
+
+        SELECT
+          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS year_num,
+          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS month_num,
+          COUNT(*)::numeric AS outbound_total
+        FROM arrival_flight_paths
+        WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
+          AND dep_airport IS NOT NULL
+          AND TRIM(dep_airport) <> ''
+          AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
+        GROUP BY
+          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int,
+          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int
+      ),
+      inbound_year_month AS (
+        SELECT
+          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS year_num,
+          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS month_num,
+          COUNT(*)::numeric AS inbound_total
+        FROM departure_flight_paths
+        WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
+          AND arr_airport IS NOT NULL
+          AND TRIM(arr_airport) <> ''
+          AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+        GROUP BY
+          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int,
+          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int
+
+        UNION ALL
+
+        SELECT
+          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS year_num,
+          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int AS month_num,
+          COUNT(*)::numeric AS inbound_total
+        FROM arrival_flight_paths
+        WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
+          AND arr_airport IS NOT NULL
+          AND TRIM(arr_airport) <> ''
+          AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
+        GROUP BY
+          EXTRACT(YEAR FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int,
+          EXTRACT(MONTH FROM TO_DATE(SUBSTRING(departure_date::text, 1, 10), 'YYYY-MM-DD'))::int
+      ),
+      monthly_totals AS (
+        SELECT
+          ym.year_num,
+          ym.month_num,
+          SUM(ym.inbound_total)::numeric AS inbound_total,
+          SUM(ym.outbound_total)::numeric AS outbound_total
+        FROM (
+          SELECT year_num, month_num, inbound_total, 0::numeric AS outbound_total
+          FROM inbound_year_month
+          UNION ALL
+          SELECT year_num, month_num, 0::numeric AS inbound_total, outbound_total
+          FROM outbound_year_month
+        ) ym
+        GROUP BY ym.year_num, ym.month_num
+      ),
+      month_avg AS (
+        SELECT
+          month_num,
+          ROUND(AVG(inbound_total), 2)::float AS inbound_avg,
+          ROUND(AVG(outbound_total), 2)::float AS outbound_avg
+        FROM monthly_totals
+        GROUP BY month_num
+      ),
+      month_grid AS (
+        SELECT generate_series(1, 12)::int AS month_num
+      )
+      SELECT
+        mg.month_num,
+        ROUND(COALESCE(ma.inbound_avg, 0), 2)::float AS inbound_avg,
+        ROUND(COALESCE(ma.outbound_avg, 0), 2)::float AS outbound_avg
+      FROM month_grid mg
+      LEFT JOIN month_avg ma ON ma.month_num = mg.month_num
+      ORDER BY mg.month_num ASC
+    `;
+
+    const departureTimeAvailable = await hasFlightPathColumn('departure_time');
+
+    let dayRows: Array<Record<string, any>> = [];
+    let dayStatus: 'ready' | 'unavailable' = departureTimeAvailable ? 'ready' : 'unavailable';
+    let dayMessage: string | null = departureTimeAvailable ? null : 'ข้อมูลยังไม่พร้อมให้บริการ';
+
+    if (departureTimeAvailable) {
+      try {
+        const dayResult = await pool.query(dayAverageQuery, [continentAirportCodes]);
+        dayRows = dayResult.rows as Array<Record<string, any>>;
+      } catch {
+        dayStatus = 'unavailable';
+        dayMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
+      }
+    }
+
+    let monthRows: Array<Record<string, any>> = [];
+    let monthStatus: 'ready' | 'unavailable' = 'ready';
+    let monthMessage: string | null = null;
+    try {
+      const departureDateTypes = await getFlightPathColumnTypes('departure_date');
+      const hasTextDateType = departureDateTypes.some((type) => type.includes('text') || type.includes('character'));
+      const monthResult = await pool.query(
+        hasTextDateType ? monthAverageQueryTextDate : monthAverageQueryTypedDate,
+        [continentAirportCodes],
+      );
+      monthRows = monthResult.rows as Array<Record<string, any>>;
+    } catch {
+      monthStatus = 'unavailable';
+      monthMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
+    }
+
+    const monthLabels = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+    const dayPointsRaw = dayRows.map((row) => {
+      const inboundAvg = Number(row.inbound_avg) || 0;
+      const outboundAvg = Number(row.outbound_avg) || 0;
+      return {
+        key: String(row.hour_bucket || '00:00'),
+        label: String(row.hour_bucket || '00:00'),
+        inboundAvg,
+        outboundAvg,
+        totalAvg: inboundAvg + outboundAvg,
+        highlight: false,
+      } satisfies DashboardContinentTrendPoint;
+    });
+    const dayMax = Math.max(...dayPointsRaw.map((point) => point.totalAvg), 0);
+    const dayPoints = dayPointsRaw.map((point) => ({
+      ...point,
+      highlight: dayMax > 0 && point.totalAvg === dayMax,
+    }));
+
+    const monthPointsRaw = monthRows.map((row) => {
+      const monthNum = Number(row.month_num) || 1;
+      const inboundAvg = Number(row.inbound_avg) || 0;
+      const outboundAvg = Number(row.outbound_avg) || 0;
+      return {
+        key: String(monthNum),
+        label: monthLabels[Math.max(0, Math.min(11, monthNum - 1))] || String(monthNum),
+        inboundAvg,
+        outboundAvg,
+        totalAvg: inboundAvg + outboundAvg,
+        highlight: false,
+      } satisfies DashboardContinentTrendPoint;
+    });
+    const monthMax = Math.max(...monthPointsRaw.map((point) => point.totalAvg), 0);
+    const monthPoints = monthPointsRaw.map((point) => ({
+      ...point,
+      highlight: monthMax > 0 && point.totalAvg === monthMax,
+    }));
+
+    const payload: DashboardContinentTrendsResponse = {
+      continent: {
+        key: continentMeta.key,
+        label: continentMeta.label,
+        icon: continentMeta.icon,
+      },
+      generatedAt: new Date().toISOString(),
+      modes: {
+        day: {
+          mode: 'day',
+          status: dayStatus,
+          message: dayMessage,
+          points: dayStatus === 'ready' ? dayPoints : [],
+        },
+        month: {
+          mode: 'month',
+          status: monthStatus,
+          message: monthMessage,
+          points: monthStatus === 'ready' ? monthPoints : [],
+        },
+        year: {
+          mode: 'year',
+          status: 'unavailable',
+          message: 'ข้อมูลยังไม่พร้อมให้บริการ',
+          points: [],
+        },
+      },
+    };
+
+    continentTrendsCache.set(cacheKey, {
+      expiresAt: Date.now() + CONTINENT_TRENDS_CACHE_TTL_MS,
       payload,
     });
 

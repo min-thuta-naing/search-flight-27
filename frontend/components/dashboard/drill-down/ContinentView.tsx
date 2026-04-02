@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -14,11 +14,11 @@ import {
 } from 'recharts';
 import {
   getContinentDetailCacheState,
-  getContinentSeasonalCacheState,
+  getContinentTrendsCacheState,
   getContinentTopAirportsCacheState,
   getContinentTopRouteRanksCacheState,
   storeContinentDetail,
-  storeContinentSeasonal,
+  storeContinentTrends,
   storeContinentTopAirports,
   storeContinentTopRouteRanks,
   runDrillDownRequest,
@@ -32,7 +32,7 @@ import {
   parsePercentFromDelta,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
-import { getContinentDetail, getContinentTopAirports, getContinentTopRoutes } from '@/lib/dashboard/services/drilldown';
+import { getContinentDetail, getContinentTopAirports, getContinentTopRoutes, getContinentTrends } from '@/lib/dashboard/services/drilldown';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useDrillDown, KPIRow, BackButton, ChangePill } from './DrillDownDashboard';
@@ -40,16 +40,16 @@ import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
 import type { CountryData } from '@/types/dashboard';
 import type {
+  DashboardContinentTrendMode,
+  DashboardContinentTrendsResponse,
   DashboardContinentTopAirportRankResponse,
   DashboardContinentTopRouteRankResponse,
 } from '@/lib/api/statistics-api';
 
-const MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
-
 type ContinentDetailPayload = Awaited<ReturnType<typeof getContinentDetail>>;
+type ContinentTrendsPayload = Awaited<ReturnType<typeof getContinentTrends>>;
 type ContinentTopAirportsPayload = Awaited<ReturnType<typeof getContinentTopAirports>>;
 type ContinentTopRoutesPayload = Awaited<ReturnType<typeof getContinentTopRoutes>>;
-type SeasonalPoint = ContinentDetailPayload['seasonal'][number];
 type ContinentDisplayMode = 'wow' | 'mom' | 'yoy';
 type ContinentTopAirportRow = DashboardContinentTopAirportRankResponse;
 type ContinentTopRouteRow = DashboardContinentTopRouteRankResponse;
@@ -221,18 +221,18 @@ export function ContinentView() {
   const continentWindowDays = resolveContinentWindowDays(preset);
   const continentTimeMode = resolveContinentDisplayMode(preset);
   const coreCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, true, false, false);
-  const seasonalCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, false, true, false);
+  const trendCacheKey = `trend:${continent.name}`;
   const [continentPayload, setContinentPayload] = useState<ContinentDetailPayload | null>(() => {
     return getContinentDetailCacheState(coreCacheKey).value;
   });
   const [payloadCacheKey, setPayloadCacheKey] = useState<string | null>(() => {
     return getContinentDetailCacheState(coreCacheKey).value ? coreCacheKey : null;
   });
-  const [seasonalRows, setSeasonalRows] = useState<SeasonalPoint[] | null>(() => {
-    return getContinentSeasonalCacheState(seasonalCacheKey).value;
+  const [trendPayload, setTrendPayload] = useState<ContinentTrendsPayload | null>(() => {
+    return getContinentTrendsCacheState(trendCacheKey).value;
   });
-  const [seasonalCacheHitKey, setSeasonalCacheHitKey] = useState<string | null>(() => {
-    return getContinentSeasonalCacheState(seasonalCacheKey).value ? seasonalCacheKey : null;
+  const [trendCacheHitKey, setTrendCacheHitKey] = useState<string | null>(() => {
+    return getContinentTrendsCacheState(trendCacheKey).value ? trendCacheKey : null;
   });
   const topAirportsQueryKey = `${continent.name}|window:${continentWindowDays}|limit:10`;
   const topRoutesRankQueryKey = `${continent.name}|window:${continentWindowDays}|limit:5`;
@@ -299,52 +299,46 @@ export function ContinentView() {
   }, [continent.name, continentWindowDays, coreCacheKey]);
 
   useEffect(() => {
-    if (!coreReady) {
-      return;
-    }
-
     let alive = true;
-    const cacheState = getContinentSeasonalCacheState(seasonalCacheKey);
+    const cacheState = getContinentTrendsCacheState(trendCacheKey);
     const cached = cacheState.value;
 
     if (cached) {
-      setSeasonalRows(cached);
-      setSeasonalCacheHitKey(seasonalCacheKey);
+      setTrendPayload(cached);
+      setTrendCacheHitKey(trendCacheKey);
       if (!cacheState.stale) {
         return () => {
           alive = false;
         };
       }
+    } else {
+      setTrendCacheHitKey(null);
     }
 
-    const loadSeasonal = async () => {
+    const loadTrends = async () => {
       try {
-        setSeasonalCacheHitKey(null);
         const payload = await runDrillDownRequest(
-          `continent:seasonal:${seasonalCacheKey}`,
-          () => getContinentDetail(continent.name, {
-            windowDays: continentWindowDays,
-            includeCore: false,
-            includeSeasonal: true,
-            includeTopRoutes: false,
+          `continent:trends:${trendCacheKey}`,
+          () => getContinentTrends(continent.name, {
+            timeoutMs: 45000,
           }),
         );
         if (!alive) return;
-        storeContinentSeasonal(seasonalCacheKey, payload.seasonal);
-        setSeasonalRows(payload.seasonal);
-        setSeasonalCacheHitKey(seasonalCacheKey);
+        storeContinentTrends(trendCacheKey, payload);
+        setTrendPayload(payload);
+        setTrendCacheHitKey(trendCacheKey);
       } catch (error) {
         if (!alive) return;
         setDetailError(error instanceof Error ? error.message : 'ไม่สามารถโหลดแนวโน้มทวีปได้');
       }
     };
 
-    void loadSeasonal();
+    void loadTrends();
 
     return () => {
       alive = false;
     };
-  }, [continent.name, continentWindowDays, coreReady, seasonalCacheKey]);
+  }, [continent.name, trendCacheKey]);
 
   useEffect(() => {
     const cacheState = getContinentTopAirportsCacheState(topAirportsQueryKey);
@@ -444,7 +438,7 @@ export function ContinentView() {
   const hasPayload = coreReady;
   const continentData = hasPayload && payload ? payload.detail : null;
   const detail = continentData;
-  const seasonal = seasonalCacheHitKey === seasonalCacheKey && seasonalRows ? seasonalRows : [];
+  const trends = trendCacheHitKey === trendCacheKey ? trendPayload : null;
   const resolvedTopAirportRows = topAirportCacheHitKey === topAirportsQueryKey && topAirportRows ? topAirportRows : [];
   const resolvedTopRouteRankRows = topRouteRankCacheHitKey === topRoutesRankQueryKey && topRouteRankRows ? topRouteRankRows : [];
   const countries = detail?.countries ?? [];
@@ -564,8 +558,8 @@ export function ContinentView() {
       <KPIRow items={kpis} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        {seasonalCacheHitKey === seasonalCacheKey && seasonalRows ? (
-          <ContinentSeasonalChart seasonal={seasonal} timeMode={continentTimeMode} />
+        {trends ? (
+          <ContinentAverageTrendChart trends={trends} />
         ) : (
           <ContinentPanelRingLoader title="แนวโน้ม" />
         )}
@@ -691,124 +685,112 @@ function ContinentCountryRingCard() {
   );
 }
 
-function ContinentSeasonalChart({
-  seasonal,
-  timeMode,
-}: {
-  seasonal: SeasonalPoint[];
-  timeMode: ContinentDisplayMode;
-}) {
-  const { selections } = useDrillDown();
-  const continentName = selections.continent?.name || '';
-  const series = useMemo(() => {
-    if (seasonal.length >= 12) {
-      return seasonal.slice(-12);
-    }
-
-    const padded = [...seasonal];
-    while (padded.length < 12) {
-      padded.unshift({ month: '', flights: 0 });
-    }
-    return padded;
-  }, [seasonal]);
-  const peakVal = Math.max(...series.map((point) => point.flights), 0);
-  const nowIdx = new Date().getMonth();
-  const prevIdx = (nowIdx + 11) % 12;
-  const resolveMonthLabel = (month: string, index: number) => {
-    const parsed = new Date(`${month}-01T00:00:00.000Z`);
-    if (!Number.isNaN(parsed.getTime())) {
-      return MONTHS[parsed.getUTCMonth()] || MONTHS[index] || month;
-    }
-
-    return MONTHS[index] || month;
-  };
-
-  let chartData: Array<{ month: string; value: number; color: string }>;
-  let title: string;
-
-  if (timeMode === 'wow') {
-    title = `แนวโน้มล่าสุด — ${continentName}`;
-    chartData = series.slice(-5).map((v, i) => ({
-      month: resolveMonthLabel(v.month, i),
-      value: v.flights,
-      color: i === 4 ? '#d29922' : v.flights === peakVal ? '#ff9f43' : '#bfdbfe',
-    }));
-  } else if (timeMode === 'mom') {
-    title = `แนวโน้มรายเดือน \u2014 ${continentName} (รายเดือน)`;
-    const startIdx = Math.max(0, nowIdx - 2);
-    const endIdx = Math.min(11, nowIdx + 2);
-    chartData = series
-      .map((v, i) => ({
-        month: resolveMonthLabel(v.month, i),
-        value: v.flights,
-        color: i === nowIdx ? '#d29922' : v.flights === peakVal ? '#ff9f43' : i === prevIdx ? '#2563eb' : '#bfdbfe',
-        _idx: i,
-      }))
-      .filter((d) => d._idx >= startIdx && d._idx <= endIdx);
-  } else {
-    title = `แนวโน้มฤดูกาล \u2014 ${continentName} (รายปี)`;
-    chartData = series.map((v, i) => ({
-      month: resolveMonthLabel(v.month, i),
-      value: v.flights,
-      color: i === nowIdx ? '#d29922' : v.flights === peakVal ? '#ff9f43' : '#bfdbfe',
-    }));
-  }
+function ContinentAverageTrendChart({ trends }: { trends: DashboardContinentTrendsResponse }) {
+  const [mode, setMode] = useState<DashboardContinentTrendMode>('day');
+  const modePayload = trends.modes[mode];
+  const modeDescription = mode === 'day'
+    ? 'เฉลี่ยรายช่วงเวลา 4 ชั่วโมง'
+    : mode === 'month'
+      ? 'เฉลี่ยรายเดือน'
+      : 'เฉลี่ยรายปี';
+  const chartData = modePayload.points.map((point) => ({
+    label: point.label,
+    inboundAvg: point.inboundAvg,
+    outboundAvg: point.outboundAvg,
+    highlight: point.highlight,
+  }));
 
   return (
     <div className="bg-card border border-border rounded-[10px] p-5">
-      <div className="text-[16px] font-bold mb-4">{title}</div>
-      <ResponsiveContainer width="100%" height={220}>
-        <BarChart
-          data={chartData}
-          margin={{
-            top: 8,
-            right: 12,
-            left: 8,
-            bottom: timeMode === 'wow' ? 34 : 10,
-          }}
-        >
-          <CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-border" />
-          <XAxis
-            dataKey="month"
-            tick={{ fontSize: 14, fontWeight: 600 }}
-            tickMargin={8}
-            interval={0}
-            className="text-muted-foreground"
-          />
-          <YAxis
-            tick={{ fontSize: 14, fontWeight: 600 }}
-            tickMargin={8}
-            width={44}
-            className="text-muted-foreground"
-            unit="k"
-          />
-          <Tooltip
-            contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '14px' }}
-            formatter={(value: number) => [`${value}k เที่ยวบิน`, '']}
-          />
-          <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={34}>
-            {chartData.map((entry, i) => (
-              <Cell
-                key={i}
-                fill={entry.color}
-                opacity={entry.color === '#bfdbfe' ? 0.55 : 0.9}
-              />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-      <div className="flex justify-center text-[14px] font-medium text-muted-foreground mt-2.5">
-        {/* <span>ทั้งปี </span> */}
-        {/* {'\u00B7'} เที่ยวบินเป็นพันเที่ยว */}
-        <span className="flex items-center gap-3">
-          <span style={{ color: 'var(--chart-current)' }}>{'\u25A0'} {timeMode === 'wow' ? 'สัปดาห์ปัจจุบัน' : 'เดือนปัจจุบัน'}</span>
-          <span style={{ color: 'var(--chart-peak)' }}>{'\u25A0'} {timeMode === 'wow' ? 'สัปดาห์ที่สูงสุด' : 'เดือนที่สูงสุด'}</span>
-          {timeMode === 'mom' && (
-            <span style={{ color: 'var(--chart-1)' }}>{'\u25A0'} เดือนก่อนหน้า</span>
-          )}
-          <span style={{ color: timeMode === 'yoy' ? 'var(--chart-mid)' : 'var(--chart-subtle)' }}>{'\u25A0'} อื่นๆ</span>
-        </span>
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="text-[16px] font-bold">ค่าเฉลี่ยเที่ยวบินขาเข้า-ขาออกตามช่วงเวลา — {trends.continent.label}</div>
+          <div className="text-xs text-muted-foreground">โหมดปัจจุบัน: {modeDescription}</div>
+        </div>
+        <div className="inline-flex rounded-lg border border-border bg-muted/30 p-1">
+          <Button
+            type="button"
+            size="sm"
+            variant={mode === 'day' ? 'default' : 'ghost'}
+            className="h-8 px-3 text-xs"
+            onClick={() => setMode('day')}
+          >
+            วัน
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={mode === 'month' ? 'default' : 'ghost'}
+            className="h-8 px-3 text-xs"
+            onClick={() => setMode('month')}
+          >
+            เดือน
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={mode === 'year' ? 'default' : 'ghost'}
+            className="h-8 px-3 text-xs"
+            onClick={() => setMode('year')}
+          >
+            ปี
+          </Button>
+        </div>
       </div>
+
+      {modePayload.status === 'unavailable' ? (
+        <div className="flex h-[220px] items-center justify-center rounded-[10px] border border-border/70 bg-muted/20 text-sm text-muted-foreground">
+          {modePayload.message || 'ข้อมูลยังไม่พร้อมให้บริการ'}
+        </div>
+      ) : (
+        <>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart
+              data={chartData}
+              margin={{ top: 8, right: 12, left: 8, bottom: 10 }}
+              barCategoryGap={14}
+            >
+              <CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-border" />
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 12, fontWeight: 600 }}
+                tickMargin={8}
+                interval={0}
+                minTickGap={10}
+                className="text-muted-foreground"
+              />
+              <YAxis
+                tick={{ fontSize: 12, fontWeight: 600 }}
+                tickMargin={8}
+                width={52}
+                className="text-muted-foreground"
+              />
+              <Tooltip
+                contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '13px' }}
+                formatter={(value: number, key: string) => [
+                  `${value.toLocaleString()} เที่ยวบิน/ช่วง`,
+                  key === 'inboundAvg' ? 'ขาเข้า' : 'ขาออก',
+                ]}
+              />
+              <Bar dataKey="inboundAvg" radius={[4, 4, 0, 0]} maxBarSize={24}>
+                {chartData.map((entry, i) => (
+                  <Cell key={`in-${i}`} fill={entry.highlight ? '#0ea5e9' : '#7dd3fc'} />
+                ))}
+              </Bar>
+              <Bar dataKey="outboundAvg" radius={[4, 4, 0, 0]} maxBarSize={24}>
+                {chartData.map((entry, i) => (
+                  <Cell key={`out-${i}`} fill={entry.highlight ? '#f59e0b' : '#fcd34d'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-4 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-sky-300" />ขาเข้า</span>
+            <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-300" />ขาออก</span>
+            <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-primary" />ช่วงที่เฉลี่ยสูงสุด</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }

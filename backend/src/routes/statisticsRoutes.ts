@@ -9,6 +9,7 @@ import {
   getDashboardContinentDetail,
   getDashboardTopAirportsContinent,
   getDashboardTopRoutesContinent,
+  getDashboardContinentTrends,
   getDashboardTopRanks,
   getDashboardTopCountries,
   getDashboardTopAirports,
@@ -43,6 +44,9 @@ router.get('/dashboard-top-airports-continent', getDashboardTopAirportsContinent
 
 // Get top routes for a specific continent
 router.get('/dashboard-top-routes-continent', getDashboardTopRoutesContinent);
+
+// Get trend averages for continent chart modes (day/month/year)
+router.get('/dashboard-continent-trends', getDashboardContinentTrends);
 
 // Get top rank tables for the world dashboard
 router.get('/dashboard-top-ranks', getDashboardTopRanks);

@@ -370,6 +370,32 @@ export async function getDashboardTopRoutesContinent(req: Request, res: Response
 }
 
 /**
+ * Get average trend chart data for a specific continent
+ * GET /api/statistics/dashboard-continent-trends?continent=Asia
+ */
+export async function getDashboardContinentTrends(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { continent } = req.query;
+
+    if (!continent || typeof continent !== 'string') {
+      res.status(400).json({
+        error: 'Missing continent parameter',
+        message: 'continent is required',
+      });
+      return;
+    }
+
+    const trends = await DashboardSummaryService.getContinentTrendAverages({
+      continent,
+    });
+
+    res.json(trends);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get top country and airport ranks for the world dashboard
  * GET /api/statistics/dashboard-top-ranks?date=YYYY-MM-DD&window_days=15
  */

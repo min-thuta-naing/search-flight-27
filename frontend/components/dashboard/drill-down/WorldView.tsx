@@ -18,9 +18,6 @@ import {
   getChangeForMode,
   growthDeltaTypeFromPct,
   modeLabel,
-  parsePercentFromDelta,
-  WORLD_TOP_ARR,
-  WORLD_TOP_DEP,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import {
@@ -44,9 +41,8 @@ import {
 import { useDrillDown, KPIRow, ChangePill } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
+import type { AirportInfo, CountryData } from '@/types/dashboard';
 import { cn } from '@/lib/utils';
-
-type RankSortKey = 'label' | 'routeCount' | 'flights' | 'deltaPercent';
 
 const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'xl:h-[540px]';
 
@@ -196,6 +192,7 @@ function parseContinentCountryCount(value: string) {
 export function WorldView() {
   const { drillTo, timeMode, rangePreset, setRangePreset } = useDrillDown();
   const initialPresetRange = useMemo(() => buildPresetRange(rangePreset), [rangePreset]);
+  const [isMounted, setIsMounted] = useState(false);
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [dateRange, setDateRange] = useState<DateRange | undefined>(() => initialPresetRange);
@@ -205,8 +202,6 @@ export function WorldView() {
   const [fromCalendarMonth, setFromCalendarMonth] = useState(() => initialPresetRange.from || new Date());
   const [toCalendarMonth, setToCalendarMonth] = useState(() => initialPresetRange.to || initialPresetRange.from || new Date());
   const [dateError, setDateError] = useState(false);
-  const [rankSortKey, setRankSortKey] = useState<RankSortKey>('flights');
-  const [rankSortDirection, setRankSortDirection] = useState<'asc' | 'desc'>('desc');
   const [topRanks, setTopRanks] = useState<DashboardTopRanksResponse | null>(null);
   const [topRanksLoading, setTopRanksLoading] = useState(true);
   const [topDestinations, setTopDestinations] = useState<DashboardTopDestinationsResponse | null>(null);
@@ -214,6 +209,10 @@ export function WorldView() {
   const selectPreset = (mode: RangePreset) => {
     setRangePreset(mode);
   };
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   useEffect(() => {
     applyPresetRange(
@@ -336,13 +335,52 @@ export function WorldView() {
             airports: topRanksData.airports.length,
           });
         } catch (error) {
-          console.warn('[WorldView] Failed to load top ranks from API, falling back to mock data.', {
+          console.warn('[WorldView] Failed to load top ranks from API, attempting backend fallback endpoints.', {
             status: (error as { status?: number }).status,
             statusText: (error as { statusText?: string }).statusText,
             message: error instanceof Error ? error.message : String(error),
           });
           if (!mounted) return;
-          setTopRanks(null);
+          try {
+            const [countriesData, airportsData] = await Promise.all([
+              runDrillDownRequest(
+                `world:top-countries:${cacheKey}`,
+                () => statisticsApi.getDashboardTopCountries({ startDate, endDate }),
+              ),
+              runDrillDownRequest(
+                `world:top-airports:${cacheKey}`,
+                () => statisticsApi.getDashboardTopAirports({ startDate, endDate }),
+              ),
+            ]);
+            if (!mounted) return;
+
+            const mergedTopRanks: DashboardTopRanksResponse = {
+              centerDate: countriesData.centerDate,
+              windowDays: countriesData.windowDays,
+              periodStart: countriesData.periodStart,
+              periodEnd: countriesData.periodEnd,
+              comparisonStart: countriesData.comparisonStart,
+              comparisonEnd: countriesData.comparisonEnd,
+              countries: countriesData.countries,
+              airports: airportsData.airports,
+            };
+
+            setWorldTopRanksCache(cacheKey, mergedTopRanks);
+            setTopRanks(mergedTopRanks);
+            console.debug('[WorldView] fallback top ranks fetch success', {
+              countries: mergedTopRanks.countries.length,
+              airports: mergedTopRanks.airports.length,
+            });
+          } catch (fallbackError) {
+            console.warn('[WorldView] Failed fallback top countries/airports API.', {
+              message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+            });
+            if (!mounted) return;
+            // Preserve stale cached rows if available instead of blanking the table.
+            if (!cachedTopRanks) {
+              setTopRanks(null);
+            }
+          }
         } finally {
           if (mounted) {
             setTopRanksLoading(false);
@@ -441,37 +479,7 @@ export function WorldView() {
       }));
   const renderContinentList = continentList.filter((continent) => continent.key !== 'Other');
 
-  const continentRankList = useMemo(() => {
-    const direction = rankSortDirection === 'asc' ? 1 : -1;
-
-    return [...renderContinentList].sort((a, b) => {
-      if (rankSortKey === 'label') {
-        return a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }) * direction;
-      }
-
-      if (rankSortKey === 'routeCount') {
-        return ((a.routeCount ?? 0) - (b.routeCount ?? 0)) * direction;
-      }
-
-      if (rankSortKey === 'deltaPercent') {
-        return (a.deltaPercent - b.deltaPercent) * direction;
-      }
-
-      return (a.flights - b.flights || (a.routeCount ?? 0) - (b.routeCount ?? 0)) * direction;
-    });
-  }, [rankSortDirection, rankSortKey, renderContinentList]);
-
-  const handleRankSort = (key: RankSortKey) => {
-    setRankSortKey((currentKey) => {
-      if (currentKey === key) {
-        setRankSortDirection((currentDirection) => (currentDirection === 'asc' ? 'desc' : 'asc'));
-        return currentKey;
-      }
-
-      setRankSortDirection(key === 'label' ? 'asc' : 'desc');
-      return key;
-    });
-  };
+  const continentRankList = renderContinentList;
 
   const totalFlights = summary?.totalFlights ?? fallbackTotalFlights;
   const activeAirports = summary?.activeAirports ?? fallbackActiveAirports;
@@ -481,42 +489,10 @@ export function WorldView() {
     : 1;
   const previousPresetDaysText = `${currentPresetDays} วันก่อนหน้า`;
   const topCountryRows = useMemo<TopCountryViewRow[]>(() => {
-    if (topRanks?.countries?.length) {
-      return topRanks.countries;
-    }
-
-    return [...COUNTRIES]
-      .sort((a, b) => b.flights - a.flights)
-      .slice(0, 5)
-      .map((country) => ({
-        countryCode: null as string | null,
-        name: country.name,
-        flag: country.flag,
-        airportCount: country.airports,
-        flights: country.flights,
-        previousFlights: Math.max(country.flights - country.deltaN, 0),
-        deltaFlights: country.deltaN,
-        deltaPercent: parsePercentFromDelta(country.delta) ?? 0,
-      }));
+    return topRanks?.countries ?? [];
   }, [topRanks]);
   const topAirportRows = useMemo<TopAirportViewRow[]>(() => {
-    if (topRanks?.airports?.length) {
-      return topRanks.airports;
-    }
-
-      return [...BUSIEST_AIRPORTS]
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 5)
-      .map((airport) => ({
-        iata: airport.iata,
-        airportName: airport.city,
-        city: airport.city,
-        country: airport.country,
-        flights: airport.total,
-        previousFlights: Math.max(airport.total - airport.yoyN, 0),
-        deltaFlights: airport.yoyN,
-        deltaPercent: airport.yoy,
-      }));
+    return topRanks?.airports ?? [];
   }, [topRanks]);
 
   const kpis: KPIItem[] = summary
@@ -591,8 +567,32 @@ export function WorldView() {
     : summary
       ? 'ดึงจากฐานข้อมูล'
       : 'ยังใช้ mock สำรองอยู่';
-  const summaryRangeText = formatRangeLabel(dateRange);
+  const summaryRangeText = isMounted ? formatRangeLabel(dateRange) : 'กำลังเลือกช่วงวันที่';
   const activePresetLabel = durationMode ? RANGE_PRESET_LABELS[durationMode] : 'กำหนดเอง';
+  const handleDrillToCountry = (row: TopCountryViewRow) => {
+    const continentLabel = resolveContinentLabelByCountry(row.name, row.countryCode);
+    drillTo('country', {
+      continent: toContinentSelection(continentLabel) as any,
+      country: toCountrySelection(row),
+    });
+  };
+  const handleDrillToAirport = (row: TopAirportViewRow) => {
+    const countryName = row.country?.trim() || 'Unknown';
+    const continentLabel = resolveContinentLabelByCountry(countryName, null);
+    drillTo('airport', {
+      continent: toContinentSelection(continentLabel) as any,
+      country: {
+        flag: '🌐',
+        name: countryName,
+        airports: 0,
+        flights: row.flights,
+        delta: '0.0%',
+        deltaN: 0,
+        bar: 0,
+      },
+      airport: toAirportSelection(row),
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -857,59 +857,21 @@ export function WorldView() {
                 <div className="flex flex-col gap-1 border-b border-border px-4 py-4 sm:flex-row sm:items-end sm:justify-between sm:px-5">
                   <div>
                     <h3 className="text-[16px] font-bold">ภาพรวมทวีป</h3>
-                    <p className="text-sm text-muted-foreground">
-                      เรียงลำดับตามชื่อทวีป, จำนวนเส้นทางการบิน, เที่ยวบินทั้งหมด หรือ KPI จากช่วงวันที่ที่เลือก
-                    </p>
+                    <p className="text-sm text-muted-foreground">เรียงลำดับจาก backend ตามช่วงวันที่ที่เลือก</p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       ชุดข้อมูล `Other` ยังเก็บไว้ใน summary สำหรับ debug mapping แต่จะไม่แสดงในตารางนี้
                     </p>
                   </div>
-                  <span className="text-sm text-muted-foreground">คลิกหัวตารางเพื่อ sort</span>
+                  <span className="text-sm text-muted-foreground">ข้อมูลจัดอันดับจาก backend</span>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
                   <table className="w-full min-w-[760px] border-collapse text-sm">
                     <thead>
                       <tr className="border-b border-border bg-muted/30">
-                        <th className="px-4 py-3 text-left font-bold text-muted-foreground">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 hover:text-foreground"
-                            onClick={() => handleRankSort('label')}
-                          >
-                            <span>ชื่อทวีป</span>
-                            <span aria-hidden="true">{rankSortKey === 'label' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
-                          </button>
-                        </th>
-                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 hover:text-foreground"
-                            onClick={() => handleRankSort('routeCount')}
-                          >
-                            <span>จำนวนเส้นทางการบิน</span>
-                            <span aria-hidden="true">{rankSortKey === 'routeCount' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
-                          </button>
-                        </th>
-                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 hover:text-foreground"
-                            onClick={() => handleRankSort('flights')}
-                          >
-                            <span>เที่ยวบินทั้งหมด</span>
-                            <span aria-hidden="true">{rankSortKey === 'flights' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
-                          </button>
-                        </th>
-                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 hover:text-foreground"
-                            onClick={() => handleRankSort('deltaPercent')}
-                          >
-                            <span>ความเปลี่ยนแปลงจากช่วงที่เลือก</span>
-                            <span aria-hidden="true">{rankSortKey === 'deltaPercent' ? (rankSortDirection === 'asc' ? '▲' : '▼') : '↕'}</span>
-                          </button>
-                        </th>
+                        <th className="px-4 py-3 text-left font-bold text-muted-foreground">ชื่อทวีป</th>
+                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">จำนวนเส้นทางการบิน</th>
+                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">เที่ยวบินทั้งหมด</th>
+                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">ความเปลี่ยนแปลงจากช่วงที่เลือก</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -983,10 +945,10 @@ export function WorldView() {
           </section>
 
           <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
-            <TopCountriesTable rows={topCountryRows} loading={topRanksLoading} />
-            <TopAirportsTable rows={topAirportRows} loading={topRanksLoading} />
+            <TopCountriesTable rows={topCountryRows} loading={topRanksLoading} onSelectCountry={handleDrillToCountry} />
+            <TopAirportsTable rows={topAirportRows} loading={topRanksLoading} onSelectAirport={handleDrillToAirport} />
           </div>
-          <TopDestinations data={topDestinations} loading={topDestinationsLoading} />
+          <TopDestinations data={topDestinations} loading={topDestinationsLoading} onSelectAirport={handleDrillToAirport} />
         </>
       )}
     </div>
@@ -1020,6 +982,87 @@ function renderRankDeltaPill(deltaFlights: number, deltaPercent: number) {
       <span>({deltaPercent >= 0 ? '+' : ''}{deltaPercent.toFixed(1)}%)</span>
     </span>
   );
+}
+
+function flagFromCountryCode(code?: string | null) {
+  const normalized = (code || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalized)) {
+    return '🌐';
+  }
+
+  const first = normalized.codePointAt(0);
+  const second = normalized.codePointAt(1);
+  if (first == null || second == null) {
+    return '🌐';
+  }
+
+  return String.fromCodePoint(0x1f1e6 + first - 65, 0x1f1e6 + second - 65);
+}
+
+function toCountrySelection(row: TopCountryViewRow): CountryData {
+  const fallback = COUNTRIES.find((country) => country.name.toLowerCase() === row.name.toLowerCase());
+  return {
+    flag: fallback?.flag || flagFromCountryCode(row.countryCode),
+    name: row.name,
+    airports: row.airportCount,
+    flights: row.flights,
+    delta: `${row.deltaPercent >= 0 ? '+' : ''}${row.deltaPercent.toFixed(1)}%`,
+    deltaN: row.deltaFlights,
+    bar: 100,
+  };
+}
+
+function toAirportSelection(row: TopAirportViewRow): AirportInfo {
+  const airportName = row.airportName?.trim() || row.city?.trim() || row.iata;
+  const displayName = row.city && row.city !== airportName ? `${airportName}, ${row.city}` : airportName;
+  return {
+    iata: row.iata,
+    name: displayName,
+    flights: row.flights,
+    routes: Math.max(1, Math.round(row.flights / 12)),
+    airlines: Math.max(1, Math.round(row.flights / 60)),
+    color: 'var(--chart-1)',
+  };
+}
+
+function resolveContinentLabelByCountry(countryName?: string, countryCode?: string | null): string {
+  const code = (countryCode || '').trim().toUpperCase();
+  const name = (countryName || '').trim().toLowerCase();
+
+  const asiaCodes = new Set(['TH', 'CN', 'JP', 'KR', 'SG', 'MY', 'VN', 'ID', 'PH', 'IN', 'HK', 'TW']);
+  const europeCodes = new Set(['GB', 'FR', 'DE', 'IT', 'ES', 'NL', 'CH', 'AT', 'PL', 'SE', 'NO', 'FI', 'BE', 'PT']);
+  const naCodes = new Set(['US', 'CA', 'MX']);
+  const saCodes = new Set(['BR', 'AR', 'CL', 'CO', 'PE']);
+  const meCodes = new Set(['AE', 'SA', 'QA', 'KW', 'OM', 'BH', 'IL', 'JO']);
+  const africaCodes = new Set(['ZA', 'EG', 'MA', 'KE', 'ET', 'NG', 'TZ']);
+  const oceaniaCodes = new Set(['AU', 'NZ', 'FJ']);
+
+  if (asiaCodes.has(code) || /thailand|china|japan|korea|singapore|malaysia|vietnam|indonesia|india|philippines/.test(name)) return 'Asia-Pacific';
+  if (europeCodes.has(code) || /united kingdom|france|germany|italy|spain|netherlands|switzerland|austria|poland|sweden|norway|finland|belgium|portugal/.test(name)) return 'Europe';
+  if (naCodes.has(code) || /united states|canada|mexico/.test(name)) return 'North America';
+  if (saCodes.has(code) || /brazil|argentina|chile|colombia|peru/.test(name)) return 'South America';
+  if (meCodes.has(code) || /united arab emirates|saudi|qatar|kuwait|oman|bahrain|israel|jordan/.test(name)) return 'Middle East';
+  if (africaCodes.has(code) || /south africa|egypt|morocco|kenya|ethiopia|nigeria|tanzania/.test(name)) return 'Africa';
+  if (oceaniaCodes.has(code) || /australia|new zealand|fiji/.test(name)) return 'Oceania';
+
+  return 'Asia-Pacific';
+}
+
+function toContinentSelection(label: string) {
+  return {
+    name: label,
+    icon: label === 'Europe' ? '🏰' : label === 'North America' || label === 'South America' ? '🌎' : label === 'Middle East' ? '🕌' : label === 'Africa' ? '🦁' : '🌏',
+    airports: '0 สนามบิน · 0 ประเทศ',
+    flights: 0,
+    delta: '▲ +0 (0.0%)',
+    highlight: false,
+    yoy: 0,
+    yoyN: 0,
+    mom: 0,
+    momN: 0,
+    wow: 0,
+    wowN: 0,
+  };
 }
 
 function formatAirportDisplayName(name: string) {
@@ -1094,14 +1137,22 @@ function WorldViewSkeleton() {
   );
 }
 
-function TopCountriesTable({ rows, loading }: { rows: TopCountryViewRow[]; loading: boolean }) {
+function TopCountriesTable({
+  rows,
+  loading,
+  onSelectCountry,
+}: {
+  rows: TopCountryViewRow[];
+  loading: boolean;
+  onSelectCountry: (row: TopCountryViewRow) => void;
+}) {
   return (
     <div className="flex flex-col gap-3 min-w-0">
       <div className="flex items-center justify-between">
         <h3 className="text-[16px] font-bold flex items-center gap-2">
-          {'\u{1F310}'} Top ประเทศ
+          5 อันดับประเทศที่มีเที่ยวบินมากที่สุดโลก
         </h3>
-        <span className="text-[13px] text-muted-foreground">Top 5</span>
+        {/* <span className="text-[13px] text-muted-foreground">Top 5</span> */}
       </div>
       <div className="bg-card border border-border rounded-[10px] overflow-hidden flex-1 min-w-0">
         <div className="overflow-x-auto min-w-0">
@@ -1112,7 +1163,7 @@ function TopCountriesTable({ rows, loading }: { rows: TopCountryViewRow[]; loadi
                 <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">ประเทศ</th>
                 <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">สนามบินที่ใช้งาน</th>
                 <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">เที่ยวบินทั้งหมด</th>
-                <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">KPI เปลี่ยนแปลง</th>
+                <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">ความเปลี่ยนแปลง</th>
               </tr>
             </thead>
             <tbody>
@@ -1138,12 +1189,20 @@ function TopCountriesTable({ rows, loading }: { rows: TopCountryViewRow[]; loadi
                       <td className="py-2.5 px-2.5 font-bold text-muted-foreground w-8 text-[14px] transition-colors">{index + 1}</td>
                       <td className="py-2.5 px-2.5">
                         <div className="min-w-0">
-                          <div className="text-[14px] font-extrabold tracking-wide text-primary">
-                            {country.countryCode?.toUpperCase() || '--'}
-                          </div>
-                          <div className="text-[14px] font-semibold text-foreground truncate">
-                            {country.name}
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => onSelectCountry(country)}
+                            className="w-full cursor-pointer text-left"
+                            aria-label={`ไปยังประเทศ ${country.name}`}
+                            title="คลิกเพื่อไปยังหน้า Country"
+                          >
+                            <div className="text-[14px] font-extrabold tracking-wide text-primary hover:underline">
+                              {country.countryCode?.toUpperCase() || '--'}
+                            </div>
+                            <div className="text-[14px] font-semibold text-foreground truncate hover:text-primary">
+                              {country.name}
+                            </div>
+                          </button>
                         </div>
                       </td>
                       <td className="py-2.5 px-2.5 text-right tabular-nums">{country.airportCount.toLocaleString()}</td>
@@ -1163,14 +1222,22 @@ function TopCountriesTable({ rows, loading }: { rows: TopCountryViewRow[]; loadi
   );
 }
 
-function TopAirportsTable({ rows, loading }: { rows: TopAirportViewRow[]; loading: boolean }) {
+function TopAirportsTable({
+  rows,
+  loading,
+  onSelectAirport,
+}: {
+  rows: TopAirportViewRow[];
+  loading: boolean;
+  onSelectAirport: (row: TopAirportViewRow) => void;
+}) {
   return (
     <div className="flex flex-col gap-3 min-w-0">
       <div className="flex items-center justify-between">
         <h3 className="text-[16px] font-bold flex items-center gap-2">
-          {'\u2708\ufe0f'} Top
+          5 อันดับสนามบินที่มีเที่ยวบินมากที่สุดในโลก
         </h3>
-        <span className="text-[13px] text-muted-foreground">Top 5</span>
+        {/* <span className="text-[13px] text-muted-foreground">Top 5</span> */}
       </div>
       <div className="bg-card border border-border rounded-[10px] overflow-hidden flex-1 min-w-0">
         <div className="overflow-x-auto min-w-0">
@@ -1181,7 +1248,7 @@ function TopAirportsTable({ rows, loading }: { rows: TopAirportViewRow[]; loadin
                 <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">Code</th>
                 <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">เมือง / ประเทศ</th>
                 <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">เที่ยวบินทั้งหมด</th>
-                <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">KPI เปลี่ยนแปลง</th>
+                <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">ความเปลี่ยนแปลง</th>
               </tr>
             </thead>
             <tbody>
@@ -1206,10 +1273,18 @@ function TopAirportsTable({ rows, loading }: { rows: TopAirportViewRow[]; loadin
                     <td className="py-2.5 px-2.5 font-bold text-muted-foreground w-8 text-[14px] transition-colors">{index + 1}</td>
                     <td className="py-2.5 px-2.5">
                       <div className="min-w-0">
-                        <div className="text-[14px] font-extrabold tracking-wide text-primary">{airport.iata}</div>
-                        <div className="text-[14px] font-semibold text-foreground truncate">
-                          {formatAirportDisplayName(airport.airportName)}
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onSelectAirport(airport)}
+                          className="w-full cursor-pointer text-left"
+                          aria-label={`ไปยังสนามบิน ${airport.iata}`}
+                          title="คลิกเพื่อไปยังหน้า Airport"
+                        >
+                          <div className="text-[14px] font-extrabold tracking-wide text-primary hover:underline">{airport.iata}</div>
+                          <div className="text-[14px] font-semibold text-foreground truncate hover:text-primary">
+                            {formatAirportDisplayName(airport.airportName)}
+                          </div>
+                        </button>
                       </div>
                     </td>
                     <td className="py-2.5 px-2.5">
@@ -1234,44 +1309,20 @@ function TopAirportsTable({ rows, loading }: { rows: TopAirportViewRow[]; loadin
 function TopDestinations({
   data,
   loading,
+  onSelectAirport,
 }: {
   data: DashboardTopDestinationsResponse | null;
   loading: boolean;
+  onSelectAirport: (row: TopAirportViewRow) => void;
 }) {
   const { timeMode } = useDrillDown();
 
   const departureRows = useMemo<TopAirportViewRow[]>(() => {
-    if (data?.departures?.length) {
-      return data.departures;
-    }
-
-    return WORLD_TOP_DEP.map((destination) => ({
-      iata: destination.iata,
-      airportName: destination.name,
-      city: destination.name,
-      country: '',
-      flights: destination.flights,
-      previousFlights: Math.max(destination.flights - destination.yoyN, 0),
-      deltaFlights: destination.yoyN,
-      deltaPercent: destination.yoy,
-    }));
+    return data?.departures ?? [];
   }, [data]);
 
   const arrivalRows = useMemo<TopAirportViewRow[]>(() => {
-    if (data?.arrivals?.length) {
-      return data.arrivals;
-    }
-
-    return WORLD_TOP_ARR.map((destination) => ({
-      iata: destination.iata,
-      airportName: destination.name,
-      city: destination.name,
-      country: '',
-      flights: destination.flights,
-      previousFlights: Math.max(destination.flights - destination.yoyN, 0),
-      deltaFlights: destination.yoyN,
-      deltaPercent: destination.yoy,
-    }));
+    return data?.arrivals ?? [];
   }, [data]);
 
   const renderDestRows = (items: TopAirportViewRow[]) =>
@@ -1283,8 +1334,16 @@ function TopDestinations({
           </td>
           <td className="py-2.5 px-2.5">
             <div className="min-w-0">
-              <div className="text-[14px] font-extrabold tracking-wide text-primary">{destination.iata}</div>
-              <div className="text-[14px] font-semibold text-foreground truncate">{destination.airportName}</div>
+              <button
+                type="button"
+                onClick={() => onSelectAirport(destination)}
+                className="w-full cursor-pointer text-left"
+                aria-label={`ไปยังสนามบิน ${destination.iata}`}
+                title="คลิกเพื่อไปยังหน้า Airport"
+              >
+                <div className="text-[14px] font-extrabold tracking-wide text-primary hover:underline">{destination.iata}</div>
+                <div className="text-[14px] font-semibold text-foreground truncate hover:text-primary">{destination.airportName}</div>
+              </button>
             </div>
           </td>
           <td className="py-2.5 px-2.5 text-right font-bold tabular-nums text-primary">
@@ -1300,16 +1359,16 @@ function TopDestinations({
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="text-[16px] font-bold">{'🛫🛬'} 5 อันดับจุดหมายปลายทาง - ขาออก vs ขาเข้า</h3>
+        <h3 className="text-[16px] font-bold"> 5 อันดับจุดหมายปลายทาง - ขาออก vs ขาเข้า</h3>
         <span className="text-[14px] text-muted-foreground">
-          สนามบินที่ให้บริการมากที่สุดทั่วโลก {'\u00B7'} {modeLabel(timeMode)}
+          {/* สนามบินที่ให้บริการมากที่สุดทั่วโลก {'\u00B7'} {modeLabel(timeMode)} */}
         </span>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
         <div className="bg-card border border-border rounded-[10px] overflow-hidden">
           <div className="flex items-center justify-between gap-3 px-4 pt-4">
             <span className="text-[14px] font-bold py-0.5 px-2.5 rounded-full bg-primary/15 text-primary">{'↑'} ขาออก</span>
-            <span className="text-[16px] font-bold">5 อันดับจุดหมายขาออก</span>
+            {/* <span className="text-[16px] font-bold">5 อันดับจุดหมายขาออก</span> */}
           </div>
           <div className="overflow-x-auto min-w-0">
             <table className="w-full min-w-[520px] border-collapse text-sm">
@@ -1318,7 +1377,7 @@ function TopDestinations({
                   <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">#</th>
                   <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">จุดหมาย</th>
                   <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">เที่ยวบินทั้งหมด</th>
-                  <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">KPI เปลี่ยนแปลง</th>
+                  <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">ความเปลี่ยนแปลง</th>
                 </tr>
               </thead>
               <tbody>
@@ -1338,7 +1397,7 @@ function TopDestinations({
         <div className="bg-card border border-border rounded-[10px] overflow-hidden">
           <div className="flex items-center justify-between gap-3 px-4 pt-4">
             <span className="text-[14px] font-bold py-0.5 px-2.5 rounded-full bg-accent/10 text-accent">{'↓'} ขาเข้า</span>
-            <span className="text-[16px] font-bold">5 อันดับจุดหมายขาเข้า</span>
+            {/* <span className="text-[16px] font-bold">5 อันดับจุดหมายขาเข้า</span> */}
           </div>
           <div className="overflow-x-auto min-w-0">
             <table className="w-full min-w-[520px] border-collapse text-sm">
@@ -1347,7 +1406,7 @@ function TopDestinations({
                   <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">#</th>
                   <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-left">จุดหมาย</th>
                   <th className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">เที่ยวบินทั้งหมด</th>
-                  <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">KPI เปลี่ยนแปลง</th>
+                  <th className="text-[13px] tracking-wider text-muted-foreground font-bold py-2.5 px-2.5 text-right">ความเปลี่ยนแปลง</th>
                 </tr>
               </thead>
               <tbody>
@@ -1370,6 +1429,7 @@ function TopDestinations({
 }
 
 function CountryLookupPanel() {
+  const { drillTo } = useDrillDown();
   const [countries, setCountries] = useState<AirportCountrySummary[]>(() => getCachedAirportCountries() ?? []);
   const [loading, setLoading] = useState(() => getCachedAirportCountries() === null);
   const [query, setQuery] = useState('');
@@ -1508,10 +1568,52 @@ function CountryLookupPanel() {
                 mixedRows.map((row) => (
                   <tr key={row.key} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
                     <td className="px-3 py-2.5 align-top">
-                      <div className="text-[14px] font-extrabold tracking-wide text-primary">{row.code}</div>
+                      <button
+                        type="button"
+                        className="w-full cursor-pointer text-left"
+                        onClick={() =>
+                          drillTo('country', {
+                            continent: toContinentSelection(resolveContinentLabelByCountry(row.name, row.code)) as any,
+                            country: {
+                              flag: flagFromCountryCode(row.code),
+                              name: row.name,
+                              airports: 0,
+                              flights: 0,
+                              delta: '0.0%',
+                              deltaN: 0,
+                              bar: 0,
+                            },
+                          })
+                        }
+                        aria-label={`ไปยังประเทศ ${row.name}`}
+                        title="คลิกเพื่อไปยังหน้า Country"
+                      >
+                        <div className="text-[14px] font-extrabold tracking-wide text-primary hover:underline">{row.code}</div>
+                      </button>
                     </td>
                     <td className="px-3 py-2.5 align-top">
-                      <div className="text-[14px] font-semibold text-foreground">{row.name}</div>
+                      <button
+                        type="button"
+                        className="w-full cursor-pointer text-left"
+                        onClick={() =>
+                          drillTo('country', {
+                            continent: toContinentSelection(resolveContinentLabelByCountry(row.name, row.code)) as any,
+                            country: {
+                              flag: flagFromCountryCode(row.code),
+                              name: row.name,
+                              airports: 0,
+                              flights: 0,
+                              delta: '0.0%',
+                              deltaN: 0,
+                              bar: 0,
+                            },
+                          })
+                        }
+                        aria-label={`ไปยังประเทศ ${row.name}`}
+                        title="คลิกเพื่อไปยังหน้า Country"
+                      >
+                        <div className="text-[14px] font-semibold text-foreground hover:text-primary">{row.name}</div>
+                      </button>
                     </td>
                   </tr>
                 ))

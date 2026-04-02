@@ -250,6 +250,38 @@ export interface DashboardContinentTopRoutesResponse {
   routes: DashboardContinentTopRouteRankResponse[];
 }
 
+export type DashboardContinentTrendMode = 'day' | 'month' | 'year';
+
+export interface DashboardContinentTrendPointResponse {
+  key: string;
+  label: string;
+  inboundAvg: number;
+  outboundAvg: number;
+  totalAvg: number;
+  highlight: boolean;
+}
+
+export interface DashboardContinentTrendModeDataResponse {
+  mode: DashboardContinentTrendMode;
+  status: 'ready' | 'unavailable';
+  message: string | null;
+  points: DashboardContinentTrendPointResponse[];
+}
+
+export interface DashboardContinentTrendsResponse {
+  continent: {
+    key: string;
+    label: string;
+    icon: string;
+  };
+  generatedAt: string;
+  modes: {
+    day: DashboardContinentTrendModeDataResponse;
+    month: DashboardContinentTrendModeDataResponse;
+    year: DashboardContinentTrendModeDataResponse;
+  };
+}
+
 export interface DashboardQueryOptions {
   date?: string;
   windowDays?: number;
@@ -416,6 +448,23 @@ export class StatisticsApi {
       start_date: startDate,
       end_date: endDate,
       limit,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get continent trend averages prepared by backend for day/month/year chart modes
+   */
+  async getDashboardContinentTrends(
+    continent: string,
+    options: Pick<DashboardQueryOptions, 'signal' | 'timeoutMs'> = {},
+  ): Promise<DashboardContinentTrendsResponse> {
+    const {
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardContinentTrendsResponse>('/statistics/dashboard-continent-trends', {
+      continent,
     }, { signal, timeoutMs });
   }
 

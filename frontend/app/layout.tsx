@@ -1,15 +1,7 @@
 import type { Metadata, Viewport } from 'next'
-import { Kanit } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { Toaster } from '@/components/ui/toaster'
 import './globals.css'
-
-const kanit = Kanit({
-  subsets: ['latin', 'thai'],
-  weight: ['300', '400', '500', '600', '700'],
-  variable: '--font-kanit',
-  display: 'swap',
-});
 
 export const metadata: Metadata = {
   title: 'Search flight project ค้นหาตั๋วเครื่องบินราคาถูกที่สุด',
@@ -47,7 +39,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="th">
-      <body className={`${kanit.variable} font-sans antialiased`} suppressHydrationWarning>
+      <body className="font-sans antialiased" suppressHydrationWarning>
         {children}
         <Analytics />
         <Toaster />

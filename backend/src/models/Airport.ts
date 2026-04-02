@@ -35,6 +35,18 @@ export interface AirportCountrySummary {
 }
 
 export class AirportModel {
+  private static airportCountriesCache: {
+    countries: AirportCountrySummary[];
+    totalCountries: number;
+    totalAirports: number;
+    cachedAt: number;
+  } | null = null;
+  private static readonly AIRPORT_COUNTRIES_CACHE_TTL_MS = 10 * 60 * 1000;
+
+  static invalidateAirportCountriesCache(): void {
+    AirportModel.airportCountriesCache = null;
+  }
+
   /**
    * Get or create an airport
    */
@@ -192,7 +204,20 @@ export class AirportModel {
   /**
    * Get country summaries for airport directory UIs.
    */
-  static async getAirportCountries(): Promise<AirportCountrySummary[]> {
+  static async getAirportCountries(): Promise<{
+    countries: AirportCountrySummary[];
+    totalCountries: number;
+    totalAirports: number;
+  }> {
+    const cached = AirportModel.airportCountriesCache;
+    if (cached && Date.now() - cached.cachedAt < AirportModel.AIRPORT_COUNTRIES_CACHE_TTL_MS) {
+      return {
+        countries: cached.countries,
+        totalCountries: cached.totalCountries,
+        totalAirports: cached.totalAirports,
+      };
+    }
+
     const query = `
       SELECT
         COALESCE(country_name, country, 'Other') AS country,
@@ -204,7 +229,21 @@ export class AirportModel {
     `;
 
     const result = await pool.query(query);
-    return result.rows;
+    const countries = result.rows as AirportCountrySummary[];
+    const totalAirports = countries.reduce((sum, country) => sum + country.airport_count, 0);
+
+    AirportModel.airportCountriesCache = {
+      countries,
+      totalCountries: countries.length,
+      totalAirports,
+      cachedAt: Date.now(),
+    };
+
+    return {
+      countries,
+      totalCountries: countries.length,
+      totalAirports,
+    };
   }
 
   /**

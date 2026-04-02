@@ -30,6 +30,17 @@ import {
   type DashboardTopRanksResponse,
   type DashboardTopDestinationsResponse,
 } from '@/lib/api/statistics-api';
+import {
+  getWorldSummaryCacheState,
+  setWorldSummaryCache,
+  getWorldTopRanksCacheState,
+  setWorldTopRanksCache,
+  getWorldTopDestinationsCacheState,
+  setWorldTopDestinationsCache,
+  getCachedAirportCountries,
+  setCachedAirportCountries,
+  runDrillDownRequest,
+} from '@/lib/dashboard/drill-down-cache';
 import { useDrillDown, KPIRow, ChangePill } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
@@ -38,11 +49,6 @@ import { cn } from '@/lib/utils';
 type RankSortKey = 'label' | 'routeCount' | 'flights' | 'deltaPercent';
 
 const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'xl:h-[540px]';
-
-const worldSummaryCache = new Map<string, DashboardSummaryResponse>();
-const worldTopRanksCache = new Map<string, DashboardTopRanksResponse>();
-const worldTopDestinationsCache = new Map<string, DashboardTopDestinationsResponse>();
-let cachedAirportCountries: AirportCountrySummary[] | null = null;
 
 type TopCountryViewRow = {
   countryCode: string | null;
@@ -239,9 +245,15 @@ export function WorldView() {
     const startDate = formatLocalDateInput(dateRange.from);
     const endDate = formatLocalDateInput(dateRange.to || dateRange.from);
     const cacheKey = `${startDate}__${endDate}`;
-    const cachedSummary = worldSummaryCache.get(cacheKey) ?? null;
-    const cachedTopRanks = worldTopRanksCache.get(cacheKey) ?? null;
-    const cachedTopDestinations = worldTopDestinationsCache.get(cacheKey) ?? null;
+    const summaryCacheState = getWorldSummaryCacheState(cacheKey);
+    const topRanksCacheState = getWorldTopRanksCacheState(cacheKey);
+    const topDestinationsCacheState = getWorldTopDestinationsCacheState(cacheKey);
+    const cachedSummary = summaryCacheState.value;
+    const cachedTopRanks = topRanksCacheState.value;
+    const cachedTopDestinations = topDestinationsCacheState.value;
+    const shouldRefreshSummary = !cachedSummary || summaryCacheState.stale;
+    const shouldRefreshTopRanks = !cachedTopRanks || topRanksCacheState.stale;
+    const shouldRefreshTopDestinations = !cachedTopDestinations || topDestinationsCacheState.stale;
 
     if (cachedSummary) {
       console.debug('[WorldView] summary cache hit', { cacheKey });
@@ -270,7 +282,7 @@ export function WorldView() {
       setTopDestinationsLoading(true);
     }
 
-    if (cachedSummary && cachedTopRanks && cachedTopDestinations) {
+    if (cachedSummary && cachedTopRanks && cachedTopDestinations && !shouldRefreshSummary && !shouldRefreshTopRanks && !shouldRefreshTopDestinations) {
       console.debug('[WorldView] all dashboard caches ready', { cacheKey });
       return () => {
         mounted = false;
@@ -278,12 +290,15 @@ export function WorldView() {
     }
 
     void (async () => {
-      if (!cachedSummary) {
+      if (shouldRefreshSummary) {
         console.debug('[WorldView] calling dashboard-summary', { startDate, endDate });
         try {
-          const summaryData = await statisticsApi.getDashboardSummary({ startDate, endDate });
+          const summaryData = await runDrillDownRequest(
+            `world:summary:${cacheKey}`,
+            () => statisticsApi.getDashboardSummary({ startDate, endDate }),
+          );
           if (!mounted) return;
-          worldSummaryCache.set(cacheKey, summaryData);
+          setWorldSummaryCache(cacheKey, summaryData);
           setSummary(summaryData);
           console.debug('[WorldView] summary fetch success', {
             totalFlights: summaryData.totalFlights,
@@ -306,12 +321,15 @@ export function WorldView() {
         setLoading(false);
       }
 
-      if (!cachedTopRanks) {
+      if (shouldRefreshTopRanks) {
         console.debug('[WorldView] calling dashboard-top-ranks', { startDate, endDate });
         try {
-          const topRanksData = await statisticsApi.getDashboardTopRanks({ startDate, endDate });
+          const topRanksData = await runDrillDownRequest(
+            `world:top-ranks:${cacheKey}`,
+            () => statisticsApi.getDashboardTopRanks({ startDate, endDate }),
+          );
           if (!mounted) return;
-          worldTopRanksCache.set(cacheKey, topRanksData);
+          setWorldTopRanksCache(cacheKey, topRanksData);
           setTopRanks(topRanksData);
           console.debug('[WorldView] top ranks fetch success', {
             countries: topRanksData.countries.length,
@@ -332,12 +350,15 @@ export function WorldView() {
         }
       }
 
-      if (!cachedTopDestinations) {
+      if (shouldRefreshTopDestinations) {
         console.debug('[WorldView] calling dashboard-top-destinations', { startDate, endDate });
         try {
-          const topDestinationsData = await statisticsApi.getDashboardTopDestinations({ startDate, endDate });
+          const topDestinationsData = await runDrillDownRequest(
+            `world:top-destinations:${cacheKey}`,
+            () => statisticsApi.getDashboardTopDestinations({ startDate, endDate }),
+          );
           if (!mounted) return;
-          worldTopDestinationsCache.set(cacheKey, topDestinationsData);
+          setWorldTopDestinationsCache(cacheKey, topDestinationsData);
           setTopDestinations(topDestinationsData);
           console.debug('[WorldView] top destinations fetch success', {
             departures: topDestinationsData.departures.length,
@@ -1349,16 +1370,18 @@ function TopDestinations({
 }
 
 function CountryLookupPanel() {
-  const [countries, setCountries] = useState<AirportCountrySummary[]>(() => cachedAirportCountries ?? []);
-  const [loading, setLoading] = useState(() => cachedAirportCountries === null);
+  const [countries, setCountries] = useState<AirportCountrySummary[]>(() => getCachedAirportCountries() ?? []);
+  const [loading, setLoading] = useState(() => getCachedAirportCountries() === null);
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
 
-    if (cachedAirportCountries) {
-      setCountries(cachedAirportCountries);
+    const cachedCountries = getCachedAirportCountries();
+
+    if (cachedCountries) {
+      setCountries(cachedCountries);
       setLoading(false);
       return () => {
         alive = false;
@@ -1371,7 +1394,7 @@ function CountryLookupPanel() {
         setError(null);
         const response = await airportApi.getAirportCountries();
         if (!alive) return;
-        cachedAirportCountries = response.countries ?? [];
+        setCachedAirportCountries(response.countries ?? []);
         setCountries(response.countries ?? []);
       } catch (err) {
         if (!alive) return;

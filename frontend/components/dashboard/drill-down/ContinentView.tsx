@@ -13,6 +13,15 @@ import {
   Cell,
 } from 'recharts';
 import {
+  getContinentDetailCacheState,
+  getContinentSeasonalCacheState,
+  getContinentTopRoutesCacheState,
+  storeContinentDetail,
+  storeContinentSeasonal,
+  storeContinentTopRoutes,
+  runDrillDownRequest,
+} from '@/lib/dashboard/drill-down-cache';
+import {
   CONTINENTS,
   getChangeForMode,
   growthDeltaTypeFromPct,
@@ -35,13 +44,6 @@ const MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.'
 type ContinentDetailPayload = Awaited<ReturnType<typeof getContinentDetail>>;
 type SeasonalPoint = ContinentDetailPayload['seasonal'][number];
 type ContinentDisplayMode = 'wow' | 'mom' | 'yoy';
-type ContinentCacheSnapshot = {
-  detail: Array<[string, ContinentDetailPayload]>;
-  seasonal: Array<[string, SeasonalPoint[]]>;
-  topRoutes: Array<[string, EurTopRoute[]]>;
-};
-
-const CONTINENT_CACHE_STORAGE_KEY = 'search-flight.drilldown.continent-cache.v2';
 
 const CONTINENT_PRESET_LABELS: Record<RangePreset, string> = {
   focus: '± 15 วัน',
@@ -83,66 +85,6 @@ function buildContinentCacheKey(
     `seasonal:${includeSeasonal ? 1 : 0}`,
     `routes:${includeTopRoutes ? 1 : 0}`,
   ].join('|');
-}
-
-function readContinentCacheSnapshot(): ContinentCacheSnapshot | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  try {
-    const raw = window.sessionStorage.getItem(CONTINENT_CACHE_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<ContinentCacheSnapshot>;
-    return {
-      detail: Array.isArray(parsed.detail) ? parsed.detail : [],
-      seasonal: Array.isArray(parsed.seasonal) ? parsed.seasonal : [],
-      topRoutes: Array.isArray(parsed.topRoutes) ? parsed.topRoutes : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-const persistedContinentCache = readContinentCacheSnapshot();
-const continentDetailCache = new Map<string, ContinentDetailPayload>(persistedContinentCache?.detail ?? []);
-const continentSeasonalCache = new Map<string, SeasonalPoint[]>(persistedContinentCache?.seasonal ?? []);
-const continentTopRoutesCache = new Map<string, EurTopRoute[]>(persistedContinentCache?.topRoutes ?? []);
-
-function persistContinentCacheSnapshot() {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  try {
-    const snapshot: ContinentCacheSnapshot = {
-      detail: Array.from(continentDetailCache.entries()),
-      seasonal: Array.from(continentSeasonalCache.entries()),
-      topRoutes: Array.from(continentTopRoutesCache.entries()),
-    };
-
-    window.sessionStorage.setItem(CONTINENT_CACHE_STORAGE_KEY, JSON.stringify(snapshot));
-  } catch {
-    // Ignore storage write failures and keep the in-memory cache usable.
-  }
-}
-
-function storeContinentDetail(continentName: string, payload: ContinentDetailPayload) {
-  continentDetailCache.set(continentName, payload);
-  persistContinentCacheSnapshot();
-}
-
-function storeContinentSeasonal(continentName: string, seasonal: SeasonalPoint[]) {
-  continentSeasonalCache.set(continentName, seasonal);
-  persistContinentCacheSnapshot();
-}
-
-function storeContinentTopRoutes(continentName: string, topRoutes: EurTopRoute[]) {
-  continentTopRoutesCache.set(continentName, topRoutes);
-  persistContinentCacheSnapshot();
 }
 
 function parseContinentCountSummary(airportsText: string) {
@@ -270,33 +212,33 @@ export function ContinentView() {
   const continentWindowDays = resolveContinentWindowDays(preset);
   const continentTimeMode = resolveContinentDisplayMode(preset);
   const topRoutesSectionRef = useRef<HTMLDivElement | null>(null);
-  const [shouldLoadTopRoutes, setShouldLoadTopRoutes] = useState(() => continentTopRoutesCache.has(buildContinentCacheKey(continent.name, continentWindowDays, false, false, true)));
+  const [shouldLoadTopRoutes, setShouldLoadTopRoutes] = useState(() => !!getContinentTopRoutesCacheState(buildContinentCacheKey(continent.name, continentWindowDays, false, false, true)).value);
   const coreCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, true, false, false);
   const seasonalCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, false, true, false);
   const topRoutesCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, false, false, true);
   const [continentPayload, setContinentPayload] = useState<ContinentDetailPayload | null>(() => {
-    return continentDetailCache.get(coreCacheKey) || null;
+    return getContinentDetailCacheState(coreCacheKey).value;
   });
   const [payloadCacheKey, setPayloadCacheKey] = useState<string | null>(() => {
-    return continentDetailCache.has(coreCacheKey) ? coreCacheKey : null;
+    return getContinentDetailCacheState(coreCacheKey).value ? coreCacheKey : null;
   });
   const [seasonalRows, setSeasonalRows] = useState<SeasonalPoint[] | null>(() => {
-    return continentSeasonalCache.get(seasonalCacheKey) || null;
+    return getContinentSeasonalCacheState(seasonalCacheKey).value;
   });
   const [seasonalCacheHitKey, setSeasonalCacheHitKey] = useState<string | null>(() => {
-    return continentSeasonalCache.has(seasonalCacheKey) ? seasonalCacheKey : null;
+    return getContinentSeasonalCacheState(seasonalCacheKey).value ? seasonalCacheKey : null;
   });
   const [topRouteRows, setTopRouteRows] = useState<EurTopRoute[] | null>(() => {
-    return continentTopRoutesCache.get(topRoutesCacheKey) || null;
+    return getContinentTopRoutesCacheState(topRoutesCacheKey).value;
   });
   const [topRouteCacheHitKey, setTopRouteCacheHitKey] = useState<string | null>(() => {
-    return continentTopRoutesCache.has(topRoutesCacheKey) ? topRoutesCacheKey : null;
+    return getContinentTopRoutesCacheState(topRoutesCacheKey).value ? topRoutesCacheKey : null;
   });
   const [detailError, setDetailError] = useState<string | null>(null);
   const coreReady = continentPayload != null && payloadCacheKey === coreCacheKey;
 
   useEffect(() => {
-    setShouldLoadTopRoutes(continentTopRoutesCache.has(topRoutesCacheKey));
+    setShouldLoadTopRoutes(!!getContinentTopRoutesCacheState(topRoutesCacheKey).value);
   }, [topRoutesCacheKey]);
 
   useEffect(() => {
@@ -326,27 +268,34 @@ export function ContinentView() {
 
   useEffect(() => {
     let alive = true;
-    const cached = continentDetailCache.get(coreCacheKey);
+    const cacheState = getContinentDetailCacheState(coreCacheKey);
+    const cached = cacheState.value;
 
     if (cached) {
       setContinentPayload(cached);
       setPayloadCacheKey(coreCacheKey);
       setDetailError(null);
-      return () => {
-        alive = false;
-      };
+      if (!cacheState.stale) {
+        return () => {
+          alive = false;
+        };
+      }
+    } else {
+      setPayloadCacheKey(null);
     }
 
     const loadDetail = async () => {
       try {
         setDetailError(null);
-        setPayloadCacheKey(null);
-        const payload = await getContinentDetail(continent.name, {
-          windowDays: continentWindowDays,
-          includeCore: true,
-          includeSeasonal: false,
-          includeTopRoutes: false,
-        });
+        const payload = await runDrillDownRequest(
+          `continent:core:${coreCacheKey}`,
+          () => getContinentDetail(continent.name, {
+            windowDays: continentWindowDays,
+            includeCore: true,
+            includeSeasonal: false,
+            includeTopRoutes: false,
+          }),
+        );
         if (!alive) return;
         storeContinentDetail(coreCacheKey, payload);
         setContinentPayload(payload);
@@ -365,29 +314,36 @@ export function ContinentView() {
   }, [continent.name, continentWindowDays, coreCacheKey]);
 
   useEffect(() => {
-    if (!coreReady || !shouldLoadTopRoutes) {
+    if (!coreReady) {
       return;
     }
 
     let alive = true;
-    const cached = continentSeasonalCache.get(seasonalCacheKey);
+    const cacheState = getContinentSeasonalCacheState(seasonalCacheKey);
+    const cached = cacheState.value;
+
     if (cached) {
       setSeasonalRows(cached);
       setSeasonalCacheHitKey(seasonalCacheKey);
-      return () => {
-        alive = false;
-      };
+      if (!cacheState.stale) {
+        return () => {
+          alive = false;
+        };
+      }
     }
 
     const loadSeasonal = async () => {
       try {
         setSeasonalCacheHitKey(null);
-        const payload = await getContinentDetail(continent.name, {
-          windowDays: continentWindowDays,
-          includeCore: false,
-          includeSeasonal: true,
-          includeTopRoutes: false,
-        });
+        const payload = await runDrillDownRequest(
+          `continent:seasonal:${seasonalCacheKey}`,
+          () => getContinentDetail(continent.name, {
+            windowDays: continentWindowDays,
+            includeCore: false,
+            includeSeasonal: true,
+            includeTopRoutes: false,
+          }),
+        );
         if (!alive) return;
         storeContinentSeasonal(seasonalCacheKey, payload.seasonal);
         setSeasonalRows(payload.seasonal);
@@ -406,29 +362,36 @@ export function ContinentView() {
   }, [continent.name, continentWindowDays, coreReady, seasonalCacheKey]);
 
   useEffect(() => {
-    if (!coreReady) {
+    if (!coreReady || !shouldLoadTopRoutes) {
       return;
     }
 
     let alive = true;
-    const cached = continentTopRoutesCache.get(topRoutesCacheKey);
+    const cacheState = getContinentTopRoutesCacheState(topRoutesCacheKey);
+    const cached = cacheState.value;
+
     if (cached) {
       setTopRouteRows(cached);
       setTopRouteCacheHitKey(topRoutesCacheKey);
-      return () => {
-        alive = false;
-      };
+      if (!cacheState.stale) {
+        return () => {
+          alive = false;
+        };
+      }
     }
 
     const loadTopRoutes = async () => {
       try {
         setTopRouteCacheHitKey(null);
-        const payload = await getContinentDetail(continent.name, {
-          windowDays: continentWindowDays,
-          includeCore: false,
-          includeSeasonal: false,
-          includeTopRoutes: true,
-        });
+        const payload = await runDrillDownRequest(
+          `continent:routes:${topRoutesCacheKey}`,
+          () => getContinentDetail(continent.name, {
+            windowDays: continentWindowDays,
+            includeCore: false,
+            includeSeasonal: false,
+            includeTopRoutes: true,
+          }),
+        );
         if (!alive) return;
         storeContinentTopRoutes(topRoutesCacheKey, payload.topRoutes);
         setTopRouteRows(payload.topRoutes);

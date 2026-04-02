@@ -1,0 +1,118 @@
+import type { TopAirlineWorld } from '@/types/dashboard';
+
+interface ListedAirlineRecord {
+  airlineName: string;
+  ticker: string;
+  exchange: string;
+  country: string;
+}
+
+const RAW_LISTED_AIRLINES_CSV = `Airline Name,Ticker,Exchange,Country
+Aegean Airlines,AEGN,Athens Stock Exchange (ATHEX),Greece
+Air Arabia,AIRARABIA,Dubai Financial Market (DFM),United Arab Emirates
+Air China,601111,Shanghai Stock Exchange (SSE),China
+Air France-KLM,AF,Euronext Paris,France
+Air New Zealand,AIR,New Zealand Exchange (NZX),New Zealand
+Alaska Air Group,ALK,New York Stock Exchange (NYSE),United States
+Allegiant Travel Company,ALGT,NASDAQ,United States
+American Airlines Group,AAL,NASDAQ,United States
+ANA Holdings,9202,Tokyo Stock Exchange (TSE),Japan
+Asiana Airlines,020560,Korea Exchange (KRX),South Korea
+Avianca Group International,AVHH,New York Stock Exchange (NYSE),Colombia
+Azul Brazilian Airlines,AZUL,New York Stock Exchange (NYSE),Brazil
+Bangkok Airways,BA,Stock Exchange of Thailand (SET),Thailand
+Cathay Pacific Airways,0293,Hong Kong Stock Exchange (HKEx),Hong Kong
+Cebu Air (Cebu Pacific),CEB,Philippine Stock Exchange (PSE),Philippines
+China Eastern Airlines,600115,Shanghai Stock Exchange (SSE),China
+China Southern Airlines,600029,Shanghai Stock Exchange (SSE),China
+Copa Holdings,CPA,New York Stock Exchange (NYSE),Panama
+Delta Air Lines,DAL,New York Stock Exchange (NYSE),United States
+easyJet,EZJ,London Stock Exchange (LSE),United Kingdom
+El Al Israel Airlines,ELAL,Tel Aviv Stock Exchange (TASE),Israel
+Finnair,FIA1S,Nasdaq Helsinki,Finland
+Frontier Group Holdings,ULCC,NASDAQ,United States
+GOL Linhas Aereas,GOLL3,B3 (Bovespa),Brazil
+Hawaiian Holdings,HA,NASDAQ,United States
+Hainan Airlines,600221,Shanghai Stock Exchange (SSE),China
+International Consolidated Airlines Group (IAG),IAG,London Stock Exchange (LSE),United Kingdom
+InterGlobe Aviation (IndiGo),INDIGO,National Stock Exchange of India (NSE),India
+Japan Airlines,9201,Tokyo Stock Exchange (TSE),Japan
+JetBlue Airways,JBLU,NASDAQ,United States
+Jeju Air,089590,Korea Exchange (KRX),South Korea
+Jin Air,180640,Korea Exchange (KRX),South Korea
+Korean Air Lines,003490,Korea Exchange (KRX),South Korea
+LATAM Airlines Group,LTM,Santiago Stock Exchange (BCS),Chile
+Lufthansa Group,LHA,Frankfurt Stock Exchange (FSE),Germany
+Mesa Air Group,MESA,NASDAQ,United States
+Norwegian Air Shuttle,NAS,Oslo Stock Exchange (OSE),Norway
+Qantas Airways,QAN,Australian Securities Exchange (ASX),Australia
+Ryanair Holdings,RYAAY,NASDAQ,United States
+SAS (Scandinavian Airlines),SAS,Nasdaq Stockholm,Sweden
+Singapore Airlines,C6L,Singapore Exchange (SGX),Singapore
+SkyWest,SKYW,NASDAQ,United States
+Southwest Airlines,LUV,New York Stock Exchange (NYSE),United States
+SpiceJet,SPICEJET,National Stock Exchange of India (NSE),India
+Sun Country Airlines,SNCY,NASDAQ,United States
+Thai Airways International,THAI,Stock Exchange of Thailand (SET),Thailand
+Turkish Airlines,THYAO,Borsa Istanbul (BIST),Turkey
+United Airlines Holdings,UAL,NASDAQ,United States
+Vietjet Aviation,VJC,Ho Chi Minh Stock Exchange (HOSE),Vietnam
+Vietnam Airlines,HVN,Ho Chi Minh Stock Exchange (HOSE),Vietnam
+Controladora Vuela (Volaris),VLRS,New York Stock Exchange (NYSE),Mexico
+Wizz Air Holdings,WIZZ,London Stock Exchange (LSE),United Kingdom`;
+
+const AIRLINE_NAME_ALIASES: Record<string, string> = {
+  'american airlines': 'american airlines group',
+  'united airlines': 'united airlines holdings',
+  ryanair: 'ryanair holdings',
+  lufthansa: 'lufthansa group',
+};
+
+function normalizeAirlineName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseCsvRows(csv: string): ListedAirlineRecord[] {
+  const lines = csv.split('\n').map((line) => line.trim()).filter(Boolean);
+  return lines.slice(1).map((line) => {
+    const [airlineName, ticker, exchange, country] = line.split(',');
+    return {
+      airlineName: airlineName.trim(),
+      ticker: ticker.trim(),
+      exchange: exchange.trim(),
+      country: country.trim(),
+    };
+  });
+}
+
+const LISTED_AIRLINE_RECORDS = parseCsvRows(RAW_LISTED_AIRLINES_CSV);
+const LISTED_AIRLINE_BY_NAME = new Map(
+  LISTED_AIRLINE_RECORDS.map((row) => [normalizeAirlineName(row.airlineName), row]),
+);
+
+function resolveAliasName(name: string): string {
+  const normalized = normalizeAirlineName(name);
+  return AIRLINE_NAME_ALIASES[normalized] ?? normalized;
+}
+
+export function getListedAirlineByName(airlineName: string): ListedAirlineRecord | undefined {
+  const aliasResolved = resolveAliasName(airlineName);
+  return LISTED_AIRLINE_BY_NAME.get(aliasResolved);
+}
+
+export function enrichTopAirlinesWithListing(airlines: TopAirlineWorld[]): TopAirlineWorld[] {
+  return airlines.map((airline) => {
+    const listed = getListedAirlineByName(airline.name);
+    return {
+      ...airline,
+      ticker: listed?.ticker,
+      exchange: listed?.exchange,
+    };
+  });
+}
+

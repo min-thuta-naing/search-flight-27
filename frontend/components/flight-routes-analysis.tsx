@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils'
 import { DateRange, type MonthCaptionProps, useDayPicker } from 'react-day-picker'
 import { Badge } from '@/components/ui/badge'
 import { FlightRoutesChart } from './flight-routes-chart'
+import { readSharedRangePreset, writeSharedRangePreset, type SharedRangePreset } from '@/lib/dashboard/range-preset-store'
 
 
 
@@ -359,6 +360,7 @@ function RouteColumnHeader({
 
 export function FlightRoutesAnalysis() {
   const ROUTE_GROUPS_PAGE_SIZE = 50
+  const sharedPreset = readSharedRangePreset('focus')
   const [origin, setOrigin] = useState('')
   const [originName, setOriginName] = useState('')
   const [destination, setDestination] = useState('')
@@ -366,7 +368,7 @@ export function FlightRoutesAnalysis() {
   const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined)
   const [dateError, setDateError] = useState(false)
   const [compareMode, setCompareMode] = useState(true)
-  const [durationMode, setDurationMode] = useState<'focus' | '7' | '30' | '90' | '180' | '365' | 'all' | null>(null)
+  const [durationMode, setDurationMode] = useState<SharedRangePreset | null>(sharedPreset)
   const [showCustomDateRange, setShowCustomDateRange] = useState(false)
   const [isExtendedRangeOpen, setIsExtendedRangeOpen] = useState(false)
   const [fromCalendarMonth, setFromCalendarMonth] = useState(new Date())
@@ -384,6 +386,34 @@ export function FlightRoutesAnalysis() {
   const [outgoingRouteScope, setOutgoingRouteScope] = useState<RouteScope>('all')
   const routeListRef = useRef<HTMLDivElement | null>(null)
 
+  const buildPresetRange = (mode: SharedRangePreset, baseDate = new Date()) => {
+    if (mode === 'focus') {
+      return { from: subDays(baseDate, 15), to: addDays(baseDate, 15) }
+    }
+
+    if (mode === '7') {
+      return { from: baseDate, to: addDays(baseDate, 6) }
+    }
+
+    if (mode === '30') {
+      return { from: baseDate, to: addDays(baseDate, 29) }
+    }
+
+    if (mode === '90') {
+      return { from: baseDate, to: addDays(baseDate, 89) }
+    }
+
+    if (mode === '180') {
+      return { from: baseDate, to: addDays(baseDate, 179) }
+    }
+
+    if (mode === '365') {
+      return { from: baseDate, to: addDays(baseDate, 364) }
+    }
+
+    return { from: subDays(baseDate, 1), to: addDays(baseDate, 365) }
+  }
+
   const applyDefaultQueryWindow = () => {
     if (dateRange?.from) {
       setShowCustomDateRange(false)
@@ -392,64 +422,29 @@ export function FlightRoutesAnalysis() {
       return
     }
 
-    const today = new Date()
-    setDateRange({ from: subDays(today, 15), to: addDays(today, 15) })
-    setFromCalendarMonth(subDays(today, 15))
-    setToCalendarMonth(addDays(today, 15))
-    setDurationMode('focus')
+    const range = buildPresetRange(readSharedRangePreset('focus'))
+    const from = range.from || new Date()
+    const to = range.to || from
+
+    setDateRange({ from, to })
+    setFromCalendarMonth(from)
+    setToCalendarMonth(to)
+    setDurationMode(readSharedRangePreset('focus'))
     setShowCustomDateRange(false)
     setIsExtendedRangeOpen(false)
     setDateError(false)
   }
 
-  const applyPresetRange = (mode: 'focus' | '7' | '30' | '90' | '180' | '365' | 'all') => {
-    const today = new Date()
+  const applyPresetRange = (mode: SharedRangePreset) => {
+    const range = buildPresetRange(mode)
+    const from = range.from || new Date()
+    const to = range.to || from
 
-    if (mode === 'focus') {
-      const from = subDays(today, 15)
-      const to = addDays(today, 15)
-      setDateRange({ from, to })
-      setFromCalendarMonth(from)
-      setToCalendarMonth(to)
-      setDurationMode('focus')
-    } else if (mode === '7') {
-      const to = addDays(today, 6)
-      setDateRange({ from: today, to })
-      setFromCalendarMonth(today)
-      setToCalendarMonth(to)
-      setDurationMode('7')
-    } else if (mode === '30') {
-      const to = addDays(today, 29)
-      setDateRange({ from: today, to })
-      setFromCalendarMonth(today)
-      setToCalendarMonth(to)
-      setDurationMode('30')
-    } else if (mode === '90') {
-      const to = addDays(today, 89)
-      setDateRange({ from: today, to })
-      setFromCalendarMonth(today)
-      setToCalendarMonth(to)
-      setDurationMode('90')
-    } else if (mode === '180') {
-      const to = addDays(today, 179)
-      setDateRange({ from: today, to })
-      setFromCalendarMonth(today)
-      setToCalendarMonth(to)
-      setDurationMode('180')
-    } else if (mode === '365') {
-      const to = addDays(today, 364)
-      setDateRange({ from: today, to })
-      setFromCalendarMonth(today)
-      setToCalendarMonth(to)
-      setDurationMode('365')
-    } else {
-      const from = subDays(today, 1)
-      const to = addDays(today, 365)
-      setDateRange({ from, to })
-      setFromCalendarMonth(from)
-      setToCalendarMonth(to)
-      setDurationMode('all')
-    }
+    setDateRange({ from, to })
+    setFromCalendarMonth(from)
+    setToCalendarMonth(to)
+    setDurationMode(mode)
+    writeSharedRangePreset(mode)
 
     setShowCustomDateRange(false)
     setIsExtendedRangeOpen(false)

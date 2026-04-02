@@ -1,0 +1,74 @@
+Drill-down cache tuning guide
+
+Purpose
+This guide explains how to tune the drill-down cache stale threshold and TTL for production traffic without changing the user-facing behavior.
+
+Current defaults
+- TTL: 15 minutes
+- Stale threshold: 3 minutes
+
+How the cache behaves
+- Fresh entry: the UI reuses cached data and does not refetch.
+- Stale entry: the UI shows the cached data immediately and refreshes in the background.
+- Expired entry: the cache entry is dropped and the next request fetches from the API.
+
+What to tune first
+1. Stale threshold controls how long a cached response can stay visible before a background refresh is triggered.
+2. TTL controls how long the cached response can be kept before it is treated as invalid.
+
+Practical tuning rules
+- Keep TTL larger than stale threshold.
+- Keep stale threshold smaller than the average time between meaningful data changes.
+- Keep TTL larger than the typical user revisit interval for the same view.
+- Increase stale threshold if traffic is high and the data changes slowly.
+- Decrease stale threshold if the data changes often and users need newer values quickly.
+- Increase TTL if API cost or latency is the main problem and data freshness can tolerate a longer window.
+- Decrease TTL if stale data becomes misleading after a short time.
+
+Recommended starting points
+- Low traffic, highly dynamic data: stale threshold 1-2 minutes, TTL 5-10 minutes.
+- Medium traffic, moderate freshness needs: stale threshold 3-5 minutes, TTL 10-20 minutes.
+- High traffic, stable data: stale threshold 5-10 minutes, TTL 20-60 minutes.
+
+Signals that TTL is too short
+- The same view refetches too often.
+- In-flight de-dup still exists, but API volume remains high.
+- User-visible latency stays high because cache entries expire too quickly.
+
+Signals that stale threshold is too short
+- Background refresh happens almost every time the user revisits the view.
+- Fresh cache hits are rare even during normal browsing.
+- The UI feels responsive, but API traffic is still higher than expected.
+
+Signals that stale threshold is too long
+- Users see older values for too long before refresh happens.
+- The background refresh updates the UI only after the data is already outdated for the business use case.
+
+Signals that TTL is too long
+- Users keep seeing data that no longer matches current operational reality.
+- The cache survives longer than the acceptable freshness window.
+
+Suggested production workflow
+1. Start with the current defaults.
+2. Watch API request rate, cache hit rate, and stale-hit rate.
+3. If request volume is still high, raise TTL before touching stale threshold.
+4. If freshness is a problem, lower stale threshold before lowering TTL.
+5. Recheck after each change for at least one traffic cycle.
+
+What to monitor
+- Cache hit rate
+- Stale-hit rate
+- Miss rate
+- API request volume per view
+- Median and p95 response time
+- User complaints about outdated data
+
+Safe change order
+1. Adjust stale threshold in small steps.
+2. Observe how often background refresh is triggered.
+3. Adjust TTL only if entries are expiring too quickly or too slowly.
+
+Notes
+- Do not set TTL lower than the stale threshold.
+- Do not tune from a single low-traffic period.
+- Keep the thresholds aligned with the data update cadence, not just the server cost.

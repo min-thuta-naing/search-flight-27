@@ -12,3 +12,5 @@ backend/package.json
 backend/flight-data-import-f13fe24a45ef.json
 fstart.bat
 bstart.bat
+/DashBOARD
+FlightDashboard_Implementation_Plan.md

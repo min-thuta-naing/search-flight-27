@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { SearchStatisticsModel, PriceStatisticsModel } from '../models/SearchStatistics';
 import { AirportModel } from '../models/Airport';
 import { convertToAirportCode } from '../utils/airportCodeConverter';
+import { DashboardSummaryService } from '../services/dashboardSummaryService';
 
 /**
  * Save a search query to the database
@@ -167,6 +168,356 @@ export async function getPriceStatistics(req: Request, res: Response, next: Next
       priceTrend,
       searchTrend, // ✅ เพิ่ม search trend (จำนวนคนค้นหาเพิ่มขึ้น/ลดลง)
     });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get world dashboard summary for the preset +/- date window
+ * GET /api/statistics/dashboard-summary?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const summary = await DashboardSummaryService.getWorldSummary({
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+    });
+
+    res.json(summary);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get continent cards for the world dashboard
+ * GET /api/statistics/dashboard-continents?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardContinents(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const continents = await DashboardSummaryService.getWorldContinentCards({
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+    });
+
+    res.json(continents);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get continent detail for the drill-down dashboard
+ * GET /api/statistics/dashboard-continent-detail?continent=Europe&date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardContinentDetail(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { continent, date, window_days, start_date, end_date, include_core, include_seasonal, include_top_routes } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!continent || typeof continent !== 'string') {
+      res.status(400).json({
+        error: 'Missing continent parameter',
+        message: 'continent is required',
+      });
+      return;
+    }
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const detail = await DashboardSummaryService.getContinentDetail({
+      continent,
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+      includeCore: typeof include_core === 'string' ? include_core !== 'false' : true,
+      includeSeasonal: typeof include_seasonal === 'string' ? include_seasonal !== 'false' : true,
+      includeTopRoutes: typeof include_top_routes === 'string' ? include_top_routes !== 'false' : true,
+    });
+
+    res.json(detail);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get top airports for a specific continent (fast airport-focused query)
+ * GET /api/statistics/dashboard-top-airports-continent?continent=Asia&window_days=15&limit=10
+ */
+export async function getDashboardTopAirportsContinent(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { continent, date, window_days, start_date, end_date, limit } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+    const topLimitRaw = typeof limit === 'string' ? Number.parseInt(limit, 10) : 10;
+    const topLimit = Number.isNaN(topLimitRaw) ? 10 : Math.min(Math.max(topLimitRaw, 1), 50);
+
+    if (!continent || typeof continent !== 'string') {
+      res.status(400).json({
+        error: 'Missing continent parameter',
+        message: 'continent is required',
+      });
+      return;
+    }
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const topAirports = await DashboardSummaryService.getContinentTopAirports({
+      continent,
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+      limit: topLimit,
+    });
+
+    res.json(topAirports);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get top routes for a specific continent (fast route-focused query)
+ * GET /api/statistics/dashboard-top-routes-continent?continent=Asia&window_days=15&limit=5
+ */
+export async function getDashboardTopRoutesContinent(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { continent, date, window_days, start_date, end_date, limit } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+    const topLimitRaw = typeof limit === 'string' ? Number.parseInt(limit, 10) : 5;
+    const topLimit = Number.isNaN(topLimitRaw) ? 5 : Math.min(Math.max(topLimitRaw, 1), 20);
+
+    if (!continent || typeof continent !== 'string') {
+      res.status(400).json({
+        error: 'Missing continent parameter',
+        message: 'continent is required',
+      });
+      return;
+    }
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const topRoutes = await DashboardSummaryService.getContinentTopRoutes({
+      continent,
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+      limit: topLimit,
+    });
+
+    res.json(topRoutes);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get average trend chart data for a specific continent
+ * GET /api/statistics/dashboard-continent-trends?continent=Asia
+ */
+export async function getDashboardContinentTrends(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { continent } = req.query;
+
+    if (!continent || typeof continent !== 'string') {
+      res.status(400).json({
+        error: 'Missing continent parameter',
+        message: 'continent is required',
+      });
+      return;
+    }
+
+    const trends = await DashboardSummaryService.getContinentTrendAverages({
+      continent,
+    });
+
+    res.json(trends);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get top country and airport ranks for the world dashboard
+ * GET /api/statistics/dashboard-top-ranks?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardTopRanks(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const topRanks = await DashboardSummaryService.getWorldTopRanks({
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+    });
+
+    res.json(topRanks);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get top country ranks for the world dashboard
+ * GET /api/statistics/dashboard-top-countries?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardTopCountries(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const countries = await DashboardSummaryService.getWorldTopCountries({
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+    });
+
+    res.json(countries);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get top airport ranks for the world dashboard
+ * GET /api/statistics/dashboard-top-airports?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardTopAirports(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const airports = await DashboardSummaryService.getWorldTopAirports({
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+    });
+
+    res.json(airports);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get top destinations for the world dashboard
+ * GET /api/statistics/dashboard-top-destinations?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardTopDestinations(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const destinations = await DashboardSummaryService.getWorldTopDestinations({
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+    });
+
+    res.json(destinations);
   } catch (error) {
     next(error);
   }

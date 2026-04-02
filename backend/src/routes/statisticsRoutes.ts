@@ -4,6 +4,16 @@ import {
   savePriceStat,
   getStatistics,
   getPriceStatistics,
+  getDashboardSummary,
+  getDashboardContinents,
+  getDashboardContinentDetail,
+  getDashboardTopAirportsContinent,
+  getDashboardTopRoutesContinent,
+  getDashboardContinentTrends,
+  getDashboardTopRanks,
+  getDashboardTopCountries,
+  getDashboardTopAirports,
+  getDashboardTopDestinations,
 } from '../controllers/statisticsController';
 
 const router = Router();
@@ -19,6 +29,36 @@ router.get('/', getStatistics);
 
 // Get price statistics
 router.get('/price', getPriceStatistics);
+
+// Get world dashboard summary from flight data
+router.get('/dashboard-summary', getDashboardSummary);
+
+// Get continent cards for the world dashboard
+router.get('/dashboard-continents', getDashboardContinents);
+
+// Get continent detail for the drill-down dashboard
+router.get('/dashboard-continent-detail', getDashboardContinentDetail);
+
+// Get top airports for a specific continent
+router.get('/dashboard-top-airports-continent', getDashboardTopAirportsContinent);
+
+// Get top routes for a specific continent
+router.get('/dashboard-top-routes-continent', getDashboardTopRoutesContinent);
+
+// Get trend averages for continent chart modes (day/month/year)
+router.get('/dashboard-continent-trends', getDashboardContinentTrends);
+
+// Get top rank tables for the world dashboard
+router.get('/dashboard-top-ranks', getDashboardTopRanks);
+
+// Get top countries for the world dashboard
+router.get('/dashboard-top-countries', getDashboardTopCountries);
+
+// Get top airports for the world dashboard
+router.get('/dashboard-top-airports', getDashboardTopAirports);
+
+// Get top destinations for the world dashboard
+router.get('/dashboard-top-destinations', getDashboardTopDestinations);
 
 export default router;
 

@@ -44,12 +44,11 @@ export async function getAirportCountries(
   next: NextFunction
 ): Promise<void> {
   try {
-    const countries = await AirportModel.getAirportCountries();
-    const totalAirports = countries.reduce((sum, country) => sum + country.airport_count, 0);
+    const { countries, totalCountries, totalAirports } = await AirportModel.getAirportCountries();
 
     res.json({
       countries,
-      totalCountries: countries.length,
+      totalCountries,
       totalAirports,
     });
   } catch (error) {

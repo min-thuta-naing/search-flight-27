@@ -170,6 +170,61 @@ export interface DashboardContinentDetailResponse {
   topRoutes: DashboardContinentDetailRoute[];
 }
 
+export interface DashboardContinentTopAirportRank {
+  iata: string;
+  airportName: string;
+  city: string;
+  country: string;
+  flights: number;
+  departureFlights: number;
+  arrivalFlights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+  deltaText: string;
+}
+
+export interface DashboardContinentTopAirportsResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  continent: {
+    key: ContinentMeta['key'];
+    label: string;
+    icon: string;
+  };
+  airports: DashboardContinentTopAirportRank[];
+}
+
+export interface DashboardContinentTopRouteRank {
+  routeText: string;
+  fromAirport: string;
+  toAirport: string;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+  deltaText: string;
+}
+
+export interface DashboardContinentTopRoutesResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  continent: {
+    key: ContinentMeta['key'];
+    label: string;
+    icon: string;
+  };
+  routes: DashboardContinentTopRouteRank[];
+}
+
 type PeriodRow = {
   country_code: string | null;
   country_name: string | null;
@@ -218,6 +273,16 @@ interface ContinentDetailInput extends WorldRangeInput {
   includeTopRoutes?: boolean;
 }
 
+interface ContinentTopAirportsInput extends WorldRangeInput {
+  continent: string;
+  limit?: number;
+}
+
+interface ContinentTopRoutesInput extends WorldRangeInput {
+  continent: string;
+  limit?: number;
+}
+
 const CONTINENT_ORDER: ContinentMeta[] = [
   { key: 'Europe', label: 'Europe', icon: '🏰' },
   { key: 'Asia-Pacific', label: 'Asia-Pacific', icon: '🌏' },
@@ -231,6 +296,10 @@ const CONTINENT_ORDER: ContinentMeta[] = [
 
 const CONTINENT_DETAIL_CACHE_TTL_MS = 5 * 60 * 1000;
 const continentDetailCache = new Map<string, { expiresAt: number; payload: DashboardContinentDetailResponse }>();
+const CONTINENT_TOP_AIRPORTS_CACHE_TTL_MS = 5 * 60 * 1000;
+const continentTopAirportsCache = new Map<string, { expiresAt: number; payload: DashboardContinentTopAirportsResponse }>();
+const CONTINENT_TOP_ROUTES_CACHE_TTL_MS = 5 * 60 * 1000;
+const continentTopRoutesCache = new Map<string, { expiresAt: number; payload: DashboardContinentTopRoutesResponse }>();
 const CONTINENT_AIRPORT_CODES_CACHE_TTL_MS = 60 * 60 * 1000;
 const continentAirportCodesCache = new Map<string, { expiresAt: number; codes: string[] }>();
 
@@ -1790,6 +1859,346 @@ export class DashboardSummaryService {
 
     continentDetailCache.set(cacheKey, {
       expiresAt: Date.now() + CONTINENT_DETAIL_CACHE_TTL_MS,
+      payload,
+    });
+
+    return payload;
+  }
+
+  static async getContinentTopAirports(
+    input: ContinentTopAirportsInput,
+  ): Promise<DashboardContinentTopAirportsResponse> {
+    const continentMeta = resolveContinentMetaFromInput(input.continent);
+    const topLimit = Math.min(Math.max(input.limit ?? 10, 1), 50);
+    const { startDate, endDate, comparisonStartDate, comparisonEndDate, windowDays } = resolveWorldRange(input);
+    const centerDate = resolveCenterDate(input, startDate, endDate);
+    const periodStart = formatDateForQuery(startDate);
+    const periodEnd = formatDateForQuery(endDate);
+    const comparisonStart = formatDateForQuery(comparisonStartDate);
+    const comparisonEnd = formatDateForQuery(comparisonEndDate);
+    const cacheKey = [continentMeta.key, periodStart, periodEnd, comparisonStart, comparisonEnd, `limit:${topLimit}`].join('|');
+
+    const cached = continentTopAirportsCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.payload;
+    }
+
+    const continentAirportCodes = await getContinentAirportCodes(continentMeta.key);
+    if (!continentAirportCodes.length) {
+      return {
+        centerDate: formatDateForQuery(centerDate),
+        windowDays,
+        periodStart,
+        periodEnd,
+        comparisonStart,
+        comparisonEnd,
+        continent: {
+          key: continentMeta.key,
+          label: continentMeta.label,
+          icon: continentMeta.icon,
+        },
+        airports: [],
+      };
+    }
+
+    const topAirportQuery = `
+      WITH continent_airports AS (
+        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
+        FROM airports
+        WHERE UPPER(TRIM(code)) = ANY($3::text[])
+      ),
+      current_rows AS (
+        SELECT dep_airport AS airport_code, 1 AS dep_count, 0 AS arr_count
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT arr_airport AS airport_code, 0 AS dep_count, 1 AS arr_count
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT dep_airport AS airport_code, 1 AS dep_count, 0 AS arr_count
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT arr_airport AS airport_code, 0 AS dep_count, 1 AS arr_count
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+      ),
+      previous_rows AS (
+        SELECT dep_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $4 AND departure_date <= $5
+        UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $4 AND departure_date <= $5
+        UNION ALL
+        SELECT dep_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $4 AND departure_date <= $5
+        UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $4 AND departure_date <= $5
+      ),
+      current_agg AS (
+        SELECT
+          UPPER(TRIM(cr.airport_code)) AS airport_code,
+          COUNT(*)::int AS flights,
+          SUM(cr.dep_count)::int AS departure_flights,
+          SUM(cr.arr_count)::int AS arrival_flights
+        FROM current_rows cr
+        JOIN continent_airports ca ON UPPER(TRIM(cr.airport_code)) = ca.airport_code
+        WHERE cr.airport_code IS NOT NULL AND TRIM(cr.airport_code) <> ''
+        GROUP BY UPPER(TRIM(cr.airport_code))
+      ),
+      previous_agg AS (
+        SELECT
+          UPPER(TRIM(pr.airport_code)) AS airport_code,
+          COUNT(*)::int AS flights
+        FROM previous_rows pr
+        JOIN continent_airports ca ON UPPER(TRIM(pr.airport_code)) = ca.airport_code
+        WHERE pr.airport_code IS NOT NULL AND TRIM(pr.airport_code) <> ''
+        GROUP BY UPPER(TRIM(pr.airport_code))
+      )
+      SELECT
+        current_agg.airport_code,
+        COALESCE(a.name, a.code, current_agg.airport_code) AS airport_name,
+        COALESCE(a.city, a.name, a.code, current_agg.airport_code) AS city,
+        COALESCE(a.country_name, a.country, 'Other') AS country_name,
+        current_agg.flights,
+        current_agg.departure_flights,
+        current_agg.arrival_flights,
+        COALESCE(previous_agg.flights, 0)::int AS previous_flights
+      FROM current_agg
+      LEFT JOIN previous_agg ON previous_agg.airport_code = current_agg.airport_code
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = current_agg.airport_code
+      ORDER BY current_agg.flights DESC, current_agg.airport_code ASC
+      LIMIT $6
+    `;
+
+    const topAirportsResult = await pool.query(topAirportQuery, [
+      periodStart,
+      periodEnd,
+      continentAirportCodes,
+      comparisonStart,
+      comparisonEnd,
+      topLimit,
+    ]);
+
+    const airports = (topAirportsResult.rows as Array<Record<string, any>>)
+      .map((row) => {
+        const flights = Number(row.flights) || 0;
+        const previousFlights = Number(row.previous_flights) || 0;
+        const deltaFlights = flights - previousFlights;
+        const deltaPercent = previousFlights > 0
+          ? (deltaFlights / previousFlights) * 100
+          : flights > 0
+            ? 100
+            : 0;
+        const deltaText = `${deltaFlights >= 0 ? '+' : ''}${deltaFlights.toLocaleString()} flight`;
+
+        return {
+          iata: String(row.airport_code || '').trim().toUpperCase(),
+          airportName: String(row.airport_name || row.airport_code || '').trim(),
+          city: String(row.city || row.airport_name || row.airport_code || '').trim(),
+          country: String(row.country_name || 'Other').trim(),
+          flights,
+          departureFlights: Number(row.departure_flights) || 0,
+          arrivalFlights: Number(row.arrival_flights) || 0,
+          previousFlights,
+          deltaFlights,
+          deltaPercent,
+          deltaText,
+        } satisfies DashboardContinentTopAirportRank;
+      })
+      .filter((row) => row.iata && row.flights > 0);
+
+    const payload: DashboardContinentTopAirportsResponse = {
+      centerDate: formatDateForQuery(centerDate),
+      windowDays,
+      periodStart,
+      periodEnd,
+      comparisonStart,
+      comparisonEnd,
+      continent: {
+        key: continentMeta.key,
+        label: continentMeta.label,
+        icon: continentMeta.icon,
+      },
+      airports,
+    };
+
+    continentTopAirportsCache.set(cacheKey, {
+      expiresAt: Date.now() + CONTINENT_TOP_AIRPORTS_CACHE_TTL_MS,
+      payload,
+    });
+
+    return payload;
+  }
+
+  static async getContinentTopRoutes(
+    input: ContinentTopRoutesInput,
+  ): Promise<DashboardContinentTopRoutesResponse> {
+    const continentMeta = resolveContinentMetaFromInput(input.continent);
+    const topLimit = Math.min(Math.max(input.limit ?? 5, 1), 20);
+    const { startDate, endDate, comparisonStartDate, comparisonEndDate, windowDays } = resolveWorldRange(input);
+    const centerDate = resolveCenterDate(input, startDate, endDate);
+    const periodStart = formatDateForQuery(startDate);
+    const periodEnd = formatDateForQuery(endDate);
+    const comparisonStart = formatDateForQuery(comparisonStartDate);
+    const comparisonEnd = formatDateForQuery(comparisonEndDate);
+    const cacheKey = [continentMeta.key, periodStart, periodEnd, comparisonStart, comparisonEnd, `limit:${topLimit}`].join('|');
+
+    const cached = continentTopRoutesCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.payload;
+    }
+
+    const continentAirportCodes = await getContinentAirportCodes(continentMeta.key);
+    if (!continentAirportCodes.length) {
+      return {
+        centerDate: formatDateForQuery(centerDate),
+        windowDays,
+        periodStart,
+        periodEnd,
+        comparisonStart,
+        comparisonEnd,
+        continent: {
+          key: continentMeta.key,
+          label: continentMeta.label,
+          icon: continentMeta.icon,
+        },
+        routes: [],
+      };
+    }
+
+    const topRoutesQuery = `
+      WITH continent_airports AS (
+        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
+        FROM airports
+        WHERE UPPER(TRIM(code)) = ANY($3::text[])
+      ),
+      current_rows AS (
+        SELECT dep_airport AS from_airport, arr_airport AS to_airport
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT dep_airport AS from_airport, arr_airport AS to_airport
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+      ),
+      current_agg AS (
+        SELECT
+          UPPER(TRIM(cr.from_airport)) AS from_code,
+          UPPER(TRIM(cr.to_airport)) AS to_code,
+          COUNT(*)::int AS flights
+        FROM current_rows cr
+        JOIN continent_airports from_codes ON UPPER(TRIM(cr.from_airport)) = from_codes.airport_code
+        JOIN continent_airports to_codes ON UPPER(TRIM(cr.to_airport)) = to_codes.airport_code
+        WHERE cr.from_airport IS NOT NULL AND TRIM(cr.from_airport) <> ''
+          AND cr.to_airport IS NOT NULL AND TRIM(cr.to_airport) <> ''
+        GROUP BY UPPER(TRIM(cr.from_airport)), UPPER(TRIM(cr.to_airport))
+      ),
+      top_current AS (
+        SELECT from_code, to_code, flights
+        FROM current_agg
+        ORDER BY flights DESC, from_code ASC, to_code ASC
+        LIMIT $6
+      ),
+      previous_rows AS (
+        SELECT dep_airport AS from_airport, arr_airport AS to_airport
+        FROM departure_flight_paths
+        WHERE departure_date >= $4 AND departure_date <= $5
+        UNION ALL
+        SELECT dep_airport AS from_airport, arr_airport AS to_airport
+        FROM arrival_flight_paths
+        WHERE departure_date >= $4 AND departure_date <= $5
+      ),
+      previous_agg AS (
+        SELECT
+          UPPER(TRIM(pr.from_airport)) AS from_code,
+          UPPER(TRIM(pr.to_airport)) AS to_code,
+          COUNT(*)::int AS flights
+        FROM previous_rows pr
+        JOIN top_current tc
+          ON UPPER(TRIM(pr.from_airport)) = tc.from_code
+         AND UPPER(TRIM(pr.to_airport)) = tc.to_code
+        GROUP BY UPPER(TRIM(pr.from_airport)), UPPER(TRIM(pr.to_airport))
+      )
+      SELECT
+        tc.from_code,
+        tc.to_code,
+        tc.flights,
+        COALESCE(pa.flights, 0)::int AS previous_flights,
+        COALESCE(dep.name, dep.code, tc.from_code) AS from_name,
+        COALESCE(dep.city, dep.name, dep.code, tc.from_code) AS from_city,
+        COALESCE(arr.name, arr.code, tc.to_code) AS to_name,
+        COALESCE(arr.city, arr.name, arr.code, tc.to_code) AS to_city
+      FROM top_current tc
+      LEFT JOIN previous_agg pa
+        ON pa.from_code = tc.from_code
+       AND pa.to_code = tc.to_code
+      LEFT JOIN airports dep ON UPPER(TRIM(dep.code)) = tc.from_code
+      LEFT JOIN airports arr ON UPPER(TRIM(arr.code)) = tc.to_code
+      ORDER BY tc.flights DESC, tc.from_code ASC, tc.to_code ASC
+    `;
+
+    const topRoutesResult = await pool.query(topRoutesQuery, [
+      periodStart,
+      periodEnd,
+      continentAirportCodes,
+      comparisonStart,
+      comparisonEnd,
+      topLimit,
+    ]);
+
+    const routes = (topRoutesResult.rows as Array<Record<string, any>>)
+      .map((row) => {
+        const flights = Number(row.flights) || 0;
+        const previousFlights = Number(row.previous_flights) || 0;
+        const deltaFlights = flights - previousFlights;
+        const deltaPercent = previousFlights > 0
+          ? (deltaFlights / previousFlights) * 100
+          : flights > 0
+            ? 100
+            : 0;
+
+        const fromCode = String(row.from_code || '').trim().toUpperCase();
+        const toCode = String(row.to_code || '').trim().toUpperCase();
+        const fromLabel = `${String(row.from_city || row.from_name || fromCode).trim()} (${fromCode})`;
+        const toLabel = `${String(row.to_city || row.to_name || toCode).trim()} (${toCode})`;
+
+        return {
+          routeText: `from ${fromLabel} to ${toLabel}`,
+          fromAirport: fromLabel,
+          toAirport: toLabel,
+          flights,
+          previousFlights,
+          deltaFlights,
+          deltaPercent,
+          deltaText: `${deltaFlights >= 0 ? '+' : ''}${deltaFlights.toLocaleString()} flight`,
+        } satisfies DashboardContinentTopRouteRank;
+      })
+      .filter((row) => row.flights > 0);
+
+    const payload: DashboardContinentTopRoutesResponse = {
+      centerDate: formatDateForQuery(centerDate),
+      windowDays,
+      periodStart,
+      periodEnd,
+      comparisonStart,
+      comparisonEnd,
+      continent: {
+        key: continentMeta.key,
+        label: continentMeta.label,
+        icon: continentMeta.icon,
+      },
+      routes,
+    };
+
+    continentTopRoutesCache.set(cacheKey, {
+      expiresAt: Date.now() + CONTINENT_TOP_ROUTES_CACHE_TTL_MS,
       payload,
     });
 

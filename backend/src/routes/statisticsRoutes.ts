@@ -7,6 +7,8 @@ import {
   getDashboardSummary,
   getDashboardContinents,
   getDashboardContinentDetail,
+  getDashboardTopAirportsContinent,
+  getDashboardTopRoutesContinent,
   getDashboardTopRanks,
   getDashboardTopCountries,
   getDashboardTopAirports,
@@ -35,6 +37,12 @@ router.get('/dashboard-continents', getDashboardContinents);
 
 // Get continent detail for the drill-down dashboard
 router.get('/dashboard-continent-detail', getDashboardContinentDetail);
+
+// Get top airports for a specific continent
+router.get('/dashboard-top-airports-continent', getDashboardTopAirportsContinent);
+
+// Get top routes for a specific continent
+router.get('/dashboard-top-routes-continent', getDashboardTopRoutesContinent);
 
 // Get top rank tables for the world dashboard
 router.get('/dashboard-top-ranks', getDashboardTopRanks);

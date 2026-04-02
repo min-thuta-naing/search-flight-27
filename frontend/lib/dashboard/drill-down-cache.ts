@@ -1,5 +1,7 @@
 import type { AirportCountrySummary } from '@/lib/api/airport-api';
 import type {
+  DashboardContinentTopAirportsResponse,
+  DashboardContinentTopRoutesResponse,
   DashboardContinentDetailResponse,
   DashboardSummaryResponse,
   DashboardTopDestinationsResponse,
@@ -153,6 +155,8 @@ type ContinentCacheSnapshot = {
   detail: Array<[string, CacheEntry<DashboardContinentDetailResponse> | DashboardContinentDetailResponse]>;
   seasonal: Array<[string, CacheEntry<DashboardContinentDetailResponse['seasonal']> | DashboardContinentDetailResponse['seasonal']]>;
   topRoutes: Array<[string, CacheEntry<DashboardContinentDetailResponse['topRoutes']> | DashboardContinentDetailResponse['topRoutes']]>;
+  topAirports: Array<[string, CacheEntry<DashboardContinentTopAirportsResponse['airports']> | DashboardContinentTopAirportsResponse['airports']]>;
+  topRouteRanks: Array<[string, CacheEntry<DashboardContinentTopRoutesResponse['routes']> | DashboardContinentTopRoutesResponse['routes']]>;
 };
 
 const CONTINENT_CACHE_STORAGE_KEY = 'search-flight.drilldown.continent-cache.v2';
@@ -173,6 +177,8 @@ function readContinentCacheSnapshot(): ContinentCacheSnapshot | null {
       detail: Array.isArray(parsed.detail) ? parsed.detail : [],
       seasonal: Array.isArray(parsed.seasonal) ? parsed.seasonal : [],
       topRoutes: Array.isArray(parsed.topRoutes) ? parsed.topRoutes : [],
+      topAirports: Array.isArray(parsed.topAirports) ? parsed.topAirports : [],
+      topRouteRanks: Array.isArray(parsed.topRouteRanks) ? parsed.topRouteRanks : [],
     };
   } catch {
     return null;
@@ -195,6 +201,16 @@ const continentTopRoutesCache = new Map<
   CacheEntry<DashboardContinentDetailResponse['topRoutes']>
 >((persistedContinentCache?.topRoutes ?? []).map(([key, value]) => [key, normalizeCacheEntry(value)]));
 
+const continentTopAirportsCache = new Map<
+  string,
+  CacheEntry<DashboardContinentTopAirportsResponse['airports']>
+>((persistedContinentCache?.topAirports ?? []).map(([key, value]) => [key, normalizeCacheEntry(value)]));
+
+const continentTopRouteRanksCache = new Map<
+  string,
+  CacheEntry<DashboardContinentTopRoutesResponse['routes']>
+>((persistedContinentCache?.topRouteRanks ?? []).map(([key, value]) => [key, normalizeCacheEntry(value)]));
+
 function persistContinentCacheSnapshot() {
   if (typeof window === 'undefined') {
     return;
@@ -205,6 +221,8 @@ function persistContinentCacheSnapshot() {
       detail: Array.from(continentDetailCache.entries()),
       seasonal: Array.from(continentSeasonalCache.entries()),
       topRoutes: Array.from(continentTopRoutesCache.entries()),
+      topAirports: Array.from(continentTopAirportsCache.entries()),
+      topRouteRanks: Array.from(continentTopRouteRanksCache.entries()),
     };
 
     window.sessionStorage.setItem(CONTINENT_CACHE_STORAGE_KEY, JSON.stringify(snapshot));
@@ -279,6 +297,54 @@ export function storeContinentTopRoutes(
   topRoutes: DashboardContinentDetailResponse['topRoutes'],
 ) {
   writeTimedCache(continentTopRoutesCache, cacheKey, topRoutes);
+  persistContinentCacheSnapshot();
+}
+
+export function getContinentTopAirportsCache(cacheKey: string) {
+  const cached = readTimedCache(continentTopAirportsCache, cacheKey);
+  if (!cached) {
+    persistContinentCacheSnapshot();
+  }
+  return cached;
+}
+
+export function getContinentTopAirportsCacheState(cacheKey: string) {
+  const state = readTimedCacheState(continentTopAirportsCache, cacheKey);
+  if (!state.value) {
+    persistContinentCacheSnapshot();
+  }
+  return state;
+}
+
+export function storeContinentTopAirports(
+  cacheKey: string,
+  topAirports: DashboardContinentTopAirportsResponse['airports'],
+) {
+  writeTimedCache(continentTopAirportsCache, cacheKey, topAirports);
+  persistContinentCacheSnapshot();
+}
+
+export function getContinentTopRouteRanksCache(cacheKey: string) {
+  const cached = readTimedCache(continentTopRouteRanksCache, cacheKey);
+  if (!cached) {
+    persistContinentCacheSnapshot();
+  }
+  return cached;
+}
+
+export function getContinentTopRouteRanksCacheState(cacheKey: string) {
+  const state = readTimedCacheState(continentTopRouteRanksCache, cacheKey);
+  if (!state.value) {
+    persistContinentCacheSnapshot();
+  }
+  return state;
+}
+
+export function storeContinentTopRouteRanks(
+  cacheKey: string,
+  topRoutes: DashboardContinentTopRoutesResponse['routes'],
+) {
+  writeTimedCache(continentTopRouteRanksCache, cacheKey, topRoutes);
   persistContinentCacheSnapshot();
 }
 

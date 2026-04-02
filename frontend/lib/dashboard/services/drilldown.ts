@@ -45,6 +45,20 @@ export async function getContinentDetail(
   return statisticsApi.getDashboardContinentDetail(continentName, options);
 }
 
+export async function getContinentTopAirports(
+  continentName: string,
+  options?: Parameters<typeof statisticsApi.getDashboardTopAirportsContinent>[1],
+) {
+  return statisticsApi.getDashboardTopAirportsContinent(continentName, options);
+}
+
+export async function getContinentTopRoutes(
+  continentName: string,
+  options?: Parameters<typeof statisticsApi.getDashboardTopRoutesContinent>[1],
+) {
+  return statisticsApi.getDashboardTopRoutesContinent(continentName, options);
+}
+
 // ── Country level ──
 
 export function getCountryAirports(countryName: string): AirportInfo[] {

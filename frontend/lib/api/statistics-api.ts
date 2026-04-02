@@ -203,6 +203,53 @@ export interface DashboardContinentDetailResponse {
   topRoutes: EurTopRoute[];
 }
 
+export interface DashboardContinentTopAirportRankResponse extends DashboardTopAirportRankResponse {
+  departureFlights: number;
+  arrivalFlights: number;
+  deltaText: string;
+}
+
+export interface DashboardContinentTopAirportsResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  continent: {
+    key: string;
+    label: string;
+    icon: string;
+  };
+  airports: DashboardContinentTopAirportRankResponse[];
+}
+
+export interface DashboardContinentTopRouteRankResponse {
+  routeText: string;
+  fromAirport: string;
+  toAirport: string;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+  deltaText: string;
+}
+
+export interface DashboardContinentTopRoutesResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  continent: {
+    key: string;
+    label: string;
+    icon: string;
+  };
+  routes: DashboardContinentTopRouteRankResponse[];
+}
+
 export interface DashboardQueryOptions {
   date?: string;
   windowDays?: number;
@@ -315,6 +362,60 @@ export class StatisticsApi {
       include_core: includeCore,
       include_seasonal: includeSeasonal,
       include_top_routes: includeTopRoutes,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get top airports for a specific continent using an airport-focused query
+   */
+  async getDashboardTopAirportsContinent(
+    continent: string,
+    options: DashboardQueryOptions & { limit?: number } = {},
+  ): Promise<DashboardContinentTopAirportsResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+      limit = 10,
+    } = options;
+
+    return apiClient.get<DashboardContinentTopAirportsResponse>('/statistics/dashboard-top-airports-continent', {
+      continent,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+      limit,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get top routes for a specific continent using a route-focused query
+   */
+  async getDashboardTopRoutesContinent(
+    continent: string,
+    options: DashboardQueryOptions & { limit?: number } = {},
+  ): Promise<DashboardContinentTopRoutesResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+      limit = 5,
+    } = options;
+
+    return apiClient.get<DashboardContinentTopRoutesResponse>('/statistics/dashboard-top-routes-continent', {
+      continent,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+      limit,
     }, { signal, timeoutMs });
   }
 

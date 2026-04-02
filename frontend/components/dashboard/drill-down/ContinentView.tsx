@@ -15,10 +15,12 @@ import {
 import {
   getContinentDetailCacheState,
   getContinentSeasonalCacheState,
-  getContinentTopRoutesCacheState,
+  getContinentTopAirportsCacheState,
+  getContinentTopRouteRanksCacheState,
   storeContinentDetail,
   storeContinentSeasonal,
-  storeContinentTopRoutes,
+  storeContinentTopAirports,
+  storeContinentTopRouteRanks,
   runDrillDownRequest,
 } from '@/lib/dashboard/drill-down-cache';
 import {
@@ -30,20 +32,27 @@ import {
   parsePercentFromDelta,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
-import { getContinentDetail } from '@/lib/dashboard/services/drilldown';
+import { getContinentDetail, getContinentTopAirports, getContinentTopRoutes } from '@/lib/dashboard/services/drilldown';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useDrillDown, KPIRow, BackButton, ChangePill } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
 import type { CountryData } from '@/types/dashboard';
-import type { EurTopRoute } from '@/types/dashboard';
+import type {
+  DashboardContinentTopAirportRankResponse,
+  DashboardContinentTopRouteRankResponse,
+} from '@/lib/api/statistics-api';
 
 const MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
 type ContinentDetailPayload = Awaited<ReturnType<typeof getContinentDetail>>;
+type ContinentTopAirportsPayload = Awaited<ReturnType<typeof getContinentTopAirports>>;
+type ContinentTopRoutesPayload = Awaited<ReturnType<typeof getContinentTopRoutes>>;
 type SeasonalPoint = ContinentDetailPayload['seasonal'][number];
 type ContinentDisplayMode = 'wow' | 'mom' | 'yoy';
+type ContinentTopAirportRow = DashboardContinentTopAirportRankResponse;
+type ContinentTopRouteRow = DashboardContinentTopRouteRankResponse;
 
 const CONTINENT_PRESET_LABELS: Record<RangePreset, string> = {
   focus: '± 15 วัน',
@@ -211,11 +220,8 @@ export function ContinentView() {
   const preset = rangePreset;
   const continentWindowDays = resolveContinentWindowDays(preset);
   const continentTimeMode = resolveContinentDisplayMode(preset);
-  const topRoutesSectionRef = useRef<HTMLDivElement | null>(null);
-  const [shouldLoadTopRoutes, setShouldLoadTopRoutes] = useState(() => !!getContinentTopRoutesCacheState(buildContinentCacheKey(continent.name, continentWindowDays, false, false, true)).value);
   const coreCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, true, false, false);
   const seasonalCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, false, true, false);
-  const topRoutesCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, false, false, true);
   const [continentPayload, setContinentPayload] = useState<ContinentDetailPayload | null>(() => {
     return getContinentDetailCacheState(coreCacheKey).value;
   });
@@ -228,43 +234,22 @@ export function ContinentView() {
   const [seasonalCacheHitKey, setSeasonalCacheHitKey] = useState<string | null>(() => {
     return getContinentSeasonalCacheState(seasonalCacheKey).value ? seasonalCacheKey : null;
   });
-  const [topRouteRows, setTopRouteRows] = useState<EurTopRoute[] | null>(() => {
-    return getContinentTopRoutesCacheState(topRoutesCacheKey).value;
+  const topAirportsQueryKey = `${continent.name}|window:${continentWindowDays}|limit:10`;
+  const topRoutesRankQueryKey = `${continent.name}|window:${continentWindowDays}|limit:5`;
+  const [topAirportRows, setTopAirportRows] = useState<ContinentTopAirportRow[] | null>(() => {
+    return getContinentTopAirportsCacheState(topAirportsQueryKey).value;
   });
-  const [topRouteCacheHitKey, setTopRouteCacheHitKey] = useState<string | null>(() => {
-    return getContinentTopRoutesCacheState(topRoutesCacheKey).value ? topRoutesCacheKey : null;
+  const [topAirportCacheHitKey, setTopAirportCacheHitKey] = useState<string | null>(() => {
+    return getContinentTopAirportsCacheState(topAirportsQueryKey).value ? topAirportsQueryKey : null;
+  });
+  const [topRouteRankRows, setTopRouteRankRows] = useState<ContinentTopRouteRow[] | null>(() => {
+    return getContinentTopRouteRanksCacheState(topRoutesRankQueryKey).value;
+  });
+  const [topRouteRankCacheHitKey, setTopRouteRankCacheHitKey] = useState<string | null>(() => {
+    return getContinentTopRouteRanksCacheState(topRoutesRankQueryKey).value ? topRoutesRankQueryKey : null;
   });
   const [detailError, setDetailError] = useState<string | null>(null);
   const coreReady = continentPayload != null && payloadCacheKey === coreCacheKey;
-
-  useEffect(() => {
-    setShouldLoadTopRoutes(!!getContinentTopRoutesCacheState(topRoutesCacheKey).value);
-  }, [topRoutesCacheKey]);
-
-  useEffect(() => {
-    if (shouldLoadTopRoutes) {
-      return;
-    }
-
-    const target = topRoutesSectionRef.current;
-    if (!target || typeof IntersectionObserver === 'undefined') {
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setShouldLoadTopRoutes(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: '180px 0px' }
-    );
-
-    observer.observe(target);
-
-    return () => observer.disconnect();
-  }, [shouldLoadTopRoutes, topRoutesCacheKey]);
 
   useEffect(() => {
     let alive = true;
@@ -362,59 +347,106 @@ export function ContinentView() {
   }, [continent.name, continentWindowDays, coreReady, seasonalCacheKey]);
 
   useEffect(() => {
-    if (!coreReady || !shouldLoadTopRoutes) {
+    const cacheState = getContinentTopAirportsCacheState(topAirportsQueryKey);
+    const cached = cacheState.value;
+    if (cached) {
+      setTopAirportRows(cached);
+      setTopAirportCacheHitKey(topAirportsQueryKey);
+    } else {
+      setTopAirportCacheHitKey(null);
+    }
+  }, [topAirportsQueryKey]);
+
+  useEffect(() => {
+    const cacheState = getContinentTopRouteRanksCacheState(topRoutesRankQueryKey);
+    const cached = cacheState.value;
+    if (cached) {
+      setTopRouteRankRows(cached);
+      setTopRouteRankCacheHitKey(topRoutesRankQueryKey);
+    } else {
+      setTopRouteRankCacheHitKey(null);
+    }
+  }, [topRoutesRankQueryKey]);
+
+  useEffect(() => {
+    if (!coreReady) {
       return;
     }
 
     let alive = true;
-    const cacheState = getContinentTopRoutesCacheState(topRoutesCacheKey);
-    const cached = cacheState.value;
 
-    if (cached) {
-      setTopRouteRows(cached);
-      setTopRouteCacheHitKey(topRoutesCacheKey);
-      if (!cacheState.stale) {
-        return () => {
-          alive = false;
-        };
-      }
-    }
-
-    const loadTopRoutes = async () => {
+    const loadTopAirports = async () => {
       try {
-        setTopRouteCacheHitKey(null);
-        const payload = await runDrillDownRequest(
-          `continent:routes:${topRoutesCacheKey}`,
-          () => getContinentDetail(continent.name, {
+        setTopAirportCacheHitKey(null);
+        const payload: ContinentTopAirportsPayload = await runDrillDownRequest(
+          `continent:top-airports:${topAirportsQueryKey}`,
+          () => getContinentTopAirports(continent.name, {
             windowDays: continentWindowDays,
-            includeCore: false,
-            includeSeasonal: false,
-            includeTopRoutes: true,
+            limit: 10,
+            timeoutMs: 45000,
           }),
         );
         if (!alive) return;
-        storeContinentTopRoutes(topRoutesCacheKey, payload.topRoutes);
-        setTopRouteRows(payload.topRoutes);
-        setTopRouteCacheHitKey(topRoutesCacheKey);
+        const rows = payload.airports;
+        storeContinentTopAirports(topAirportsQueryKey, rows);
+        setTopAirportRows(rows);
+        setTopAirportCacheHitKey(topAirportsQueryKey);
       } catch (error) {
         if (!alive) return;
-        setDetailError(error instanceof Error ? error.message : 'ไม่สามารถโหลดเส้นทางทวีปได้');
+        setTopAirportRows([]);
       }
     };
 
-    void loadTopRoutes();
+    void loadTopAirports();
 
     return () => {
       alive = false;
     };
-  }, [continent.name, continentWindowDays, coreReady, shouldLoadTopRoutes, topRoutesCacheKey]);
+  }, [continent.name, continentWindowDays, coreReady, topAirportsQueryKey]);
+
+  useEffect(() => {
+    if (!coreReady) {
+      return;
+    }
+
+    let alive = true;
+
+    const loadTopRoutesRank = async () => {
+      try {
+        setTopRouteRankCacheHitKey(null);
+        const payload: ContinentTopRoutesPayload = await runDrillDownRequest(
+          `continent:top-routes:${topRoutesRankQueryKey}`,
+          () => getContinentTopRoutes(continent.name, {
+            windowDays: continentWindowDays,
+            limit: 5,
+            timeoutMs: 45000,
+          }),
+        );
+        if (!alive) return;
+        const rows = payload.routes;
+        storeContinentTopRouteRanks(topRoutesRankQueryKey, rows);
+        setTopRouteRankRows(rows);
+        setTopRouteRankCacheHitKey(topRoutesRankQueryKey);
+      } catch {
+        if (!alive) return;
+        setTopRouteRankRows([]);
+      }
+    };
+
+    void loadTopRoutesRank();
+
+    return () => {
+      alive = false;
+    };
+  }, [continent.name, continentWindowDays, coreReady, topRoutesRankQueryKey]);
 
   const payload = continentPayload;
   const hasPayload = coreReady;
   const continentData = hasPayload && payload ? payload.detail : null;
   const detail = continentData;
-  const topRoutes = topRouteCacheHitKey === topRoutesCacheKey && topRouteRows ? topRouteRows : [];
   const seasonal = seasonalCacheHitKey === seasonalCacheKey && seasonalRows ? seasonalRows : [];
+  const resolvedTopAirportRows = topAirportCacheHitKey === topAirportsQueryKey && topAirportRows ? topAirportRows : [];
+  const resolvedTopRouteRankRows = topRouteRankCacheHitKey === topRoutesRankQueryKey && topRouteRankRows ? topRouteRankRows : [];
   const countries = detail?.countries ?? [];
   const parsedCountSummary = parseContinentCountSummary(continent.airports);
   const airportCountFromSummary = parsedCountSummary.airportCount;
@@ -537,9 +569,9 @@ export function ContinentView() {
         ) : (
           <ContinentPanelRingLoader title="แนวโน้ม" />
         )}
-        <div ref={topRoutesSectionRef}>
-          {topRouteCacheHitKey === topRoutesCacheKey && topRouteRows ? (
-            <ContinentTopRoutesPanel rows={topRoutes} timeMode={continentTimeMode} />
+        <div>
+          {topRouteRankCacheHitKey === topRoutesRankQueryKey ? (
+            <ContinentTopRoutesPanel rows={resolvedTopRouteRankRows} timeMode={continentTimeMode} />
           ) : (
             <ContinentPanelRingLoader title="5 อันดับเส้นทาง" />
           )}
@@ -588,6 +620,19 @@ export function ContinentView() {
           <ContinentCountryRingCard key={index} />
         ))}
       </div>
+
+      <div>
+        {topAirportCacheHitKey === topAirportsQueryKey ? (
+          <ContinentTopAirportTable
+            rows={resolvedTopAirportRows}
+            continentName={continent.name}
+            presetLabel={activePresetLabel}
+          />
+        ) : (
+          <ContinentPanelRingLoader title="Top Flight Airports" />
+        )}
+      </div>
+
       <div className="flex justify-center pt-1">
         <BackButton label="กลับไปยังโลก" onClick={() => drillTo('world')} />
       </div>
@@ -772,7 +817,7 @@ function ContinentTopRoutesPanel({
   rows,
   timeMode,
 }: {
-  rows: EurTopRoute[];
+  rows: ContinentTopRouteRow[];
   timeMode: ContinentDisplayMode;
 }) {
   const { selections } = useDrillDown();
@@ -784,13 +829,14 @@ function ContinentTopRoutesPanel({
         {'🏆'} 5 อันดับเส้นทางตามจำนวนเที่ยวบิน {'\u2014'} {continentName}
       </div>
       {rows.map((r, i) => {
-        const { pct, num } = getChangeForMode(r, timeMode);
+        const pct = r.deltaPercent;
+        const num = r.deltaFlights;
         return (
           <div key={i} className="flex items-center gap-2 py-2.5 border-b border-border/60 last:border-b-0">
             <span className="text-[14px] text-muted-foreground w-6 text-center shrink-0 font-bold">{i + 1}</span>
-            <span className="text-lg shrink-0">{r.fromFlag}</span>
+            <span className="text-lg shrink-0">✈️</span>
             <span className="text-[15px] font-medium flex-1 min-w-0 truncate">
-              {r.from} {'\u2192'} {r.toFlag} {r.to}
+              {r.routeText}
             </span>
             <span className="text-[14px] text-muted-foreground w-16 text-right shrink-0 tabular-nums font-bold">
               {r.flights.toLocaleString()}
@@ -799,6 +845,70 @@ function ContinentTopRoutesPanel({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function ContinentTopAirportTable({
+  rows,
+  continentName,
+  presetLabel,
+}: {
+  rows: ContinentTopAirportRow[];
+  continentName: string;
+  presetLabel: string;
+}) {
+  return (
+    <div className="bg-card border border-border rounded-[10px] p-5">
+      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-[16px] font-bold">
+          {'✈️'} Top Flight Airports — {continentName}
+        </div>
+        <div className="text-xs text-muted-foreground">ช่วงข้อมูล: {presetLabel}</div>
+      </div>
+
+      <div className="overflow-x-auto rounded-[10px] border border-border/70">
+        <table className="w-full min-w-[760px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/20">
+              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
+              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">Airport</th>
+              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">รวมเที่ยวบิน</th>
+              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ขาออก</th>
+              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ขาเข้า</th>
+              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เทียบช่วงก่อนหน้า</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  ไม่พบข้อมูลสนามบินสำหรับช่วงวันที่ที่เลือก
+                </td>
+              </tr>
+            ) : (
+              rows.map((row, index) => (
+                <tr key={`${row.iata}-${index}`} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
+                  <td className="px-3 py-2.5 font-bold text-muted-foreground">{index + 1}</td>
+                  <td className="px-3 py-2.5">
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-extrabold tracking-wide text-primary">{row.iata}</div>
+                      <div className="truncate font-medium text-foreground">{row.airportName}</div>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{row.flights.toLocaleString()}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{row.departureFlights.toLocaleString()}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{row.arrivalFlights.toLocaleString()}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{row.deltaText}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-2 text-xs text-muted-foreground">
+        หมายเหตุ: ตารางนี้ดึงจาก endpoint Top Airport ของทวีปโดยตรงตามช่วงวันที่ที่เลือก
+      </div>
     </div>
   );
 }

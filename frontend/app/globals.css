@@ -195,3 +195,24 @@
     box-shadow: 0 0 20px 5px rgba(21, 101, 192, 0.9);
   }
 }
+
+@keyframes dashboardBannerMarquee {
+  0% {
+    transform: translateX(0);
+  }
+
+  14% {
+    transform: translateX(0);
+  }
+
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.dashboard-dev-banner-track {
+  display: inline-flex;
+  min-width: max-content;
+  animation: dashboardBannerMarquee 48s linear infinite;
+  will-change: transform;
+}

@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useCallback, createContext, useContext } from 'react';
+import { useState, useCallback, createContext, useContext, useEffect } from 'react';
 import type { DrillLevel, TimeMode, ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } from '@/lib/dashboard/drill-down-data';
+import { readSharedRangePreset, writeSharedRangePreset } from '@/lib/dashboard/range-preset-store';
 import { WorldView } from './WorldView';
 import { ContinentView } from './ContinentView';
 import { CountryView } from './CountryView';
@@ -15,19 +16,25 @@ interface SelectionState {
   airport?: AirportInfo;
 }
 
+export type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';
+
 interface DrillDownContextValue {
   level: DrillLevel;
   timeMode: TimeMode;
+  rangePreset: RangePreset;
   drillTo: (level: DrillLevel, selection?: SelectionState) => void;
   setTimeMode: (mode: TimeMode) => void;
+  setRangePreset: (preset: RangePreset) => void;
   selections: SelectionState;
 }
 
 const DrillDownContext = createContext<DrillDownContextValue>({
   level: 'world',
   timeMode: 'yoy',
+  rangePreset: 'focus',
   drillTo: () => {},
   setTimeMode: () => {},
+  setRangePreset: () => {},
   selections: {},
 });
 
@@ -39,6 +46,7 @@ export function useDrillDown() {
 export function DrillDownDashboard() {
   const [level, setLevel] = useState<DrillLevel>('world');
   const [timeMode, setTimeMode] = useState<TimeMode>('yoy');
+  const [rangePreset, setRangePreset] = useState<RangePreset>(() => readSharedRangePreset('focus'));
   const [selections, setSelections] = useState<SelectionState>({});
 
   const LEVEL_ORDER: DrillLevel[] = ['world', 'continent', 'country', 'airport'];
@@ -58,8 +66,12 @@ export function DrillDownDashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
+  useEffect(() => {
+    writeSharedRangePreset(rangePreset);
+  }, [rangePreset]);
+
   return (
-    <DrillDownContext.Provider value={{ level, timeMode, drillTo, setTimeMode, selections }}>
+    <DrillDownContext.Provider value={{ level, timeMode, rangePreset, drillTo, setTimeMode, setRangePreset, selections }}>
       <div className="space-y-4">
         {/* Title centered */}
         {/* <h1 className="text-xl font-bold text-center">ภาพรวมการค้นหาเที่ยวบิน</h1> */}

@@ -122,6 +122,54 @@ export interface DashboardTopDestinationsResponse {
   arrivals: DashboardTopAirportRank[];
 }
 
+export interface DashboardContinentDetailRoute {
+  from: string;
+  to: string;
+  fromFlag: string;
+  toFlag: string;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+  yoy: number;
+  yoyN: number;
+  mom: number;
+  momN: number;
+  wow: number;
+  wowN: number;
+}
+
+export interface DashboardContinentDetailResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  seasonal: Array<{
+    month: string;
+    flights: number;
+  }>;
+  detail: {
+    countryCount: string;
+    busiestCountry: { flag: string; nameTh: string };
+    busiestDelta: string;
+    fastestGrowing: { flag: string; nameTh: string };
+    fastestDelta: string;
+    countries: Array<{
+      flag: string;
+      name: string;
+      airports: number;
+      flights: number;
+      delta: string;
+      deltaN: number;
+      bar: number;
+      highlight?: boolean;
+    }>;
+  };
+  topRoutes: DashboardContinentDetailRoute[];
+}
+
 type PeriodRow = {
   country_code: string | null;
   country_name: string | null;
@@ -163,6 +211,13 @@ interface WorldRangeInput {
   endDateInput?: string;
 }
 
+interface ContinentDetailInput extends WorldRangeInput {
+  continent: string;
+  includeCore?: boolean;
+  includeSeasonal?: boolean;
+  includeTopRoutes?: boolean;
+}
+
 const CONTINENT_ORDER: ContinentMeta[] = [
   { key: 'Europe', label: 'Europe', icon: '🏰' },
   { key: 'Asia-Pacific', label: 'Asia-Pacific', icon: '🌏' },
@@ -173,6 +228,11 @@ const CONTINENT_ORDER: ContinentMeta[] = [
   { key: 'Oceania', label: 'Oceania', icon: '🌏' },
   { key: 'Other', label: 'Other', icon: '🌐' },
 ];
+
+const CONTINENT_DETAIL_CACHE_TTL_MS = 5 * 60 * 1000;
+const continentDetailCache = new Map<string, { expiresAt: number; payload: DashboardContinentDetailResponse }>();
+const CONTINENT_AIRPORT_CODES_CACHE_TTL_MS = 60 * 60 * 1000;
+const continentAirportCodesCache = new Map<string, { expiresAt: number; codes: string[] }>();
 
 function formatDateForQuery(date: Date): string {
   const year = date.getUTCFullYear();
@@ -353,6 +413,82 @@ function normalizeCountryKey(countryCode: string | null, countryName: string | n
     (countryCode || '').trim().toUpperCase()
     || (countryName || country || 'Other').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ')
   );
+}
+
+function countryFlagFromCode(countryCode: string | null) {
+  const code = (countryCode || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) {
+    return '🌐';
+  }
+
+  const first = code.codePointAt(0);
+  const second = code.codePointAt(1);
+  if (first == null || second == null) {
+    return '🌐';
+  }
+
+  return String.fromCodePoint(0x1f1e6 + first - 65, 0x1f1e6 + second - 65);
+}
+
+async function getContinentAirportCodes(continentKey: ContinentMeta['key']): Promise<string[]> {
+  const cached = continentAirportCodesCache.get(continentKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.codes;
+  }
+
+  const result = await pool.query(`
+    SELECT code, country_code, country_name, country
+    FROM airports
+    WHERE code IS NOT NULL AND TRIM(code) <> ''
+  `);
+
+  const codes = Array.from(
+    new Set(
+      (result.rows as Array<{ code: string | null; country_code: string | null; country_name: string | null; country: string | null }>)
+        .filter((row) => getContinentMeta(row.country_code, row.country_name || row.country).key === continentKey)
+        .map((row) => (row.code || '').trim().toUpperCase())
+        .filter((code) => Boolean(code)),
+    ),
+  );
+
+  continentAirportCodesCache.set(continentKey, {
+    expiresAt: Date.now() + CONTINENT_AIRPORT_CODES_CACHE_TTL_MS,
+    codes,
+  });
+
+  return codes;
+}
+
+function resolveContinentMetaFromInput(continentInput: string) {
+  const normalized = continentInput.trim().toLowerCase();
+  const thaiAliases: Record<string, ContinentMeta['key']> = {
+    'ยุโรป': 'Europe',
+    'เอเชีย': 'Asia-Pacific',
+    'อเมริกาเหนือ': 'North America',
+    'อเมริกาใต้': 'South America',
+    'แอฟริกา': 'Africa',
+    'ตะวันออกกลาง': 'Middle East',
+    'โอเชียเนีย': 'Oceania',
+    'อื่นๆ': 'Other',
+    'other': 'Other',
+  };
+
+  const byKey = CONTINENT_ORDER.find((meta) => meta.key.toLowerCase() === normalized);
+  if (byKey) {
+    return byKey;
+  }
+
+  const byLabel = CONTINENT_ORDER.find((meta) => meta.label.toLowerCase() === normalized);
+  if (byLabel) {
+    return byLabel;
+  }
+
+  const thaiMatch = thaiAliases[continentInput.trim()] || thaiAliases[normalized];
+  if (thaiMatch) {
+    return CONTINENT_ORDER.find((meta) => meta.key === thaiMatch) || CONTINENT_ORDER[0];
+  }
+
+  return CONTINENT_ORDER.find((meta) => meta.key === 'Europe') || CONTINENT_ORDER[0];
 }
 
 function sumAirportRows(rows: AirportRow[]) {
@@ -1116,5 +1252,547 @@ export class DashboardSummaryService {
       departures: buildRows(currentDeparturesResult.rows as AirportRankRow[], previousDeparturesResult.rows as AirportRankRow[]),
       arrivals: buildRows(currentArrivalsResult.rows as AirportRankRow[], previousArrivalsResult.rows as AirportRankRow[]),
     };
+  }
+
+  static async getContinentDetail(
+    input: ContinentDetailInput,
+  ): Promise<DashboardContinentDetailResponse> {
+    const continentMeta = resolveContinentMetaFromInput(input.continent);
+    const includeCore = input.includeCore ?? true;
+    const includeSeasonal = input.includeSeasonal ?? true;
+    const includeTopRoutes = input.includeTopRoutes ?? true;
+    const { startDate, endDate, comparisonStartDate, comparisonEndDate, windowDays } = resolveWorldRange(input);
+    const centerDate = resolveCenterDate(input, startDate, endDate);
+    const periodStart = formatDateForQuery(startDate);
+    const periodEnd = formatDateForQuery(endDate);
+    const comparisonStart = formatDateForQuery(comparisonStartDate);
+    const comparisonEnd = formatDateForQuery(comparisonEndDate);
+    const cacheKey = [
+      continentMeta.key,
+      periodStart,
+      periodEnd,
+      comparisonStart,
+      comparisonEnd,
+      includeCore ? 'core:1' : 'core:0',
+      includeSeasonal ? 'seasonal:1' : 'seasonal:0',
+      includeTopRoutes ? 'routes:1' : 'routes:0',
+    ].join('|');
+
+    const cached = continentDetailCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.payload;
+    }
+
+    const continentAirportCodes = await getContinentAirportCodes(continentMeta.key);
+    if (!continentAirportCodes.length) {
+      const emptyPayload: DashboardContinentDetailResponse = {
+        centerDate: formatDateForQuery(centerDate),
+        windowDays,
+        periodStart,
+        periodEnd,
+        comparisonStart,
+        comparisonEnd,
+        seasonal: [],
+        detail: {
+          countryCount: '0',
+          busiestCountry: {
+            flag: countryFlagFromCode(null),
+            nameTh: continentMeta.label,
+          },
+          busiestDelta: 'ยังไม่มีข้อมูล',
+          fastestGrowing: {
+            flag: countryFlagFromCode(null),
+            nameTh: continentMeta.label,
+          },
+          fastestDelta: 'ยังไม่มีข้อมูล',
+          countries: [],
+        },
+        topRoutes: [],
+      };
+
+      continentDetailCache.set(cacheKey, {
+        expiresAt: Date.now() + CONTINENT_DETAIL_CACHE_TTL_MS,
+        payload: emptyPayload,
+      });
+
+      return emptyPayload;
+    }
+
+    const continentAirportCodesParam = continentAirportCodes;
+    const seasonalEndDate = new Date(endDate);
+    const seasonalStartDate = new Date(Date.UTC(seasonalEndDate.getUTCFullYear(), seasonalEndDate.getUTCMonth() - 11, 1));
+    seasonalStartDate.setUTCHours(0, 0, 0, 0);
+    seasonalEndDate.setUTCMonth(seasonalEndDate.getUTCMonth() + 1, 0);
+    seasonalEndDate.setUTCHours(23, 59, 59, 999);
+    const seasonalStart = formatDateForQuery(seasonalStartDate);
+    const seasonalEnd = formatDateForQuery(seasonalEndDate);
+
+    const countryQuery = `
+      WITH continent_airports AS (
+        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
+        FROM airports
+        WHERE UPPER(TRIM(code)) = ANY($3::text[])
+      ),
+      flight_rows AS (
+        SELECT dep_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT dep_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+      )
+      SELECT
+        a.country_code AS country_code,
+        COALESCE(a.country_name, a.country, a.code, 'Other') AS country_name,
+        COUNT(*)::int AS flights,
+        COUNT(DISTINCT a.code)::int AS airport_count
+      FROM flight_rows
+      JOIN continent_airports ca ON UPPER(TRIM(flight_rows.airport_code)) = ca.airport_code
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
+      GROUP BY
+        a.country_code,
+        COALESCE(a.country_name, a.country, a.code, 'Other')
+      ORDER BY flights DESC, airport_count DESC, country_name ASC
+    `;
+
+    const routeQuery = `
+      WITH continent_airports AS (
+        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
+        FROM airports
+        WHERE UPPER(TRIM(code)) = ANY($3::text[])
+      ),
+      flight_rows AS (
+        SELECT dep_airport AS from_airport, arr_airport AS to_airport
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT dep_airport AS from_airport, arr_airport AS to_airport
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+      )
+      SELECT
+        UPPER(TRIM(fr.from_airport)) AS from_code,
+        UPPER(TRIM(fr.to_airport)) AS to_code,
+        COALESCE(dep.name, dep.code) AS from_name,
+        COALESCE(dep.city, dep.name, dep.code) AS from_city,
+        COALESCE(dep.country_code, dep.country, NULL) AS from_country_code,
+        COALESCE(dep.country_name, dep.country, 'Other') AS from_country_name,
+        COALESCE(arr.name, arr.code) AS to_name,
+        COALESCE(arr.city, arr.name, arr.code) AS to_city,
+        COALESCE(arr.country_code, arr.country, NULL) AS to_country_code,
+        COALESCE(arr.country_name, arr.country, 'Other') AS to_country_name,
+        COUNT(*)::int AS flights
+      FROM flight_rows fr
+      JOIN continent_airports dep_codes ON UPPER(TRIM(fr.from_airport)) = dep_codes.airport_code
+      JOIN continent_airports arr_codes ON UPPER(TRIM(fr.to_airport)) = arr_codes.airport_code
+      LEFT JOIN airports dep ON UPPER(TRIM(dep.code)) = UPPER(TRIM(fr.from_airport))
+      LEFT JOIN airports arr ON UPPER(TRIM(arr.code)) = UPPER(TRIM(fr.to_airport))
+      WHERE dep.code IS NOT NULL
+        AND arr.code IS NOT NULL
+      GROUP BY
+        UPPER(TRIM(fr.from_airport)),
+        UPPER(TRIM(fr.to_airport)),
+        COALESCE(dep.name, dep.code),
+        COALESCE(dep.city, dep.name, dep.code),
+        COALESCE(dep.country_code, dep.country, NULL),
+        COALESCE(dep.country_name, dep.country, 'Other'),
+        COALESCE(arr.name, arr.code),
+        COALESCE(arr.city, arr.name, arr.code),
+        COALESCE(arr.country_code, arr.country, NULL),
+        COALESCE(arr.country_name, arr.country, 'Other')
+      ORDER BY flights DESC, from_code ASC, to_code ASC
+    `;
+
+    const seasonalQuery = `
+      WITH continent_airports AS (
+        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
+        FROM airports
+        WHERE UPPER(TRIM(code)) = ANY($3::text[])
+      ),
+      flight_rows AS (
+        SELECT departure_date AS flight_date, dep_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT departure_date AS flight_date, arr_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT departure_date AS flight_date, dep_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT departure_date AS flight_date, arr_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $1 AND departure_date <= $2
+      )
+      SELECT
+        date_trunc('month', flight_date)::date AS month,
+        a.country_code AS country_code,
+        COALESCE(a.country_name, a.country, 'Other') AS country_name,
+        COUNT(*)::int AS flights
+      FROM flight_rows
+      JOIN continent_airports ca ON UPPER(TRIM(flight_rows.airport_code)) = ca.airport_code
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
+      WHERE a.code IS NOT NULL
+      GROUP BY
+        date_trunc('month', flight_date)::date,
+        a.country_code,
+        COALESCE(a.country_name, a.country, 'Other')
+      ORDER BY month ASC
+    `;
+
+    if (!includeCore) {
+      const [seasonalResult, currentRoutesResult, previousRoutesResult] = await Promise.all([
+        includeSeasonal
+          ? pool.query(seasonalQuery, [seasonalStart, seasonalEnd, continentAirportCodesParam])
+          : Promise.resolve({ rows: [] } as { rows: Array<{ month: Date | string; country_code: string | null; country_name: string | null; flights: number }> }),
+        includeTopRoutes
+          ? pool.query(routeQuery, [periodStart, periodEnd, continentAirportCodesParam])
+          : Promise.resolve({ rows: [] } as { rows: Array<Record<string, any>> }),
+        includeTopRoutes
+          ? pool.query(routeQuery, [comparisonStart, comparisonEnd, continentAirportCodesParam])
+          : Promise.resolve({ rows: [] } as { rows: Array<Record<string, any>> }),
+      ]);
+
+      const seasonalBuckets = new Map<string, number>();
+      const seasonalCursor = new Date(seasonalStartDate);
+      for (let i = 0; i < 12; i += 1) {
+        const key = formatDateForQuery(seasonalCursor).slice(0, 7);
+        seasonalBuckets.set(key, 0);
+        seasonalCursor.setUTCMonth(seasonalCursor.getUTCMonth() + 1);
+      }
+
+      for (const row of seasonalResult.rows as Array<{ month: Date | string; country_code: string | null; country_name: string | null; flights: number }>) {
+        const meta = getContinentMeta(row.country_code, row.country_name);
+        if (meta.key !== continentMeta.key) {
+          continue;
+        }
+
+        const monthValue = row.month instanceof Date ? row.month : new Date(row.month);
+        const monthKey = formatDateForQuery(monthValue).slice(0, 7);
+        const current = seasonalBuckets.get(monthKey);
+        if (current != null) {
+          seasonalBuckets.set(monthKey, current + (Number(row.flights) || 0));
+        }
+      }
+
+      const seasonal = includeSeasonal
+        ? Array.from(seasonalBuckets.entries()).map(([month, flights]) => ({ month, flights }))
+        : [];
+
+      const routePreviousMap = new Map<string, number>();
+      if (includeTopRoutes) {
+        for (const row of previousRoutesResult.rows as Array<Record<string, any>>) {
+          const fromCode = (row.from_code || '').trim().toUpperCase();
+          const toCode = (row.to_code || '').trim().toUpperCase();
+          if (!fromCode || !toCode) {
+            continue;
+          }
+          routePreviousMap.set(`${fromCode}__${toCode}`, Number(row.flights) || 0);
+        }
+      }
+
+      const topRoutes = includeTopRoutes
+        ? (currentRoutesResult.rows as Array<Record<string, any>>)
+            .map((row) => {
+              const fromCountryMeta = getContinentMeta(row.from_country_code, row.from_country_name);
+              const toCountryMeta = getContinentMeta(row.to_country_code, row.to_country_name);
+              if (fromCountryMeta.key !== continentMeta.key || toCountryMeta.key !== continentMeta.key) {
+                return null;
+              }
+
+              const fromCode = (row.from_code || '').trim().toUpperCase();
+              const toCode = (row.to_code || '').trim().toUpperCase();
+              if (!fromCode || !toCode) {
+                return null;
+              }
+
+              const key = `${fromCode}__${toCode}`;
+              const flights = Number(row.flights) || 0;
+              const previousFlights = routePreviousMap.get(key) || 0;
+              const deltaFlights = flights - previousFlights;
+              const deltaPercent = previousFlights > 0
+                ? (deltaFlights / previousFlights) * 100
+                : flights > 0
+                  ? 100
+                  : 0;
+              const deltaSign = deltaFlights >= 0 ? '+' : '';
+              const deltaArrow = deltaFlights >= 0 ? '▲' : '▼';
+
+              return {
+                from: `${row.from_city || row.from_name || fromCode} ${fromCode}`,
+                to: `${row.to_city || row.to_name || toCode} ${toCode}`,
+                fromFlag: countryFlagFromCode(row.from_country_code),
+                toFlag: countryFlagFromCode(row.to_country_code),
+                flights,
+                previousFlights,
+                deltaFlights,
+                deltaPercent,
+                yoy: deltaPercent,
+                yoyN: deltaFlights,
+                mom: deltaPercent,
+                momN: deltaFlights,
+                wow: deltaPercent,
+                wowN: deltaFlights,
+                sortText: `${deltaArrow} ${deltaSign}${deltaFlights.toLocaleString()} (${deltaPercent.toFixed(1)}%)`,
+              };
+            })
+            .filter((row): row is NonNullable<typeof row> => Boolean(row))
+            .sort((a, b) => b.flights - a.flights || a.from.localeCompare(b.from, 'en', { sensitivity: 'base' }))
+            .slice(0, 5)
+            .map(({ sortText, ...row }) => row)
+        : [];
+
+      const emptyDetail = {
+        countryCount: '0',
+        busiestCountry: {
+          flag: countryFlagFromCode(null),
+          nameTh: continentMeta.label,
+        },
+        busiestDelta: 'ยังไม่มีข้อมูล',
+        fastestGrowing: {
+          flag: countryFlagFromCode(null),
+          nameTh: continentMeta.label,
+        },
+        fastestDelta: 'ยังไม่มีข้อมูล',
+        countries: [],
+      };
+
+      const partialPayload: DashboardContinentDetailResponse = {
+        centerDate: formatDateForQuery(centerDate),
+        windowDays,
+        periodStart,
+        periodEnd,
+        comparisonStart,
+        comparisonEnd,
+        seasonal,
+        detail: emptyDetail,
+        topRoutes,
+      };
+
+      continentDetailCache.set(cacheKey, {
+        expiresAt: Date.now() + CONTINENT_DETAIL_CACHE_TTL_MS,
+        payload: partialPayload,
+      });
+
+      return partialPayload;
+    }
+
+    const [currentCountriesResult, previousCountriesResult] = await Promise.all([
+      pool.query(countryQuery, [periodStart, periodEnd, continentAirportCodesParam]),
+      pool.query(countryQuery, [comparisonStart, comparisonEnd, continentAirportCodesParam]),
+    ]);
+
+    const previousCountryMap = new Map<string, number>();
+    for (const row of previousCountriesResult.rows as CountryRankRow[]) {
+      const meta = getContinentMeta(row.country_code, row.country_name);
+      if (meta.key !== continentMeta.key) {
+        continue;
+      }
+      const key = normalizeCountryKey(row.country_code, row.country_name, row.country_name);
+      previousCountryMap.set(key, Number(row.flights) || 0);
+    }
+
+    const currentCountryRows = (currentCountriesResult.rows as CountryRankRow[])
+      .map((row) => {
+        const meta = getContinentMeta(row.country_code, row.country_name);
+        if (meta.key !== continentMeta.key) {
+          return null;
+        }
+
+        const key = normalizeCountryKey(row.country_code, row.country_name, row.country_name);
+        const flights = Number(row.flights) || 0;
+        const previousFlights = previousCountryMap.get(key) || 0;
+        const deltaFlights = flights - previousFlights;
+        const deltaPercent = previousFlights > 0
+          ? (deltaFlights / previousFlights) * 100
+          : flights > 0
+            ? 100
+            : 0;
+
+        return {
+          key,
+          countryCode: row.country_code,
+          countryName: row.country_name || 'Other',
+          airportCount: Number(row.airport_count) || 0,
+          flights,
+          previousFlights,
+          deltaFlights,
+          deltaPercent,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+      .filter((row) => row.countryName !== 'Other' && row.flights > 0);
+
+    const countryCount = currentCountryRows.length;
+    const busiestCountryRow = [...currentCountryRows].sort((a, b) => b.flights - a.flights || b.airportCount - a.airportCount)[0];
+    const fastestGrowingRow = [...currentCountryRows].sort((a, b) => b.deltaPercent - a.deltaPercent || b.deltaFlights - a.deltaFlights)[0];
+    const maxFlights = Math.max(...currentCountryRows.map((row) => row.flights), 1);
+
+    const countryRows = currentCountryRows
+      .map((row) => ({
+        flag: countryFlagFromCode(row.countryCode),
+        name: row.countryName,
+        airports: row.airportCount,
+        flights: row.flights,
+        delta: `${row.deltaPercent >= 0 ? '+' : ''}${row.deltaPercent.toFixed(1)}%`,
+        deltaN: row.deltaFlights,
+        bar: Math.round((row.flights / maxFlights) * 100),
+        highlight: busiestCountryRow ? row.key === busiestCountryRow.key : false,
+      }))
+      .sort((a, b) => b.flights - a.flights || b.airports - a.airports || a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
+
+    const routePreviousMap = new Map<string, number>();
+    const topRoutes: DashboardContinentDetailRoute[] = [];
+    if (includeTopRoutes) {
+      const [currentRoutesResult, previousRoutesResult] = await Promise.all([
+        pool.query(routeQuery, [periodStart, periodEnd, continentAirportCodesParam]),
+        pool.query(routeQuery, [comparisonStart, comparisonEnd, continentAirportCodesParam]),
+      ]);
+
+      for (const row of previousRoutesResult.rows as Array<Record<string, any>>) {
+        const fromCode = (row.from_code || '').trim().toUpperCase();
+        const toCode = (row.to_code || '').trim().toUpperCase();
+        if (!fromCode || !toCode) {
+          continue;
+        }
+        const key = `${fromCode}__${toCode}`;
+        routePreviousMap.set(key, Number(row.flights) || 0);
+      }
+
+      const topRouteRows = (currentRoutesResult.rows as Array<Record<string, any>>)
+        .map((row) => {
+          const fromCountryMeta = getContinentMeta(row.from_country_code, row.from_country_name);
+          const toCountryMeta = getContinentMeta(row.to_country_code, row.to_country_name);
+          if (fromCountryMeta.key !== continentMeta.key || toCountryMeta.key !== continentMeta.key) {
+            return null;
+          }
+
+          const fromCode = (row.from_code || '').trim().toUpperCase();
+          const toCode = (row.to_code || '').trim().toUpperCase();
+          if (!fromCode || !toCode) {
+            return null;
+          }
+
+          const key = `${fromCode}__${toCode}`;
+          const flights = Number(row.flights) || 0;
+          const previousFlights = routePreviousMap.get(key) || 0;
+          const deltaFlights = flights - previousFlights;
+          const deltaPercent = previousFlights > 0
+            ? (deltaFlights / previousFlights) * 100
+            : flights > 0
+              ? 100
+              : 0;
+          const deltaSign = deltaFlights >= 0 ? '+' : '';
+          const deltaArrow = deltaFlights >= 0 ? '▲' : '▼';
+
+          const fromLabel = `${row.from_city || row.from_name || fromCode} ${fromCode}`;
+          const toLabel = `${row.to_city || row.to_name || toCode} ${toCode}`;
+
+          return {
+            from: fromLabel,
+            to: toLabel,
+            fromFlag: countryFlagFromCode(row.from_country_code),
+            toFlag: countryFlagFromCode(row.to_country_code),
+            flights,
+            previousFlights,
+            deltaFlights,
+            deltaPercent,
+            yoy: deltaPercent,
+            yoyN: deltaFlights,
+            mom: deltaPercent,
+            momN: deltaFlights,
+            wow: deltaPercent,
+            wowN: deltaFlights,
+            sortText: `${deltaArrow} ${deltaSign}${deltaFlights.toLocaleString()} (${deltaPercent.toFixed(1)}%)`,
+          };
+        })
+        .filter((row): row is NonNullable<typeof row> => Boolean(row))
+        .sort((a, b) => b.flights - a.flights || a.from.localeCompare(b.from, 'en', { sensitivity: 'base' }))
+        .slice(0, 5)
+        .map(({ sortText, ...row }) => row);
+
+      topRoutes.push(...topRouteRows);
+    }
+
+    const seasonal: DashboardContinentDetailResponse['seasonal'] = [];
+    if (includeSeasonal) {
+      const seasonalResult = await pool.query(seasonalQuery, [seasonalStart, seasonalEnd, continentAirportCodesParam]);
+      const seasonalBuckets = new Map<string, number>();
+      const seasonalCursor = new Date(seasonalStartDate);
+      for (let i = 0; i < 12; i += 1) {
+        const key = formatDateForQuery(seasonalCursor).slice(0, 7);
+        seasonalBuckets.set(key, 0);
+        seasonalCursor.setUTCMonth(seasonalCursor.getUTCMonth() + 1);
+      }
+
+      for (const row of seasonalResult.rows as Array<{ month: Date | string; country_code: string | null; country_name: string | null; flights: number }>) {
+        const meta = getContinentMeta(row.country_code, row.country_name);
+        if (meta.key !== continentMeta.key) {
+          continue;
+        }
+
+        const monthValue = row.month instanceof Date ? row.month : new Date(row.month);
+        const monthKey = formatDateForQuery(monthValue).slice(0, 7);
+        const current = seasonalBuckets.get(monthKey);
+        if (current != null) {
+          seasonalBuckets.set(monthKey, current + (Number(row.flights) || 0));
+        }
+      }
+
+      seasonal.push(...Array.from(seasonalBuckets.entries()).map(([month, flights]) => ({
+        month,
+        flights,
+      })));
+    }
+
+    const busiestDelta = busiestCountryRow
+      ? `${busiestCountryRow.deltaFlights >= 0 ? '+' : ''}${busiestCountryRow.deltaFlights.toLocaleString()} เที่ยวบิน · ${busiestCountryRow.flights.toLocaleString()} ทั้งหมด`
+      : 'ยังไม่มีข้อมูล';
+    const fastestDelta = fastestGrowingRow
+      ? `${fastestGrowingRow.deltaFlights >= 0 ? '▲' : '▼'} ${fastestGrowingRow.deltaFlights >= 0 ? '+' : ''}${fastestGrowingRow.deltaFlights.toLocaleString()} เที่ยวบิน (${fastestGrowingRow.deltaPercent.toFixed(1)}%)`
+      : 'ยังไม่มีข้อมูล';
+
+    const payload = {
+      centerDate: formatDateForQuery(centerDate),
+      windowDays,
+      periodStart,
+      periodEnd,
+      comparisonStart,
+      comparisonEnd,
+      seasonal,
+      detail: {
+        countryCount: countryCount.toLocaleString(),
+        busiestCountry: {
+          flag: countryFlagFromCode(busiestCountryRow?.countryCode ?? null),
+          nameTh: busiestCountryRow?.countryName || continentMeta.label,
+        },
+        busiestDelta,
+        fastestGrowing: {
+          flag: countryFlagFromCode(fastestGrowingRow?.countryCode ?? null),
+          nameTh: fastestGrowingRow?.countryName || continentMeta.label,
+        },
+        fastestDelta,
+        countries: countryRows,
+      },
+      topRoutes,
+    };
+
+    continentDetailCache.set(cacheKey, {
+      expiresAt: Date.now() + CONTINENT_DETAIL_CACHE_TTL_MS,
+      payload,
+    });
+
+    return payload;
   }
 }

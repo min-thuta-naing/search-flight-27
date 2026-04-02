@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { addDays, differenceInCalendarDays, format, subDays } from 'date-fns';
+import { th } from 'date-fns/locale';
 import { ChevronDown } from 'lucide-react';
-import type { DateRange } from 'react-day-picker';
+import { DateRange, type MonthCaptionProps, useDayPicker } from 'react-day-picker';
 import { Button } from '@/components/ui/button';
 import { Calendar } from '@/components/ui/calendar';
 import { Label } from '@/components/ui/label';
@@ -31,12 +32,17 @@ import {
 } from '@/lib/api/statistics-api';
 import { useDrillDown, KPIRow, ChangePill } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
+import type { RangePreset } from './DrillDownDashboard';
 import { cn } from '@/lib/utils';
 
-type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';
 type RankSortKey = 'label' | 'routeCount' | 'flights' | 'deltaPercent';
 
 const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'xl:h-[540px]';
+
+const worldSummaryCache = new Map<string, DashboardSummaryResponse>();
+const worldTopRanksCache = new Map<string, DashboardTopRanksResponse>();
+const worldTopDestinationsCache = new Map<string, DashboardTopDestinationsResponse>();
+let cachedAirportCountries: AirportCountrySummary[] | null = null;
 
 type TopCountryViewRow = {
   countryCode: string | null;
@@ -69,6 +75,69 @@ const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   '180': '6 เดือน',
   '365': '1 ปี',
 };
+
+const CALENDAR_MONTH_OPTIONS = Array.from({ length: 12 }, (_, monthIndex) => ({
+  value: monthIndex,
+  label: format(new Date(2024, monthIndex, 1), 'LLLL', { locale: th }),
+}));
+
+const CALENDAR_YEAR_RANGE = (() => {
+  const currentYear = new Date().getFullYear();
+  return Array.from({ length: 8 }, (_, index) => currentYear - 2 + index);
+})();
+
+function WorldCalendarCaption({
+  calendarMonth,
+  displayIndex: _displayIndex,
+  ...props
+}: MonthCaptionProps) {
+  const { goToMonth } = useDayPicker();
+  const currentMonth = calendarMonth.date.getMonth();
+  const currentYear = calendarMonth.date.getFullYear();
+
+  const handleMonthChange = (value: string) => {
+    goToMonth(new Date(currentYear, Number(value), 1));
+  };
+
+  const handleYearChange = (value: string) => {
+    goToMonth(new Date(Number(value), currentMonth, 1));
+  };
+
+  return (
+    <div
+      {...props}
+      className={cn(
+        'flex h-8 w-full items-center justify-between gap-2 px-2',
+        props.className,
+      )}
+    >
+      <select
+        aria-label="เลือกเดือน"
+        className="border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-[3px]"
+        value={String(currentMonth)}
+        onChange={(event) => handleMonthChange(event.target.value)}
+      >
+        {CALENDAR_MONTH_OPTIONS.map((month) => (
+          <option key={month.value} value={month.value}>
+            {month.label}
+          </option>
+        ))}
+      </select>
+      <select
+        aria-label="เลือกปี"
+        className="border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-[96px] shrink-0 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-[3px]"
+        value={String(currentYear)}
+        onChange={(event) => handleYearChange(event.target.value)}
+      >
+        {CALENDAR_YEAR_RANGE.map((year) => (
+          <option key={year} value={year}>
+            {year}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
 
 function buildPresetRange(mode: RangePreset, baseDate = new Date()): DateRange {
   if (mode === 'focus') {
@@ -119,15 +188,16 @@ function parseContinentCountryCount(value: string) {
 }
 
 export function WorldView() {
-  const { drillTo, timeMode } = useDrillDown();
+  const { drillTo, timeMode, rangePreset, setRangePreset } = useDrillDown();
+  const initialPresetRange = useMemo(() => buildPresetRange(rangePreset), [rangePreset]);
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [dateRange, setDateRange] = useState<DateRange | undefined>(() => buildPresetRange('focus'));
-  const [durationMode, setDurationMode] = useState<RangePreset | null>('focus');
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(() => initialPresetRange);
+  const [durationMode, setDurationMode] = useState<RangePreset | null>(rangePreset);
   const [showCustomDateRange, setShowCustomDateRange] = useState(false);
   const [isExtendedRangeOpen, setIsExtendedRangeOpen] = useState(false);
-  const [fromCalendarMonth, setFromCalendarMonth] = useState(() => subDays(new Date(), 15));
-  const [toCalendarMonth, setToCalendarMonth] = useState(() => addDays(new Date(), 15));
+  const [fromCalendarMonth, setFromCalendarMonth] = useState(() => initialPresetRange.from || new Date());
+  const [toCalendarMonth, setToCalendarMonth] = useState(() => initialPresetRange.to || initialPresetRange.from || new Date());
   const [dateError, setDateError] = useState(false);
   const [rankSortKey, setRankSortKey] = useState<RankSortKey>('flights');
   const [rankSortDirection, setRankSortDirection] = useState<'asc' | 'desc'>('desc');
@@ -136,8 +206,12 @@ export function WorldView() {
   const [topDestinations, setTopDestinations] = useState<DashboardTopDestinationsResponse | null>(null);
   const [topDestinationsLoading, setTopDestinationsLoading] = useState(true);
   const selectPreset = (mode: RangePreset) => {
+    setRangePreset(mode);
+  };
+
+  useEffect(() => {
     applyPresetRange(
-      mode,
+      rangePreset,
       setDateRange,
       setDurationMode,
       setFromCalendarMonth,
@@ -146,13 +220,10 @@ export function WorldView() {
       setIsExtendedRangeOpen,
       setDateError,
     );
-  };
+  }, [rangePreset]);
 
   useEffect(() => {
     let mounted = true;
-    setLoading(true);
-    setTopRanksLoading(true);
-    setTopDestinationsLoading(true);
     setDateError(false);
 
     if (!dateRange?.from) {
@@ -167,73 +238,123 @@ export function WorldView() {
 
     const startDate = formatLocalDateInput(dateRange.from);
     const endDate = formatLocalDateInput(dateRange.to || dateRange.from);
+    const cacheKey = `${startDate}__${endDate}`;
+    const cachedSummary = worldSummaryCache.get(cacheKey) ?? null;
+    const cachedTopRanks = worldTopRanksCache.get(cacheKey) ?? null;
+    const cachedTopDestinations = worldTopDestinationsCache.get(cacheKey) ?? null;
+
+    if (cachedSummary) {
+      console.debug('[WorldView] summary cache hit', { cacheKey });
+      setSummary(cachedSummary);
+      setLoading(false);
+    } else {
+      setSummary(null);
+      setLoading(true);
+    }
+
+    if (cachedTopRanks) {
+      console.debug('[WorldView] top ranks cache hit', { cacheKey });
+      setTopRanks(cachedTopRanks);
+      setTopRanksLoading(false);
+    } else {
+      setTopRanks(null);
+      setTopRanksLoading(true);
+    }
+
+    if (cachedTopDestinations) {
+      console.debug('[WorldView] top destinations cache hit', { cacheKey });
+      setTopDestinations(cachedTopDestinations);
+      setTopDestinationsLoading(false);
+    } else {
+      setTopDestinations(null);
+      setTopDestinationsLoading(true);
+    }
+
+    if (cachedSummary && cachedTopRanks && cachedTopDestinations) {
+      console.debug('[WorldView] all dashboard caches ready', { cacheKey });
+      return () => {
+        mounted = false;
+      };
+    }
+
     void (async () => {
-      console.debug('[WorldView] calling dashboard-summary', { startDate, endDate });
-      try {
-        const summaryData = await statisticsApi.getDashboardSummary({ startDate, endDate });
-        if (!mounted) return;
-        setSummary(summaryData);
-        console.debug('[WorldView] summary fetch success', {
-          totalFlights: summaryData.totalFlights,
-          busiestContinent: summaryData.busiestContinent?.label,
-        });
-      } catch (error) {
-        console.warn('[WorldView] Failed to load dashboard data from API, falling back to mock data.', {
-          status: (error as { status?: number }).status,
-          statusText: (error as { statusText?: string }).statusText,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        if (!mounted) return;
-        setSummary(null);
-      } finally {
-        if (mounted) {
-          setLoading(false);
+      if (!cachedSummary) {
+        console.debug('[WorldView] calling dashboard-summary', { startDate, endDate });
+        try {
+          const summaryData = await statisticsApi.getDashboardSummary({ startDate, endDate });
+          if (!mounted) return;
+          worldSummaryCache.set(cacheKey, summaryData);
+          setSummary(summaryData);
+          console.debug('[WorldView] summary fetch success', {
+            totalFlights: summaryData.totalFlights,
+            busiestContinent: summaryData.busiestContinent?.label,
+          });
+        } catch (error) {
+          console.warn('[WorldView] Failed to load dashboard data from API, falling back to mock data.', {
+            status: (error as { status?: number }).status,
+            statusText: (error as { statusText?: string }).statusText,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          if (!mounted) return;
+          setSummary(null);
+        } finally {
+          if (mounted) {
+            setLoading(false);
+          }
+        }
+      } else {
+        setLoading(false);
+      }
+
+      if (!cachedTopRanks) {
+        console.debug('[WorldView] calling dashboard-top-ranks', { startDate, endDate });
+        try {
+          const topRanksData = await statisticsApi.getDashboardTopRanks({ startDate, endDate });
+          if (!mounted) return;
+          worldTopRanksCache.set(cacheKey, topRanksData);
+          setTopRanks(topRanksData);
+          console.debug('[WorldView] top ranks fetch success', {
+            countries: topRanksData.countries.length,
+            airports: topRanksData.airports.length,
+          });
+        } catch (error) {
+          console.warn('[WorldView] Failed to load top ranks from API, falling back to mock data.', {
+            status: (error as { status?: number }).status,
+            statusText: (error as { statusText?: string }).statusText,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          if (!mounted) return;
+          setTopRanks(null);
+        } finally {
+          if (mounted) {
+            setTopRanksLoading(false);
+          }
         }
       }
 
-      console.debug('[WorldView] calling dashboard-top-ranks', { startDate, endDate });
-      try {
-        const topRanksData = await statisticsApi.getDashboardTopRanks({ startDate, endDate });
-        if (!mounted) return;
-        setTopRanks(topRanksData);
-        console.debug('[WorldView] top ranks fetch success', {
-          countries: topRanksData.countries.length,
-          airports: topRanksData.airports.length,
-        });
-      } catch (error) {
-        console.warn('[WorldView] Failed to load top ranks from API, falling back to mock data.', {
-          status: (error as { status?: number }).status,
-          statusText: (error as { statusText?: string }).statusText,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        if (!mounted) return;
-        setTopRanks(null);
-      } finally {
-        if (mounted) {
-          setTopRanksLoading(false);
-        }
-      }
-
-      console.debug('[WorldView] calling dashboard-top-destinations', { startDate, endDate });
-      try {
-        const topDestinationsData = await statisticsApi.getDashboardTopDestinations({ startDate, endDate });
-        if (!mounted) return;
-        setTopDestinations(topDestinationsData);
-        console.debug('[WorldView] top destinations fetch success', {
-          departures: topDestinationsData.departures.length,
-          arrivals: topDestinationsData.arrivals.length,
-        });
-      } catch (error) {
-        console.warn('[WorldView] Failed to load top destinations from API, falling back to mock data.', {
-          status: (error as { status?: number }).status,
-          statusText: (error as { statusText?: string }).statusText,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        if (!mounted) return;
-        setTopDestinations(null);
-      } finally {
-        if (mounted) {
-          setTopDestinationsLoading(false);
+      if (!cachedTopDestinations) {
+        console.debug('[WorldView] calling dashboard-top-destinations', { startDate, endDate });
+        try {
+          const topDestinationsData = await statisticsApi.getDashboardTopDestinations({ startDate, endDate });
+          if (!mounted) return;
+          worldTopDestinationsCache.set(cacheKey, topDestinationsData);
+          setTopDestinations(topDestinationsData);
+          console.debug('[WorldView] top destinations fetch success', {
+            departures: topDestinationsData.departures.length,
+            arrivals: topDestinationsData.arrivals.length,
+          });
+        } catch (error) {
+          console.warn('[WorldView] Failed to load top destinations from API, falling back to mock data.', {
+            status: (error as { status?: number }).status,
+            statusText: (error as { statusText?: string }).statusText,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          if (!mounted) return;
+          setTopDestinations(null);
+        } finally {
+          if (mounted) {
+            setTopDestinationsLoading(false);
+          }
         }
       }
     })();
@@ -587,6 +708,11 @@ export function WorldView() {
                       selected={dateRange?.from}
                       captionLayout="label"
                       hideNavigation
+                      startMonth={new Date(CALENDAR_YEAR_RANGE[0], 0, 1)}
+                      endMonth={new Date(CALENDAR_YEAR_RANGE[CALENDAR_YEAR_RANGE.length - 1], 11, 1)}
+                      components={{
+                        MonthCaption: WorldCalendarCaption,
+                      }}
                       onSelect={(date) => {
                         setDurationMode(null);
                         setDateError(false);
@@ -620,6 +746,11 @@ export function WorldView() {
                       selected={dateRange?.to}
                       captionLayout="label"
                       hideNavigation
+                      startMonth={new Date(CALENDAR_YEAR_RANGE[0], 0, 1)}
+                      endMonth={new Date(CALENDAR_YEAR_RANGE[CALENDAR_YEAR_RANGE.length - 1], 11, 1)}
+                      components={{
+                        MonthCaption: WorldCalendarCaption,
+                      }}
                       onSelect={(date) => {
                         setDurationMode(null);
                         setDateError(false);
@@ -1218,13 +1349,21 @@ function TopDestinations({
 }
 
 function CountryLookupPanel() {
-  const [countries, setCountries] = useState<AirportCountrySummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [countries, setCountries] = useState<AirportCountrySummary[]>(() => cachedAirportCountries ?? []);
+  const [loading, setLoading] = useState(() => cachedAirportCountries === null);
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
+
+    if (cachedAirportCountries) {
+      setCountries(cachedAirportCountries);
+      setLoading(false);
+      return () => {
+        alive = false;
+      };
+    }
 
     const loadCountries = async () => {
       try {
@@ -1232,6 +1371,7 @@ function CountryLookupPanel() {
         setError(null);
         const response = await airportApi.getAirportCountries();
         if (!alive) return;
+        cachedAirportCountries = response.countries ?? [];
         setCountries(response.countries ?? []);
       } catch (err) {
         if (!alive) return;

@@ -238,6 +238,50 @@ export async function getDashboardContinents(req: Request, res: Response, next: 
 }
 
 /**
+ * Get continent detail for the drill-down dashboard
+ * GET /api/statistics/dashboard-continent-detail?continent=Europe&date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardContinentDetail(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { continent, date, window_days, start_date, end_date, include_core, include_seasonal, include_top_routes } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!continent || typeof continent !== 'string') {
+      res.status(400).json({
+        error: 'Missing continent parameter',
+        message: 'continent is required',
+      });
+      return;
+    }
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const detail = await DashboardSummaryService.getContinentDetail({
+      continent,
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: typeof start_date === 'string' ? start_date : undefined,
+      endDateInput: typeof end_date === 'string' ? end_date : undefined,
+      includeCore: typeof include_core === 'string' ? include_core !== 'false' : true,
+      includeSeasonal: typeof include_seasonal === 'string' ? include_seasonal !== 'false' : true,
+      includeTopRoutes: typeof include_top_routes === 'string' ? include_top_routes !== 'false' : true,
+    });
+
+    res.json(detail);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get top country and airport ranks for the world dashboard
  * GET /api/statistics/dashboard-top-ranks?date=YYYY-MM-DD&window_days=15
  */

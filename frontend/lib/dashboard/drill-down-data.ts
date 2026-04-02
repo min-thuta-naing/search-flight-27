@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   BusiestAirport,
   ContinentData,
   CountryData,
@@ -150,23 +150,7 @@ export const CONTINENTS: ContinentData[] = [
 ];
 
 // ============================================================
-// Continent: ope top 5 routes
-// ============================================================
-export const CONTINENT_TOP_ROUTES: EurTopRoute[] = [
-  { from: 'London LHR', to: 'Dublin DUB', fromFlag: '\u{1F1EC}\u{1F1E7}', toFlag: '\u{1F1EE}\u{1F1EA}', flights: 1240, yoy: +2.1, yoyN: +26, wow: +0.3, wowN: +4, mom: +0.8, momN: +10 },
-  { from: 'London LHR', to: 'Amsterdam AMS', fromFlag: '\u{1F1EC}\u{1F1E7}', toFlag: '\u{1F1F3}\u{1F1F1}', flights: 1180, yoy: +1.8, yoyN: +21, wow: +0.2, wowN: +2, mom: +0.6, momN: +7 },
-  { from: 'Paris CDG', to: 'London LHR', fromFlag: '\u{1F1EB}\u{1F1F7}', toFlag: '\u{1F1EC}\u{1F1E7}', flights: 1120, yoy: +1.4, yoyN: +15, wow: +0.1, wowN: +1, mom: +0.4, momN: +4 },
-  { from: 'Barcelona', to: 'London LGW', fromFlag: '\u{1F1EA}\u{1F1F8}', toFlag: '\u{1F1EC}\u{1F1E7}', flights: 960, yoy: +4.2, yoyN: +39, wow: +0.6, wowN: +6, mom: +1.5, momN: +14 },
-  { from: 'Rome FCO', to: 'London LHR', fromFlag: '\u{1F1EE}\u{1F1F9}', toFlag: '\u{1F1EC}\u{1F1E7}', flights: 910, yoy: +3.1, yoyN: +27, wow: +0.4, wowN: +4, mom: +1.1, momN: +10 },
-];
 
-// ============================================================
-// Continent: Europe seasonal data
-// ============================================================
-export const CONTINENT_SEASONAL = [38, 35, 48, 55, 62, 71, 78, 76, 64, 73, 50, 44]; // thousands
-
-// ============================================================
-// Country: European countries
 // ============================================================
 export const COUNTRIES: CountryData[] = [
   { flag: '\u{1F1E9}\u{1F1EA}', name: 'เยอรมนี', airports: 46, flights: 6240, delta: '+2.1%', deltaN: +128, bar: 100 },

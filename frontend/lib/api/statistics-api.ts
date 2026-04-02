@@ -1,6 +1,7 @@
 // Statistics API client
 
 import { apiClient } from './client';
+import type { ContinentDetailData, EurTopRoute } from '@/types/dashboard';
 
 export interface SearchStatRequest {
   origin: string;
@@ -187,12 +188,31 @@ export interface DashboardTopDestinationsResponse {
   arrivals: DashboardTopAirportRankResponse[];
 }
 
+export interface DashboardContinentDetailResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  seasonal: Array<{
+    month: string;
+    flights: number;
+  }>;
+  detail: ContinentDetailData;
+  topRoutes: EurTopRoute[];
+}
+
 export interface DashboardQueryOptions {
   date?: string;
   windowDays?: number;
   startDate?: string;
   endDate?: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
+  includeCore?: boolean;
+  includeSeasonal?: boolean;
+  includeTopRoutes?: boolean;
 }
 
 export class StatisticsApi {
@@ -265,6 +285,37 @@ export class StatisticsApi {
       start_date: startDate,
       end_date: endDate,
     }, { signal });
+  }
+
+  /**
+   * Get continent detail for the drill-down dashboard
+   */
+  async getDashboardContinentDetail(
+    continent: string,
+    options: DashboardQueryOptions = {},
+  ): Promise<DashboardContinentDetailResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+      includeCore = true,
+      includeSeasonal = true,
+      includeTopRoutes = true,
+    } = options;
+
+    return apiClient.get<DashboardContinentDetailResponse>('/statistics/dashboard-continent-detail', {
+      continent,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+      include_core: includeCore,
+      include_seasonal: includeSeasonal,
+      include_top_routes: includeTopRoutes,
+    }, { signal, timeoutMs });
   }
 
   /**

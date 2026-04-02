@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Centralized mock data for drill-down dashboard.
  * All data is plain objects — NO JSX allowed in this file.
  *
@@ -17,90 +17,6 @@ import { COUNTRIES, MK_AIRPORTS, MK_INBOUND_COUNTRIES } from '../drill-down-data
 
 // ============================================================
 // Continent-level detail data (keyed by continent name)
-// ============================================================
-export const CONTINENT_DETAILS: Record<string, ContinentDetailData> = {
-  'ยุโรป': {
-    countryCount: '52',
-    busiestCountry: { flag: '🇩🇪', nameTh: 'เยอรมนี' },
-    busiestDelta: '+128 เที่ยวบินรายปี · 6,240 ทั้งหมด',
-    fastestGrowing: { flag: '🇲🇰', nameTh: 'มาซิโดเนียเหนือ' },
-    fastestDelta: '\u25B2 +32 เที่ยวบิน (+12.4%)',
-    countries: COUNTRIES,
-  },
-  'เอเซีย': {
-    countryCount: '38',
-    busiestCountry: { flag: '🇯🇵', nameTh: 'ญี่ปุ่น' },
-    busiestDelta: '+456 เที่ยวบินรายปี · 12,450 ทั้งหมด ',
-    fastestGrowing: { flag: '🇻🇳', nameTh: 'เวียดนาม' },
-    fastestDelta: '\u25B2 +712 เที่ยวบิน (+7.2%)',
-    countries: [
-      { flag: '🇯🇵', name: 'ญี่ปุ่น', airports: 98, flights: 12450, delta: '+3.8%', deltaN: 456, bar: 100 },
-      { flag: '🇹🇭', name: 'ไทย', airports: 38, flights: 10640, delta: '+5.1%', deltaN: 512, bar: 85 },
-      { flag: '🇻🇳', name: 'เวียดนาม', airports: 28, flights: 5120, delta: '+7.2%', deltaN: 712, bar: 72 },
-      { flag: '🇰🇷', name: 'เกาหลีใต้', airports: 15, flights: 8210, delta: '+2.1%', deltaN: 168, bar: 66 },
-      { flag: '🇸🇬', name: 'สิงคโปร์', airports: 1, flights: 7840, delta: '+4.5%', deltaN: 337, bar: 63 },
-    ],
-  },
-  'อเมริกาเหนือ': {
-    countryCount: '3',
-    busiestCountry: { flag: '🇺🇸', nameTh: 'สหรัฐฯ' },
-    busiestDelta: '+388 เที่ยวบินรายปี · 28,100 ทั้งหมด',
-    fastestGrowing: { flag: '🇲🇽', nameTh: 'เม็กซิโก' },
-    fastestDelta: '\u25B2 +78 เที่ยวบิน (+2.5%)',
-    countries: [
-      { flag: '🇺🇸', name: 'สหรัฐฯ', airports: 1987, flights: 28100, delta: '+1.4%', deltaN: 388, bar: 100 },
-      { flag: '🇨🇦', name: 'แคนาดา', airports: 120, flights: 5400, delta: '+0.8%', deltaN: 42, bar: 19 },
-      { flag: '🇲🇽', name: 'เม็กซิโก', airports: 85, flights: 3200, delta: '+2.5%', deltaN: 78, bar: 11 },
-    ],
-  },
-  'ตะวันออกกลาง': {
-    countryCount: '16',
-    busiestCountry: { flag: '🇦🇪', nameTh: 'สหรัฐอาหรับเอมิเรตส์' },
-    busiestDelta: '+210 เที่ยวบินรายปี · 3,480 ทั้งหมด',
-    fastestGrowing: { flag: '🇸🇦', nameTh: 'ซาอุดีอาระเบีย' },
-    fastestDelta: '\u25B2 +185 เที่ยวบิน (+8.4%)',
-    countries: [
-      { flag: '🇦🇪', name: 'สหรัฐอาหรับฯ', airports: 12, flights: 3480, delta: '+6.4%', deltaN: 210, bar: 100 },
-      { flag: '🇸🇦', name: 'ซาอุดีอาระเบีย', airports: 28, flights: 2390, delta: '+8.4%', deltaN: 185, bar: 69 },
-      { flag: '🇶🇦', name: 'กาตาร์', airports: 2, flights: 1120, delta: '+5.1%', deltaN: 54, bar: 32 },
-      { flag: '🇴🇲', name: 'โอมาน', airports: 4, flights: 520, delta: '+3.2%', deltaN: 16, bar: 15 },
-      { flag: '🇧🇭', name: 'บาห์เรน', airports: 1, flights: 380, delta: '+2.8%', deltaN: 10, bar: 11 },
-      { flag: '🇰🇼', name: 'คูเวต', airports: 1, flights: 350, delta: '+1.9%', deltaN: 7, bar: 10 },
-    ],
-  },
-  'อเมริกาใต้': {
-    countryCount: '12',
-    busiestCountry: { flag: '🇧🇷', nameTh: 'บราซิล' },
-    busiestDelta: '+95 เที่ยวบินรายปี · 2,640 ทั้งหมด',
-    fastestGrowing: { flag: '🇨🇴', nameTh: 'โคลอมเบีย' },
-    fastestDelta: '\u25B2 +48 เที่ยวบิน (+5.8%)',
-    countries: [
-      { flag: '🇧🇷', name: 'บราซิล', airports: 256, flights: 2640, delta: '+3.7%', deltaN: 95, bar: 100 },
-      { flag: '🇦🇷', name: 'อาร์เจนตินา', airports: 54, flights: 1180, delta: '-1.2%', deltaN: -14, bar: 45 },
-      { flag: '🇨🇴', name: 'โคลอมเบีย', airports: 42, flights: 880, delta: '+5.8%', deltaN: 48, bar: 33 },
-      { flag: '🇨🇱', name: 'ชิลี', airports: 18, flights: 620, delta: '+2.1%', deltaN: 13, bar: 23 },
-      { flag: '🇵🇪', name: 'เปรู', airports: 22, flights: 500, delta: '+3.4%', deltaN: 16, bar: 19 },
-    ],
-  },
-  'แอฟริกา': {
-    countryCount: '54',
-    busiestCountry: { flag: '🇿🇦', nameTh: 'แอฟริกาใต้' },
-    busiestDelta: '+18 เที่ยวบินรายปี · 520 ทั้งหมด',
-    fastestGrowing: { flag: '🇪🇹', nameTh: 'เอธิโอเปีย' },
-    fastestDelta: '\u25B2 +22 เที่ยวบิน (+9.1%)',
-    countries: [
-      { flag: '🇿🇦', name: 'แอฟริกาใต้', airports: 42, flights: 520, delta: '+3.6%', deltaN: 18, bar: 100 },
-      { flag: '🇪🇬', name: 'อียิปต์', airports: 18, flights: 380, delta: '+4.2%', deltaN: 15, bar: 73 },
-      { flag: '🇲🇦', name: 'โมร็อกโก', airports: 15, flights: 310, delta: '+5.5%', deltaN: 16, bar: 60 },
-      { flag: '🇰🇪', name: 'เคนยา', airports: 8, flights: 210, delta: '+6.3%', deltaN: 12, bar: 40 },
-      { flag: '🇪🇹', name: 'เอธิโอเปีย', airports: 12, flights: 265, delta: '+9.1%', deltaN: 22, bar: 51 },
-      { flag: '🇳🇬', name: 'ไนจีเรีย', airports: 22, flights: 180, delta: '+2.8%', deltaN: 5, bar: 35 },
-    ],
-  },
-};
-
-// ============================================================
-// Country-level: airports by country name
 // ============================================================
 export const COUNTRY_AIRPORTS: Record<string, AirportInfo[]> = {
   // Asia-Pacific

@@ -9,7 +9,7 @@ class ApiClient {
 
   private async request<T>(
     endpoint: string,
-    options: RequestInit & { signal?: AbortSignal } = {}
+    options: RequestInit & { signal?: AbortSignal; timeoutMs?: number } = {}
   ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`
     console.debug('[ApiClient] request start', {
@@ -19,7 +19,8 @@ class ApiClient {
 
     // Create AbortController for timeout
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 seconds timeout
+    const timeoutMs = options.timeoutMs ?? 30000
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
     try {
       const response = await fetch(url, {
@@ -58,7 +59,7 @@ class ApiClient {
       clearTimeout(timeoutId)
 
       if (error.name === 'AbortError') {
-        throw new Error('Request timeout - กรุณาลองใหม่อีกครั้ง (เกิน 30 วินาที)')
+        throw new Error(`Request timeout - กรุณาลองใหม่อีกครั้ง (เกิน ${Math.round(timeoutMs / 1000)} วินาที)`)
       }
 
       console.error('API request failed:', error)
@@ -66,7 +67,7 @@ class ApiClient {
     }
   }
 
-  async get<T>(endpoint: string, params?: Record<string, any>, options: { signal?: AbortSignal } = {}): Promise<T> {
+  async get<T>(endpoint: string, params?: Record<string, any>, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
     const queryString = params
       ? (() => {
           const filtered = Object.fromEntries(
@@ -79,7 +80,7 @@ class ApiClient {
     return this.request<T>(endpoint + queryString, { ...options, method: 'GET' })
   }
 
-  async post<T>(endpoint: string, data?: any, options: { signal?: AbortSignal } = {}): Promise<T> {
+  async post<T>(endpoint: string, data?: any, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
     return this.request<T>(endpoint, {
       ...options,
       method: 'POST',
@@ -87,7 +88,7 @@ class ApiClient {
     })
   }
 
-  async put<T>(endpoint: string, data?: any, options: { signal?: AbortSignal } = {}): Promise<T> {
+  async put<T>(endpoint: string, data?: any, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
     return this.request<T>(endpoint, {
       ...options,
       method: 'PUT',
@@ -95,7 +96,7 @@ class ApiClient {
     })
   }
 
-  async delete<T>(endpoint: string, options: { signal?: AbortSignal } = {}): Promise<T> {
+  async delete<T>(endpoint: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'DELETE' })
   }
 }

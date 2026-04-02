@@ -6,6 +6,7 @@ import {
   getPriceStatistics,
   getDashboardSummary,
   getDashboardContinents,
+  getDashboardContinentDetail,
   getDashboardTopRanks,
   getDashboardTopCountries,
   getDashboardTopAirports,
@@ -31,6 +32,9 @@ router.get('/dashboard-summary', getDashboardSummary);
 
 // Get continent cards for the world dashboard
 router.get('/dashboard-continents', getDashboardContinents);
+
+// Get continent detail for the drill-down dashboard
+router.get('/dashboard-continent-detail', getDashboardContinentDetail);
 
 // Get top rank tables for the world dashboard
 router.get('/dashboard-top-ranks', getDashboardTopRanks);

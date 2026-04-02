@@ -9,15 +9,13 @@
 import type {
   ContinentData,
   CountryData,
-  ContinentDetailData,
   AirportInfo,
   BusiestAirport,
   InboundCountry,
   CountryAirlineShare,
 } from '@/types/dashboard';
+import { statisticsApi } from '@/lib/api/statistics-api';
 import {
-  CONTINENT_SEASONAL,
-  CONTINENT_TOP_ROUTES,
   ROUTES,
   ARRIVALS,
   AIRLINES,
@@ -29,7 +27,6 @@ import {
   MK_INBOUND_COUNTRIES,
 } from '../drill-down-data';
 import {
-  CONTINENT_DETAILS,
   COUNTRY_AIRPORTS,
   COUNTRY_TOP_AIRLINES,
   COUNTRY_AIRLINE_MARKET,
@@ -41,13 +38,11 @@ import {
 
 // ── Continent level ──
 
-export function getContinentDetail(continentName: string) {
-  const detail = CONTINENT_DETAILS[continentName] || CONTINENT_DETAILS['ยุโรป'];
-  return {
-    detail,
-    seasonal: CONTINENT_SEASONAL,
-    topRoutes: CONTINENT_TOP_ROUTES,
-  };
+export async function getContinentDetail(
+  continentName: string,
+  options?: Parameters<typeof statisticsApi.getDashboardContinentDetail>[1],
+) {
+  return statisticsApi.getDashboardContinentDetail(continentName, options);
 }
 
 // ── Country level ──

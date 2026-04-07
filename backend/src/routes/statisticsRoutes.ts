@@ -14,6 +14,9 @@ import {
   getDashboardTopCountries,
   getDashboardTopAirports,
   getDashboardTopDestinations,
+  clearDashboardCache,
+  getDashboardDateBounds,
+  getDashboardCacheStatus,
 } from '../controllers/statisticsController';
 
 const router = Router();
@@ -59,6 +62,15 @@ router.get('/dashboard-top-airports', getDashboardTopAirports);
 
 // Get top destinations for the world dashboard
 router.get('/dashboard-top-destinations', getDashboardTopDestinations);
+
+// Get real min/max data bounds for dashboard preset calculations
+router.get('/dashboard-date-bounds', getDashboardDateBounds);
+
+// Read dashboard cache status
+router.get('/dashboard-cache/status', getDashboardCacheStatus);
+
+// Clear dashboard query cache manually
+router.post('/dashboard-cache/clear', clearDashboardCache);
 
 export default router;
 

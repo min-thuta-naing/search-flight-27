@@ -3,6 +3,7 @@
 import { useState, useCallback, createContext, useContext, useEffect } from 'react';
 import type { DrillLevel, TimeMode, ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } from '@/lib/dashboard/drill-down-data';
+import { statisticsApi, type DashboardCacheStatusResponse } from '@/lib/api/statistics-api';
 import { readSharedRangePreset, writeSharedRangePreset } from '@/lib/dashboard/range-preset-store';
 import { WorldView } from './WorldView';
 import { ContinentView } from './ContinentView';
@@ -48,6 +49,9 @@ export function DrillDownDashboard() {
   const [timeMode, setTimeMode] = useState<TimeMode>('yoy');
   const [rangePreset, setRangePreset] = useState<RangePreset>('focus');
   const [selections, setSelections] = useState<SelectionState>({});
+  const [cacheStatus, setCacheStatus] = useState<DashboardCacheStatusResponse | null>(null);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [dismissedFailure, setDismissedFailure] = useState(false);
 
   const LEVEL_ORDER: DrillLevel[] = ['world', 'continent', 'country', 'airport'];
 
@@ -79,22 +83,119 @@ export function DrillDownDashboard() {
     writeSharedRangePreset(rangePreset);
   }, [rangePreset]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const pollStatus = async () => {
+      try {
+        const status = await statisticsApi.getDashboardCacheStatus();
+        if (cancelled) {
+          return;
+        }
+
+        setCacheStatus(status);
+        setBootstrapError(null);
+
+        if (status.preload.phase === 'failed' && status.preload.error) {
+          setBootstrapError(status.preload.error);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBootstrapError(error instanceof Error ? error.message : 'Failed to load dashboard preload status');
+        }
+      } finally {
+        if (!cancelled) {
+          timeoutId = setTimeout(pollStatus, 3000);
+        }
+      }
+    };
+
+    void pollStatus();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, []);
+
+  const preloadPhase = cacheStatus?.preload.phase ?? 'idle';
+  const preloadMinutes = cacheStatus?.preload.durationMinutes ?? 0;
+  const elapsedMinutes = cacheStatus?.preload.startedAt
+    ? Math.max(0, (Date.now() - Date.parse(cacheStatus.preload.startedAt)) / 60000)
+    : 0;
+  const isPreloadReady = preloadPhase === 'completed';
+  const isPreloadFailed = preloadPhase === 'failed';
+  const showBootstrapGate = !isPreloadReady && !(isPreloadFailed && dismissedFailure);
+
   return (
     <DrillDownContext.Provider value={{ level, timeMode, rangePreset, drillTo, setTimeMode, setRangePreset, selections }}>
       <div className="space-y-4">
-        {/* Title centered */}
-        {/* <h1 className="text-xl font-bold text-center">ภาพรวมการค้นหาเที่ยวบิน</h1> */}
+        {showBootstrapGate ? (
+          <div className="rounded-2xl border border-border bg-card p-6 shadow-sm">
+            <div className="space-y-4">
+              <div className="space-y-1 text-center">
+                <div className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Preloading dashboard data
+                </div>
+                <div className="text-2xl font-bold">กำลังเตรียมข้อมูลก่อนใช้งาน</div>
+                <div className="text-sm text-muted-foreground">
+                  {preloadPhase === 'running'
+                    ? `ผ่านไปแล้วประมาณ ${elapsedMinutes.toFixed(1)} นาที`
+                    : 'รอ backend เตรียม cache ให้พร้อม'}
+                </div>
+              </div>
 
-        {/* Status line centered */}
-        <div className="flex justify-center">
-          <StatusLine />
-        </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl bg-muted/40 p-4 text-center">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">สถานะ</div>
+                  <div className="mt-1 text-lg font-semibold">{preloadPhase}</div>
+                </div>
+                <div className="rounded-xl bg-muted/40 p-4 text-center">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">เวลารวม</div>
+                  <div className="mt-1 text-lg font-semibold">{preloadMinutes.toFixed(1)} นาที</div>
+                </div>
+                <div className="rounded-xl bg-muted/40 p-4 text-center">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">cached entries</div>
+                  <div className="mt-1 text-lg font-semibold">{cacheStatus?.totalEntries ?? 0}</div>
+                </div>
+              </div>
 
-        {/* Level views */}
-        {level === 'world' && <WorldView />}
-        {level === 'continent' && <ContinentView />}
-        {level === 'country' && <CountryView />}
-        {level === 'airport' && <AirportView />}
+              {isPreloadFailed ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                  <div className="font-semibold">Preload failed</div>
+                  <div className="mt-1 break-words">{bootstrapError ?? cacheStatus?.preload.error ?? 'Unknown error'}</div>
+                  <button
+                    type="button"
+                    onClick={() => setDismissedFailure(true)}
+                    className="mt-3 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700"
+                  >
+                    Continue anyway
+                  </button>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+                  Dashboard is locked until preload completes.
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Status line centered */}
+            <div className="flex justify-center">
+              <StatusLine />
+            </div>
+
+            {/* Level views */}
+            {level === 'world' && <WorldView />}
+            {level === 'continent' && <ContinentView />}
+            {level === 'country' && <CountryView />}
+            {level === 'airport' && <AirportView />}
+          </>
+        )}
       </div>
     </DrillDownContext.Provider>
   );

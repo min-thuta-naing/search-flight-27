@@ -258,6 +258,10 @@ export type AirportInfo = MKAirport;
 
 /** Per-continent detail data — plain objects, no JSX */
 export interface ContinentDetailData {
+  totalFlights: number;
+  totalDeltaFlights: number;
+  totalDeltaPercent: number;
+  totalDeltaText: string;
   countryCount: string;
   busiestCountry: { flag: string; nameTh: string };
   busiestDelta: string;

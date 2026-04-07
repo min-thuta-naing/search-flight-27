@@ -11,6 +11,33 @@ class ApiClient {
     endpoint: string,
     options: RequestInit & { signal?: AbortSignal; timeoutMs?: number } = {}
   ): Promise<T> {
+    const maxAttempts = (options.method || 'GET') === 'GET' ? 3 : 1
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.requestOnce<T>(endpoint, options)
+      } catch (error: any) {
+        const isLastAttempt = attempt >= maxAttempts
+        const isNetworkError =
+          error?.name === 'TypeError' ||
+          /Failed to fetch/i.test(error?.message || '') ||
+          /NetworkError/i.test(error?.message || '')
+
+        if (isLastAttempt || !isNetworkError) {
+          throw error
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, attempt * 500))
+      }
+    }
+
+    throw new Error('Unexpected API request retry state')
+  }
+
+  private async requestOnce<T>(
+    endpoint: string,
+    options: RequestInit & { signal?: AbortSignal; timeoutMs?: number } = {}
+  ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`
     console.debug('[ApiClient] request start', {
       method: options.method || 'GET',
@@ -20,7 +47,9 @@ class ApiClient {
     // Create AbortController for timeout
     const controller = new AbortController()
     const timeoutMs = options.timeoutMs ?? 30000
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+    const timeoutId = timeoutMs > 0
+      ? setTimeout(() => controller.abort(), timeoutMs)
+      : null
 
     try {
       const response = await fetch(url, {
@@ -34,7 +63,9 @@ class ApiClient {
         },
       })
 
-      clearTimeout(timeoutId)
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
       console.debug('[ApiClient] response received', {
         method: options.method || 'GET',
         url,
@@ -56,13 +87,19 @@ class ApiClient {
 
       return await response.json()
     } catch (error: any) {
-      clearTimeout(timeoutId)
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
 
       if (error.name === 'AbortError') {
         throw new Error(`Request timeout - กรุณาลองใหม่อีกครั้ง (เกิน ${Math.round(timeoutMs / 1000)} วินาที)`)
       }
 
-      console.error('API request failed:', error)
+      console.error('API request failed:', {
+        message: error?.message,
+        name: error?.name,
+        url,
+      })
       throw error
     }
   }

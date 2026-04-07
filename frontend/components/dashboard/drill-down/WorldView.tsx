@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDays, differenceInCalendarDays, format, subDays } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { ChevronDown } from 'lucide-react';
@@ -22,6 +22,7 @@ import {
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import {
   statisticsApi,
+  type DashboardDateBoundsResponse,
   type DashboardSummaryResponse,
   type DashboardContinentCardResponse,
   type DashboardTopRanksResponse,
@@ -43,6 +44,8 @@ import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
 import type { AirportInfo, CountryData } from '@/types/dashboard';
 import { cn } from '@/lib/utils';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
 const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'xl:h-[540px]';
 
@@ -67,6 +70,9 @@ type TopAirportViewRow = {
   deltaFlights: number;
   deltaPercent: number;
 };
+
+type PreloadState = 'idle' | 'running' | 'ready' | 'failed';
+const PRELOAD_GATE_MAX_WAIT_MS = 15_000;
 
 const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   focus: '± 15 วัน',
@@ -141,7 +147,17 @@ function WorldCalendarCaption({
   );
 }
 
-function buildPresetRange(mode: RangePreset, baseDate = new Date()): DateRange {
+function parseIsoDateInput(dateInput?: string | null) {
+  if (!dateInput) return null;
+  const parsed = new Date(`${dateInput.split('T')[0]}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function buildPresetRange(
+  mode: RangePreset,
+  baseDate = new Date(),
+  bounds?: Pick<DashboardDateBoundsResponse, 'minDate' | 'recommendedEndDate'> | null,
+): DateRange | undefined {
   if (mode === 'focus') {
     return { from: subDays(baseDate, 15), to: addDays(baseDate, 15) };
   }
@@ -166,7 +182,17 @@ function buildPresetRange(mode: RangePreset, baseDate = new Date()): DateRange {
     return { from: baseDate, to: addDays(baseDate, 364) };
   }
 
-  return { from: subDays(baseDate, 3650), to: baseDate };
+  const minDate = parseIsoDateInput(bounds?.minDate || null);
+  const recommendedEndDate = parseIsoDateInput(bounds?.recommendedEndDate || null);
+
+  if (!minDate || !recommendedEndDate) {
+    return undefined;
+  }
+
+  return {
+    from: minDate,
+    to: recommendedEndDate,
+  };
 }
 
 function formatRangeLabel(range?: DateRange) {
@@ -191,30 +217,170 @@ function parseContinentCountryCount(value: string) {
 
 export function WorldView() {
   const { drillTo, timeMode, rangePreset, setRangePreset } = useDrillDown();
-  const initialPresetRange = useMemo(() => buildPresetRange(rangePreset), [rangePreset]);
+  const presetPreloadDoneRef = useRef(false);
+  const preloadGateStartRef = useRef<number | null>(null);
+  const [dashboardDateBounds, setDashboardDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
+  const [presetPreloadState, setPresetPreloadState] = useState<PreloadState>('idle');
+  const [hydratedNow, setHydratedNow] = useState<Date | null>(null);
+  const initialPresetRange = useMemo<DateRange | undefined>(
+    () => (hydratedNow ? buildPresetRange(rangePreset, hydratedNow, dashboardDateBounds) : undefined),
+    [rangePreset, dashboardDateBounds, hydratedNow],
+  );
+  const initialCacheKey = useMemo(() => {
+    if (!initialPresetRange?.from) {
+      return null;
+    }
+
+    const startDate = formatLocalDateInput(initialPresetRange.from);
+    const endDate = formatLocalDateInput(initialPresetRange.to || initialPresetRange.from);
+    return `${startDate}__${endDate}`;
+  }, [initialPresetRange]);
+  const initialSummaryCacheState = useMemo(
+    () => (initialCacheKey ? getWorldSummaryCacheState(initialCacheKey) : { value: null, stale: false }),
+    [initialCacheKey],
+  );
+  const initialTopRanksCacheState = useMemo(
+    () => (initialCacheKey ? getWorldTopRanksCacheState(initialCacheKey) : { value: null, stale: false }),
+    [initialCacheKey],
+  );
+  const initialTopDestinationsCacheState = useMemo(
+    () => (initialCacheKey ? getWorldTopDestinationsCacheState(initialCacheKey) : { value: null, stale: false }),
+    [initialCacheKey],
+  );
   const [isMounted, setIsMounted] = useState(false);
-  const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState<DashboardSummaryResponse | null>(() => initialSummaryCacheState.value);
+  const [loading, setLoading] = useState(() => !initialSummaryCacheState.value);
   const [dateRange, setDateRange] = useState<DateRange | undefined>(() => initialPresetRange);
   const [durationMode, setDurationMode] = useState<RangePreset | null>(rangePreset);
   const [showCustomDateRange, setShowCustomDateRange] = useState(false);
   const [isExtendedRangeOpen, setIsExtendedRangeOpen] = useState(false);
-  const [fromCalendarMonth, setFromCalendarMonth] = useState(() => initialPresetRange.from || new Date());
-  const [toCalendarMonth, setToCalendarMonth] = useState(() => initialPresetRange.to || initialPresetRange.from || new Date());
+  const [fromCalendarMonth, setFromCalendarMonth] = useState(() => initialPresetRange?.from || new Date());
+  const [toCalendarMonth, setToCalendarMonth] = useState(() => initialPresetRange?.to || initialPresetRange?.from || new Date());
   const [dateError, setDateError] = useState(false);
-  const [topRanks, setTopRanks] = useState<DashboardTopRanksResponse | null>(null);
-  const [topRanksLoading, setTopRanksLoading] = useState(true);
-  const [topDestinations, setTopDestinations] = useState<DashboardTopDestinationsResponse | null>(null);
-  const [topDestinationsLoading, setTopDestinationsLoading] = useState(true);
+  const [topRanks, setTopRanks] = useState<DashboardTopRanksResponse | null>(() => initialTopRanksCacheState.value);
+  const [topRanksLoading, setTopRanksLoading] = useState(() => !initialTopRanksCacheState.value);
+  const [topDestinations, setTopDestinations] = useState<DashboardTopDestinationsResponse | null>(() => initialTopDestinationsCacheState.value);
+  const [topDestinationsLoading, setTopDestinationsLoading] = useState(() => !initialTopDestinationsCacheState.value);
   const selectPreset = (mode: RangePreset) => {
     setRangePreset(mode);
   };
 
   useEffect(() => {
+    setHydratedNow(new Date());
     setIsMounted(true);
   }, []);
 
   useEffect(() => {
+    let alive = true;
+
+    const loadDashboardDateBounds = async () => {
+      try {
+        const bounds = await runDrillDownRequest(
+          'world:date-bounds',
+          () => statisticsApi.getDashboardDateBounds(),
+        );
+        if (!alive) return;
+        setDashboardDateBounds(bounds);
+      } catch {
+        if (!alive) return;
+        setDashboardDateBounds(null);
+      }
+    };
+
+    void loadDashboardDateBounds();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedNow) {
+      return;
+    }
+
+    if (presetPreloadDoneRef.current) {
+      return;
+    }
+
+    let alive = true;
+    presetPreloadDoneRef.current = true;
+    preloadGateStartRef.current = Date.now();
+    setPresetPreloadState('running');
+
+    const pingBackendHealth = async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/health`, {
+          method: 'GET',
+          signal: controller.signal,
+        });
+        console.debug('[WorldView] backend health status', {
+          status: response.status,
+          ok: response.ok,
+        });
+      } catch (error) {
+        console.warn('[WorldView] backend health ping failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+
+    const wait = (ms: number) => new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+
+    const waitForBackendPreloadReady = async () => {
+      await pingBackendHealth();
+
+      const timeoutAt = Date.now() + 180_000;
+      while (alive && Date.now() < timeoutAt) {
+        try {
+          const status = await statisticsApi.getDashboardCacheStatus();
+          console.debug('[WorldView] backend preload status', {
+            inFlightEntries: status.queryCache.inFlightEntries,
+            cacheEntries: status.queryCache.cacheEntries,
+          });
+
+          if (status.queryCache.inFlightEntries <= 0) {
+            if (alive) {
+              setPresetPreloadState('ready');
+            }
+            return;
+          }
+        } catch (error) {
+          console.warn('[WorldView] preload status polling failed', {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        await wait(3000);
+      }
+
+      if (alive) {
+        setPresetPreloadState('failed');
+      }
+    };
+
+    void waitForBackendPreloadReady();
+
+    return () => {
+      alive = false;
+    };
+  }, [hydratedNow]);
+
+  useEffect(() => {
+    if (rangePreset === 'all' && !dashboardDateBounds?.minDate) {
+      setLoading(true);
+      setTopRanksLoading(true);
+      setTopDestinationsLoading(true);
+      return;
+    }
+
     applyPresetRange(
       rangePreset,
       setDateRange,
@@ -224,8 +390,9 @@ export function WorldView() {
       setShowCustomDateRange,
       setIsExtendedRangeOpen,
       setDateError,
+      dashboardDateBounds,
     );
-  }, [rangePreset]);
+  }, [rangePreset, dashboardDateBounds]);
 
   useEffect(() => {
     let mounted = true;
@@ -250,9 +417,24 @@ export function WorldView() {
     const cachedSummary = summaryCacheState.value;
     const cachedTopRanks = topRanksCacheState.value;
     const cachedTopDestinations = topDestinationsCacheState.value;
-    const shouldRefreshSummary = !cachedSummary || summaryCacheState.stale;
-    const shouldRefreshTopRanks = !cachedTopRanks || topRanksCacheState.stale;
-    const shouldRefreshTopDestinations = !cachedTopDestinations || topDestinationsCacheState.stale;
+    const shouldRefreshSummary = !cachedSummary;
+    const shouldRefreshTopRanks = !cachedTopRanks;
+    const shouldRefreshTopDestinations = !cachedTopDestinations;
+    const elapsedPreloadGateMs = preloadGateStartRef.current
+      ? Date.now() - preloadGateStartRef.current
+      : Number.POSITIVE_INFINITY;
+    const canBypassPreloadGate = elapsedPreloadGateMs >= PRELOAD_GATE_MAX_WAIT_MS;
+    const missingAllSelectedPresetData = shouldRefreshSummary && shouldRefreshTopRanks && shouldRefreshTopDestinations;
+
+    if (presetPreloadState === 'running' && missingAllSelectedPresetData && !canBypassPreloadGate) {
+      // Hold briefly for backend warm-up to avoid duplicate heavy queries from browser.
+      setLoading(true);
+      setTopRanksLoading(true);
+      setTopDestinationsLoading(true);
+      return () => {
+        mounted = false;
+      };
+    }
 
     if (cachedSummary) {
       console.debug('[WorldView] summary cache hit', { cacheKey });
@@ -421,7 +603,7 @@ export function WorldView() {
     return () => {
       mounted = false;
     };
-  }, [dateRange]);
+  }, [dateRange, presetPreloadState]);
 
   const fallbackTotalFlights = CONTINENTS.reduce((sum, continent) => sum + continent.flights, 0);
   const fallbackBusiestContinent = [...CONTINENTS].sort((a, b) => b.flights - a.flights)[0];
@@ -562,11 +744,16 @@ export function WorldView() {
         },
       ];
 
+  const mockFallbackStatusText = presetPreloadState === 'running'
+    ? 'ยังใช้ mock สำรองอยู่ · กำลังเตรียม preload ทุก preset'
+    : presetPreloadState === 'failed'
+      ? 'ยังใช้ mock สำรองอยู่ · preload ไม่สำเร็จบางส่วน'
+      : 'ยังใช้ mock สำรองอยู่';
   const summaryStatusText = loading
     ? 'กำลังโหลดข้อมูลจากฐานข้อมูล'
     : summary
       ? 'ดึงจากฐานข้อมูล'
-      : 'ยังใช้ mock สำรองอยู่';
+      : mockFallbackStatusText;
   const summaryRangeText = isMounted ? formatRangeLabel(dateRange) : 'กำลังเลือกช่วงวันที่';
   const activePresetLabel = durationMode ? RANGE_PRESET_LABELS[durationMode] : 'กำหนดเอง';
   const handleDrillToCountry = (row: TopCountryViewRow) => {
@@ -1088,8 +1275,17 @@ function applyPresetRange(
   setShowCustomDateRange: (show: boolean | ((prev: boolean) => boolean)) => void,
   setIsExtendedRangeOpen: (open: boolean) => void,
   setDateError: (error: boolean) => void,
+  bounds?: Pick<DashboardDateBoundsResponse, 'minDate' | 'recommendedEndDate'> | null,
 ) {
-  const range = buildPresetRange(mode);
+  const range = buildPresetRange(mode, new Date(), bounds);
+
+  if (!range) {
+    setDateRange(undefined);
+    setDurationMode(mode);
+    setDateError(false);
+    return;
+  }
+
   const from = range.from || new Date();
   const to = range.to || from;
 

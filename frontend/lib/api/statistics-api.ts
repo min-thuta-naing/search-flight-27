@@ -282,6 +282,40 @@ export interface DashboardContinentTrendsResponse {
   };
 }
 
+export interface DashboardDateBoundsResponse {
+  minDate: string | null;
+  maxDate: string | null;
+  recommendedEndDate: string;
+}
+
+export interface DashboardCacheStatusResponse {
+  success: boolean;
+  queryCache: {
+    cacheEntries: number;
+    inFlightEntries: number;
+  };
+  memoryCache: {
+    continentDetail: number;
+    continentTopAirports: number;
+    continentTopRoutes: number;
+    continentTrends: number;
+    continentAirportCodes: number;
+    flightPathColumns: number;
+    flightPathColumnTypes: number;
+  };
+  preload: {
+    phase: 'idle' | 'running' | 'completed' | 'failed';
+    startedAt: string | null;
+    finishedAt: string | null;
+    attempted: number;
+    failed: number;
+    durationMs: number;
+    durationMinutes: number;
+    error: string | null;
+  };
+  totalEntries: number;
+}
+
 export interface DashboardQueryOptions {
   date?: string;
   windowDays?: number;
@@ -324,6 +358,20 @@ export class StatisticsApi {
       origin,
       destination,
     }, { signal });
+  }
+
+  /**
+   * Get global min/max data bounds for dashboard preset calculations.
+   */
+  async getDashboardDateBounds(signal?: AbortSignal): Promise<DashboardDateBoundsResponse> {
+    return apiClient.get<DashboardDateBoundsResponse>('/statistics/dashboard-date-bounds', {}, { signal });
+  }
+
+  /**
+   * Get current backend dashboard cache status.
+   */
+  async getDashboardCacheStatus(signal?: AbortSignal): Promise<DashboardCacheStatusResponse> {
+    return apiClient.get<DashboardCacheStatusResponse>('/statistics/dashboard-cache/status', {}, { signal, timeoutMs: 5000 });
   }
 
   /**

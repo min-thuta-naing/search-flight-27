@@ -121,6 +121,11 @@ export interface DashboardTopDestinationsResponse {
   departures: DashboardTopAirportRank[];
   arrivals: DashboardTopAirportRank[];
 }
+export interface DashboardDataBoundsResponse {
+  minDate: string | null;
+  maxDate: string | null;
+  recommendedEndDate: string;
+}
 
 export interface DashboardContinentDetailRoute {
   from: string;
@@ -151,6 +156,10 @@ export interface DashboardContinentDetailResponse {
     flights: number;
   }>;
   detail: {
+    totalFlights: number;
+    totalDeltaFlights: number;
+    totalDeltaPercent: number;
+    totalDeltaText: string;
     countryCount: string;
     busiestCountry: { flag: string; nameTh: string };
     busiestDelta: string;
@@ -344,6 +353,43 @@ const FLIGHT_PATH_COLUMN_CACHE_TTL_MS = 60 * 60 * 1000;
 const flightPathColumnCache = new Map<string, { expiresAt: number; exists: boolean }>();
 const FLIGHT_PATH_COLUMN_TYPES_CACHE_TTL_MS = 60 * 60 * 1000;
 const flightPathColumnTypesCache = new Map<string, { expiresAt: number; types: string[] }>();
+
+export function getDashboardMemoryCacheStats() {
+  return {
+    continentDetail: continentDetailCache.size,
+    continentTopAirports: continentTopAirportsCache.size,
+    continentTopRoutes: continentTopRoutesCache.size,
+    continentTrends: continentTrendsCache.size,
+    continentAirportCodes: continentAirportCodesCache.size,
+    flightPathColumns: flightPathColumnCache.size,
+    flightPathColumnTypes: flightPathColumnTypesCache.size,
+  };
+}
+
+export function clearDashboardMemoryCache() {
+  const cleared = {
+    continentDetail: continentDetailCache.size,
+    continentTopAirports: continentTopAirportsCache.size,
+    continentTopRoutes: continentTopRoutesCache.size,
+    continentTrends: continentTrendsCache.size,
+    continentAirportCodes: continentAirportCodesCache.size,
+    flightPathColumns: flightPathColumnCache.size,
+    flightPathColumnTypes: flightPathColumnTypesCache.size,
+  };
+
+  continentDetailCache.clear();
+  continentTopAirportsCache.clear();
+  continentTopRoutesCache.clear();
+  continentTrendsCache.clear();
+  continentAirportCodesCache.clear();
+  flightPathColumnCache.clear();
+  flightPathColumnTypesCache.clear();
+
+  return {
+    ...cleared,
+    totalCleared: Object.values(cleared).reduce((sum, count) => sum + count, 0),
+  };
+}
 
 function formatDateForQuery(date: Date): string {
   const year = date.getUTCFullYear();
@@ -736,6 +782,35 @@ function formatDeltaLine(deltaFlights: number, deltaPercent: number) {
 }
 
 export class DashboardSummaryService {
+  static async getDashboardDataBounds(): Promise<DashboardDataBoundsResponse> {
+    const boundsQuery = `
+      WITH all_bounds AS (
+        SELECT MIN(departure_date::date) AS min_date, MAX(departure_date::date) AS max_date
+        FROM departure_flight_paths
+        UNION ALL
+        SELECT MIN(departure_date::date) AS min_date, MAX(departure_date::date) AS max_date
+        FROM arrival_flight_paths
+      )
+      SELECT
+        MIN(min_date)::date AS min_date,
+        MAX(max_date)::date AS max_date
+      FROM all_bounds
+    `;
+
+    const { rows } = await pool.query<{ min_date: Date | string | null; max_date: Date | string | null }>(boundsQuery);
+    const row = rows[0] ?? { min_date: null, max_date: null };
+
+    const today = new Date();
+    const recommendedEnd = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    recommendedEnd.setUTCDate(recommendedEnd.getUTCDate() + 365);
+
+    return {
+      minDate: row.min_date ? formatDateForQuery(new Date(row.min_date)) : null,
+      maxDate: row.max_date ? formatDateForQuery(new Date(row.max_date)) : null,
+      recommendedEndDate: formatDateForQuery(recommendedEnd),
+    };
+  }
+
   static async getWorldSummary(
     input: WorldRangeInput = {},
   ): Promise<DashboardSummaryResponse> {
@@ -1000,8 +1075,8 @@ export class DashboardSummaryService {
     const comparisonStart = formatDateForQuery(comparisonStartDate);
     const comparisonEnd = formatDateForQuery(comparisonEndDate);
 
-    const countryQuery = `
-      WITH flight_rows AS (
+    const topCountriesQuery = `
+      WITH current_rows AS (
         SELECT dep_airport AS airport_code
         FROM departure_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
@@ -1017,22 +1092,65 @@ export class DashboardSummaryService {
         SELECT arr_airport AS airport_code
         FROM arrival_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
+      ),
+      current_agg AS (
+        SELECT
+          a.country_code AS country_code,
+          COALESCE(a.country_name, a.country, a.code, 'Other') AS country_name,
+          COUNT(*)::int AS flights,
+          COUNT(DISTINCT a.code)::int AS airport_count
+        FROM current_rows
+        LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(current_rows.airport_code))
+        GROUP BY a.country_code, COALESCE(a.country_name, a.country, a.code, 'Other')
+      ),
+      top_current AS (
+        SELECT country_code, country_name, flights, airport_count
+        FROM current_agg
+        WHERE country_name <> 'Other' AND flights > 0
+        ORDER BY flights DESC, airport_count DESC, country_name ASC
+        LIMIT 5
+      ),
+      previous_rows AS (
+        SELECT dep_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+        UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+        UNION ALL
+        SELECT dep_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+        UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+      ),
+      previous_agg AS (
+        SELECT
+          a.country_code AS country_code,
+          COALESCE(a.country_name, a.country, a.code, 'Other') AS country_name,
+          COUNT(*)::int AS flights
+        FROM previous_rows
+        LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(previous_rows.airport_code))
+        GROUP BY a.country_code, COALESCE(a.country_name, a.country, a.code, 'Other')
       )
       SELECT
-        a.country_code AS country_code,
-        COALESCE(a.country_name, a.country, a.code, 'Other') AS country_name,
-        COUNT(*)::int AS flights,
-        COUNT(DISTINCT a.code)::int AS airport_count
-      FROM flight_rows
-      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
-      GROUP BY
-        a.country_code,
-        COALESCE(a.country_name, a.country, a.code, 'Other')
-      ORDER BY flights DESC, airport_count DESC, country_name ASC
+        tc.country_code,
+        tc.country_name,
+        tc.airport_count,
+        tc.flights,
+        COALESCE(pa.flights, 0)::int AS previous_flights
+      FROM top_current tc
+      LEFT JOIN previous_agg pa
+        ON pa.country_name = tc.country_name
+       AND pa.country_code IS NOT DISTINCT FROM tc.country_code
+      ORDER BY tc.flights DESC, tc.airport_count DESC, tc.country_name ASC
     `;
 
-    const airportQuery = `
-      WITH flight_rows AS (
+    const topAirportsQuery = `
+      WITH current_rows AS (
         SELECT dep_airport AS airport_code
         FROM departure_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
@@ -1048,44 +1166,80 @@ export class DashboardSummaryService {
         SELECT arr_airport AS airport_code
         FROM arrival_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
+      ),
+      current_agg AS (
+        SELECT
+          UPPER(TRIM(a.code)) AS airport_code,
+          COALESCE(a.name, a.code) AS airport_name,
+          COALESCE(a.city, a.name, a.code) AS city,
+          COALESCE(a.country_name, a.country, 'Other') AS country_name,
+          COALESCE(a.country_code, a.country, NULL) AS country_code,
+          COUNT(*)::int AS flights
+        FROM current_rows
+        LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(current_rows.airport_code))
+        WHERE a.code IS NOT NULL
+        GROUP BY
+          UPPER(TRIM(a.code)),
+          COALESCE(a.name, a.code),
+          COALESCE(a.city, a.name, a.code),
+          COALESCE(a.country_name, a.country, 'Other'),
+          COALESCE(a.country_code, a.country, NULL)
+      ),
+      top_current AS (
+        SELECT airport_code, airport_name, city, country_name, country_code, flights
+        FROM current_agg
+        WHERE airport_code <> '' AND country_name <> 'Other' AND flights > 0
+        ORDER BY flights DESC, airport_code ASC
+        LIMIT 5
+      ),
+      previous_rows AS (
+        SELECT dep_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+        UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+        UNION ALL
+        SELECT dep_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+        UNION ALL
+        SELECT arr_airport AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+      ),
+      previous_agg AS (
+        SELECT
+          UPPER(TRIM(a.code)) AS airport_code,
+          COUNT(*)::int AS flights
+        FROM previous_rows
+        LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(previous_rows.airport_code))
+        WHERE a.code IS NOT NULL
+        GROUP BY UPPER(TRIM(a.code))
       )
       SELECT
-        UPPER(TRIM(a.code)) AS airport_code,
-        COALESCE(a.name, a.code) AS airport_name,
-        COALESCE(a.city, a.name, a.code) AS city,
-        COALESCE(a.country_name, a.country, 'Other') AS country_name,
-        COALESCE(a.country_code, a.country, NULL) AS country_code,
-        COUNT(*)::int AS flights
-      FROM flight_rows
-      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
-      WHERE a.code IS NOT NULL
-      GROUP BY
-        UPPER(TRIM(a.code)),
-        COALESCE(a.name, a.code),
-        COALESCE(a.city, a.name, a.code),
-        COALESCE(a.country_name, a.country, 'Other'),
-        COALESCE(a.country_code, a.country, NULL)
-      ORDER BY flights DESC, airport_code ASC
+        tc.airport_code,
+        tc.airport_name,
+        tc.city,
+        tc.country_name,
+        tc.country_code,
+        tc.flights,
+        COALESCE(pa.flights, 0)::int AS previous_flights
+      FROM top_current tc
+      LEFT JOIN previous_agg pa ON pa.airport_code = tc.airport_code
+      ORDER BY tc.flights DESC, tc.airport_code ASC
     `;
 
-    const [currentCountriesResult, previousCountriesResult, currentAirportsResult, previousAirportsResult] = await Promise.all([
-      pool.query(countryQuery, [periodStart, periodEnd]),
-      pool.query(countryQuery, [comparisonStart, comparisonEnd]),
-      pool.query(airportQuery, [periodStart, periodEnd]),
-      pool.query(airportQuery, [comparisonStart, comparisonEnd]),
+    const [countriesResult, airportsResult] = await Promise.all([
+      pool.query(topCountriesQuery, [periodStart, periodEnd, comparisonStart, comparisonEnd]),
+      pool.query(topAirportsQuery, [periodStart, periodEnd, comparisonStart, comparisonEnd]),
     ]);
 
-    const previousCountryMap = new Map<string, number>();
-    for (const row of previousCountriesResult.rows as CountryRankRow[]) {
-      const key = normalizeCountryKey(row.country_code, row.country_name, row.country_name);
-      previousCountryMap.set(key, Number(row.flights) || 0);
-    }
-
-    const countries = (currentCountriesResult.rows as CountryRankRow[])
+    const countries = (countriesResult.rows as Array<{ country_code: string | null; country_name: string | null; airport_count: number; flights: number; previous_flights: number }>)
       .map((row) => {
-        const key = normalizeCountryKey(row.country_code, row.country_name, row.country_name);
         const flights = Number(row.flights) || 0;
-        const previousFlights = previousCountryMap.get(key) || 0;
+        const previousFlights = Number(row.previous_flights) || 0;
         const deltaFlights = flights - previousFlights;
         const deltaPercent = previousFlights > 0
           ? (deltaFlights / previousFlights) * 100
@@ -1103,25 +1257,13 @@ export class DashboardSummaryService {
           deltaPercent,
         } satisfies DashboardTopCountryRank;
       })
-      .filter((row) => row.name !== 'Other' && row.flights > 0)
-      .sort((a, b) => b.flights - a.flights || b.airportCount - a.airportCount || a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }))
-      .slice(0, 5);
+      .filter((row) => row.name !== 'Other' && row.flights > 0);
 
-    const previousAirportMap = new Map<string, number>();
-    for (const row of previousAirportsResult.rows as AirportRankRow[]) {
-      const key = (row.airport_code || '').trim().toUpperCase();
-      if (!key) {
-        continue;
-      }
-
-      previousAirportMap.set(key, Number(row.flights) || 0);
-    }
-
-    const airports = (currentAirportsResult.rows as AirportRankRow[])
+    const airports = (airportsResult.rows as Array<{ airport_code: string | null; airport_name: string | null; city: string | null; country_name: string | null; country_code: string | null; flights: number; previous_flights: number }>)
       .map((row) => {
         const iata = (row.airport_code || '').trim().toUpperCase();
         const flights = Number(row.flights) || 0;
-        const previousFlights = previousAirportMap.get(iata) || 0;
+        const previousFlights = Number(row.previous_flights) || 0;
         const deltaFlights = flights - previousFlights;
         const deltaPercent = previousFlights > 0
           ? (deltaFlights / previousFlights) * 100
@@ -1140,9 +1282,7 @@ export class DashboardSummaryService {
           deltaPercent,
         } satisfies DashboardTopAirportRank;
       })
-      .filter((row) => row.iata && row.country !== 'Other' && row.flights > 0)
-      .sort((a, b) => b.flights - a.flights || a.iata.localeCompare(b.iata, 'en', { sensitivity: 'base' }))
-      .slice(0, 5);
+      .filter((row) => row.iata && row.country !== 'Other' && row.flights > 0);
 
     return {
       centerDate: formatDateForQuery(centerDate),
@@ -1355,52 +1495,83 @@ export class DashboardSummaryService {
     const comparisonStart = formatDateForQuery(comparisonStartDate);
     const comparisonEnd = formatDateForQuery(comparisonEndDate);
 
-    const buildQuery = (column: 'dep_airport' | 'arr_airport') => `
-      WITH flight_rows AS (
+    const buildTopDestinationQuery = (column: 'dep_airport' | 'arr_airport') => `
+      WITH current_rows AS (
         SELECT ${column} AS airport_code
         FROM ${column === 'dep_airport' ? 'departure_flight_paths' : 'arrival_flight_paths'}
         WHERE departure_date >= $1 AND departure_date <= $2
+      ),
+      current_agg AS (
+        SELECT
+          UPPER(TRIM(a.code)) AS airport_code,
+          COALESCE(a.name, a.code) AS airport_name,
+          COALESCE(a.city, a.name, a.code) AS city,
+          COALESCE(a.country_name, a.country, 'Other') AS country_name,
+          COALESCE(a.country_code, a.country, NULL) AS country_code,
+          COUNT(*)::int AS flights
+        FROM current_rows
+        LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(current_rows.airport_code))
+        WHERE a.code IS NOT NULL
+        GROUP BY
+          UPPER(TRIM(a.code)),
+          COALESCE(a.name, a.code),
+          COALESCE(a.city, a.name, a.code),
+          COALESCE(a.country_name, a.country, 'Other'),
+          COALESCE(a.country_code, a.country, NULL)
+      ),
+      top_current AS (
+        SELECT airport_code, airport_name, city, country_name, country_code, flights
+        FROM current_agg
+        WHERE airport_code <> '' AND country_name <> 'Other' AND flights > 0
+        ORDER BY flights DESC, airport_code ASC
+        LIMIT 5
+      ),
+      previous_rows AS (
+        SELECT ${column} AS airport_code
+        FROM ${column === 'dep_airport' ? 'departure_flight_paths' : 'arrival_flight_paths'}
+        WHERE departure_date >= $3 AND departure_date <= $4
+      ),
+      previous_agg AS (
+        SELECT
+          UPPER(TRIM(a.code)) AS airport_code,
+          COUNT(*)::int AS flights
+        FROM previous_rows
+        LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(previous_rows.airport_code))
+        WHERE a.code IS NOT NULL
+        GROUP BY UPPER(TRIM(a.code))
       )
       SELECT
-        UPPER(TRIM(a.code)) AS airport_code,
-        COALESCE(a.name, a.code) AS airport_name,
-        COALESCE(a.city, a.name, a.code) AS city,
-        COALESCE(a.country_name, a.country, 'Other') AS country_name,
-        COALESCE(a.country_code, a.country, NULL) AS country_code,
-        COUNT(*)::int AS flights
-      FROM flight_rows
-      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
-      WHERE a.code IS NOT NULL
-      GROUP BY
-        UPPER(TRIM(a.code)),
-        COALESCE(a.name, a.code),
-        COALESCE(a.city, a.name, a.code),
-        COALESCE(a.country_name, a.country, 'Other'),
-        COALESCE(a.country_code, a.country, NULL)
-      ORDER BY flights DESC, airport_code ASC
+        tc.airport_code,
+        tc.airport_name,
+        tc.city,
+        tc.country_name,
+        tc.country_code,
+        tc.flights,
+        COALESCE(pa.flights, 0)::int AS previous_flights
+      FROM top_current tc
+      LEFT JOIN previous_agg pa ON pa.airport_code = tc.airport_code
+      ORDER BY tc.flights DESC, tc.airport_code ASC
     `;
 
-    const [currentDeparturesResult, previousDeparturesResult, currentArrivalsResult, previousArrivalsResult] = await Promise.all([
-      pool.query(buildQuery('dep_airport'), [periodStart, periodEnd]),
-      pool.query(buildQuery('dep_airport'), [comparisonStart, comparisonEnd]),
-      pool.query(buildQuery('arr_airport'), [periodStart, periodEnd]),
-      pool.query(buildQuery('arr_airport'), [comparisonStart, comparisonEnd]),
+    const [departuresResult, arrivalsResult] = await Promise.all([
+      pool.query(buildTopDestinationQuery('dep_airport'), [periodStart, periodEnd, comparisonStart, comparisonEnd]),
+      pool.query(buildTopDestinationQuery('arr_airport'), [periodStart, periodEnd, comparisonStart, comparisonEnd]),
     ]);
 
-    const buildRows = (currentRows: AirportRankRow[], previousRows: AirportRankRow[]) => {
-      const previousMap = new Map<string, number>();
-
-      for (const row of previousRows) {
-        const key = (row.airport_code || '').trim().toUpperCase();
-        if (!key) continue;
-        previousMap.set(key, Number(row.flights) || 0);
-      }
-
-      return currentRows
+    const buildRows = (rows: Array<{
+      airport_code: string | null;
+      airport_name: string | null;
+      city: string | null;
+      country_name: string | null;
+      country_code: string | null;
+      flights: number;
+      previous_flights: number;
+    }>) => {
+      return rows
         .map((row) => {
           const iata = (row.airport_code || '').trim().toUpperCase();
           const flights = Number(row.flights) || 0;
-          const previousFlights = previousMap.get(iata) || 0;
+          const previousFlights = Number(row.previous_flights) || 0;
           const deltaFlights = flights - previousFlights;
           const deltaPercent = previousFlights > 0
             ? (deltaFlights / previousFlights) * 100
@@ -1419,9 +1590,7 @@ export class DashboardSummaryService {
             deltaPercent,
           } satisfies DashboardTopAirportRank;
         })
-        .filter((row) => row.iata && row.country !== 'Other' && row.flights > 0)
-        .sort((a, b) => b.flights - a.flights || a.iata.localeCompare(b.iata, 'en', { sensitivity: 'base' }))
-        .slice(0, 5);
+        .filter((row) => row.iata && row.country !== 'Other' && row.flights > 0);
     };
 
     return {
@@ -1431,8 +1600,8 @@ export class DashboardSummaryService {
       periodEnd,
       comparisonStart,
       comparisonEnd,
-      departures: buildRows(currentDeparturesResult.rows as AirportRankRow[], previousDeparturesResult.rows as AirportRankRow[]),
-      arrivals: buildRows(currentArrivalsResult.rows as AirportRankRow[], previousArrivalsResult.rows as AirportRankRow[]),
+      departures: buildRows(departuresResult.rows as Array<{ airport_code: string | null; airport_name: string | null; city: string | null; country_name: string | null; country_code: string | null; flights: number; previous_flights: number }>),
+      arrivals: buildRows(arrivalsResult.rows as Array<{ airport_code: string | null; airport_name: string | null; city: string | null; country_name: string | null; country_code: string | null; flights: number; previous_flights: number }>),
     };
   }
 
@@ -1476,6 +1645,10 @@ export class DashboardSummaryService {
         comparisonEnd,
         seasonal: [],
         detail: {
+          totalFlights: 0,
+          totalDeltaFlights: 0,
+          totalDeltaPercent: 0,
+          totalDeltaText: '+0 (0.0%)',
           countryCount: '0',
           busiestCountry: {
             flag: countryFlagFromCode(null),
@@ -1736,6 +1909,10 @@ export class DashboardSummaryService {
         : [];
 
       const emptyDetail = {
+        totalFlights: 0,
+        totalDeltaFlights: 0,
+        totalDeltaPercent: 0,
+        totalDeltaText: '+0 (0.0%)',
         countryCount: '0',
         busiestCountry: {
           flag: countryFlagFromCode(null),
@@ -1817,6 +1994,15 @@ export class DashboardSummaryService {
       .filter((row) => row.countryName !== 'Other' && row.flights > 0);
 
     const countryCount = currentCountryRows.length;
+    const totalFlights = currentCountryRows.reduce((sum, row) => sum + row.flights, 0);
+    const previousTotalFlights = currentCountryRows.reduce((sum, row) => sum + row.previousFlights, 0);
+    const totalDeltaFlights = totalFlights - previousTotalFlights;
+    const totalDeltaPercent = previousTotalFlights > 0
+      ? (totalDeltaFlights / previousTotalFlights) * 100
+      : totalFlights > 0
+        ? 100
+        : 0;
+    const totalDeltaText = `${totalDeltaFlights >= 0 ? '▲' : '▼'} ${totalDeltaFlights >= 0 ? '+' : ''}${totalDeltaFlights.toLocaleString()} (${totalDeltaPercent >= 0 ? '+' : ''}${totalDeltaPercent.toFixed(1)}%)`;
     const busiestCountryRow = [...currentCountryRows].sort((a, b) => b.flights - a.flights || b.airportCount - a.airportCount)[0];
     const fastestGrowingRow = [...currentCountryRows].sort((a, b) => b.deltaPercent - a.deltaPercent || b.deltaFlights - a.deltaFlights)[0];
     const maxFlights = Math.max(...currentCountryRows.map((row) => row.flights), 1);
@@ -1954,6 +2140,10 @@ export class DashboardSummaryService {
       comparisonEnd,
       seasonal,
       detail: {
+        totalFlights,
+        totalDeltaFlights,
+        totalDeltaPercent,
+        totalDeltaText,
         countryCount: countryCount.toLocaleString(),
         busiestCountry: {
           flag: countryFlagFromCode(busiestCountryRow?.countryCode ?? null),

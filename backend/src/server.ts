@@ -8,6 +8,7 @@ import { initializeTimescaleDB } from './config/database';
 import routes from './routes';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { schedulerService } from './services/schedulerService';
+import { warmDashboardCachesOnStartup } from './controllers/statisticsController';
 
 const app: Express = express();
 
@@ -74,6 +75,15 @@ async function startServer(): Promise<void> {
 📡 API: http://localhost:${serverConfig.port}/api
 ❤️  Health: http://localhost:${serverConfig.port}/api/health
       `);
+
+      // Warm dashboard caches in background after server becomes reachable.
+      void warmDashboardCachesOnStartup()
+        .then(({ attempted, failed }) => {
+          console.log(`[dashboard-preload] completed: attempted=${attempted}, failed=${failed}`);
+        })
+        .catch((error) => {
+          console.warn('[dashboard-preload] failed:', error instanceof Error ? error.message : String(error));
+        });
     });
 
     // ✅ เริ่ม Scheduled Jobs (ถ้าเปิดใช้งาน)

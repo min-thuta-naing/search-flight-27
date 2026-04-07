@@ -25,6 +25,15 @@ export class FlightCrossCheckRepository {
     }
 
     /**
+     * Gets the timezone for a specific airport code
+     */
+    async getAirportTimezone(code: string): Promise<string | null> {
+        const query = `SELECT timezone FROM airports WHERE code = $1`;
+        const { rows } = await pool.query(query, [code.toUpperCase()]);
+        return rows[0]?.timezone || null;
+    }
+
+    /**
      * Gets flights for a specific date and airport
      */
     async getFlightsByDateAndAirport(dateStr: string, airportCode: string, direction: 'departure' | 'arrival'): Promise<DbFlight[]> {

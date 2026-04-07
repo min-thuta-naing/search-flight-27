@@ -9,7 +9,7 @@ import { flightScrapeIntegration } from '../services/FlightScrapeIntegration';
  */
 export function initFlightCrossCheckJobs() {
     // Daily schedule: 00:05 Thailand Time (17:05 UTC)
-    cron.schedule('58 4 * * *', async () => {
+    cron.schedule('23 8 * * *', async () => {
         console.log('[CRON] Running daily 00:02 TH flight cross-check (Today only)...');
         await runScheduledCrossCheck();
     });
@@ -26,15 +26,10 @@ export async function runScheduledCrossCheck() {
     const airports = await flightCrossCheckRepository.getAllAirports();
     console.log(`[CRON] Detected ${airports.length} airports for cross-check: ${airports.join(', ')}`);
     
-    // Get the date in Thailand (UTC+7)
-    const todayStr = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Bangkok',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-    }).format(new Date()); 
+    // Reverted to UTC as requested
+    const todayStr = new Date().toISOString().split('T')[0]; 
     
-    console.log(`[CRON] Thailand Today: ${todayStr}`);
+    console.log(`[CRON] UTC Today: ${todayStr}`);
     for (let i = 0; i < airports.length; i += 2) {
         const chunk = airports.slice(i, i + 2);
         console.log(`\n========================================================================`);
@@ -71,8 +66,11 @@ async function runSingleAirportCrossCheck(airport: string, dateStr: string, work
         const scrapedFlights = await flightScrapeIntegration.runCrosscheckForDate(dateStr, airport, workerId);
         
         if (scrapedFlights.length > 0) {
-            // 3. Compare & Save (Arrow 1 -> 3: cross-check result)
-            const result = await flightCrossCheckService.findUpdatesCancelsAndNewFlights(scrapedFlights, dateStr, airport);
+            // 3. Get timezone
+            const tz = await flightCrossCheckRepository.getAirportTimezone(airport) || 'UTC';
+
+            // 4. Compare & Save
+            const result = await flightCrossCheckService.findUpdatesCancelsAndNewFlights(scrapedFlights, dateStr, airport, tz);
             
             const duration = (Date.now() - startTime) / 1000;
             const totalProcessed = (result.summary.updatedCount || 0) + (result.summary.cancelledCount || 0) + (result.newFlights?.length || 0);
@@ -98,7 +96,8 @@ async function runSingleAirportCrossCheck(airport: string, dateStr: string, work
 export async function runCrosscheckForDate(dateStr: string, airportCode: string = 'BKK', workerId: number = 0) {
     const scrapedFlights = await flightScrapeIntegration.runCrosscheckForDate(dateStr, airportCode, workerId);
     if (scrapedFlights.length > 0) {
-        return await flightCrossCheckService.findUpdatesCancelsAndNewFlights(scrapedFlights, dateStr, airportCode);
+        const tz = await flightCrossCheckRepository.getAirportTimezone(airportCode) || 'UTC';
+        return await flightCrossCheckService.findUpdatesCancelsAndNewFlights(scrapedFlights, dateStr, airportCode, tz);
     }
     console.log(`[JOB] No scrape results for ${airportCode} ${dateStr}.`);
     return null;

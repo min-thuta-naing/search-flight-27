@@ -11,6 +11,7 @@ export interface Airport {
   airport_type: string | null;
   latitude: number | null;
   longitude: number | null;
+  timezone: string | null;
   has_flight?: boolean;
   created_at: Date;
   updated_at: Date;
@@ -26,6 +27,7 @@ export interface AirportInput {
   airport_type?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  timezone?: string | null;
 }
 
 export interface AirportCountrySummary {
@@ -42,9 +44,9 @@ export class AirportModel {
     const query = `
       INSERT INTO airports (
         code, name, city, country, country_code, country_name, airport_type, 
-        latitude, longitude, created_at, updated_at
+        latitude, longitude, timezone, created_at, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
       ON CONFLICT (code) DO UPDATE SET
         name = EXCLUDED.name,
         city = EXCLUDED.city,
@@ -54,6 +56,7 @@ export class AirportModel {
         airport_type = EXCLUDED.airport_type,
         latitude = EXCLUDED.latitude,
         longitude = EXCLUDED.longitude,
+        timezone = COALESCE(EXCLUDED.timezone, airports.timezone),
         updated_at = NOW()
       RETURNING *
     `;
@@ -68,6 +71,7 @@ export class AirportModel {
       input.airport_type || null,
       input.latitude || null,
       input.longitude || null,
+      input.timezone || null,
     ]);
 
     return result.rows[0];

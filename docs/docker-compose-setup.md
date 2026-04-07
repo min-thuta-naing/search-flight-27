@@ -14,6 +14,7 @@ npm install plotly.js
 cd backend 
 npm install
 npm install googleapis
+npm install tz-lookup
 python3 -m pip install pandas selenium undetected-chromedriver
 
 ```
@@ -124,7 +125,9 @@ docker exec -it flight_search_backend sh
 npm run import-intl-flights -- --dir=/app/data/intl_flight_data/asia/americansamoa 
 npm run import-intl-flights -- --drive
 npm run import-intl-flights -- --drive --folder-id=YOUR_FOLDER_ID
-npm run import-intl-flights -- --drive --folder-id=1JRowqzZEA8TO38U65Z7a2ksDizUD3FBC
+npm run import-intl-flights -- --drive --folder-id=1rEfw831Sr8DjRGnEluGjJTkle4bltUBe
+npm run import-intl-flights -- --drive --folder-id=1UFNLsuf0dh1fbN5s-DbugfGiNcoUJAvq
+npm run import-intl-flights -- --drive --folder-id=1aMkWDzhAS0zcguIZKD9EqDELG9I1DTlA
 
 ```
 for running migration 

@@ -9,7 +9,7 @@ import { flightScrapeIntegration } from '../services/FlightScrapeIntegration';
  */
 export function initFlightCrossCheckJobs() {
     // Daily schedule: 00:05 Thailand Time (17:05 UTC)
-    cron.schedule('2 17 * * *', async () => {
+    cron.schedule('58 4 * * *', async () => {
         console.log('[CRON] Running daily 00:02 TH flight cross-check (Today only)...');
         await runScheduledCrossCheck();
     });
@@ -22,11 +22,11 @@ export function initFlightCrossCheckJobs() {
  * Parallelization: Processes in chunks of 2 to reach < 10m goal
  */
 export async function runScheduledCrossCheck() {
+    const globalStartTime = Date.now();
     const airports = await flightCrossCheckRepository.getAllAirports();
     console.log(`[CRON] Detected ${airports.length} airports for cross-check: ${airports.join(', ')}`);
     
     // Get the date in Thailand (UTC+7)
-    // Server time is usually UTC, so new Date() at 00:02 TH is still previous day in UTC.
     const todayStr = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Asia/Bangkok',
         year: 'numeric',
@@ -51,12 +51,19 @@ export async function runScheduledCrossCheck() {
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
     }
+
+    const totalDuration = (Date.now() - globalStartTime) / 1000 / 60;
+    console.log(`\n[CRON] ========================================================================`);
+    console.log(`[CRON] Daily cross-check batch for ${todayStr} finished.`);
+    console.log(`[CRON] Total execution time: ${totalDuration.toFixed(2)} minutes.`);
+    console.log(`[CRON] ========================================================================\n`);
 }
 
 /**
  * Logic for a single airport cross-check (isolated for parallel usage)
  */
 async function runSingleAirportCrossCheck(airport: string, dateStr: string, workerId: number = 0) {
+    const startTime = Date.now();
     try {
         console.log(`[JOB-W${workerId}] Starting cross-check for ${airport} on ${dateStr}...`);
         
@@ -67,15 +74,21 @@ async function runSingleAirportCrossCheck(airport: string, dateStr: string, work
             // 3. Compare & Save (Arrow 1 -> 3: cross-check result)
             const result = await flightCrossCheckService.findUpdatesCancelsAndNewFlights(scrapedFlights, dateStr, airport);
             
-            if (result.newFlights.length > 0) {
+            const duration = (Date.now() - startTime) / 1000;
+            const totalProcessed = (result.summary.updatedCount || 0) + (result.summary.cancelledCount || 0) + (result.newFlights?.length || 0);
+            const timePerRecord = totalProcessed > 0 ? (duration / totalProcessed).toFixed(2) : '0';
+
+            if (result.newFlights && result.newFlights.length > 0) {
                 console.log(`[JOB-W${workerId}]   Discovered ${result.newFlights.length} new flights for ${airport}.`);
             }
-            console.log(`[JOB-W${workerId}] Complete for ${airport}: ${result.summary.updatedCount} updated, ${result.summary.cancelledCount} cancelled.`);
+            console.log(`[JOB-W${workerId}] Complete for ${airport}: ${result.summary.updatedCount} updated, ${result.summary.cancelledCount} cancelled in ${duration.toFixed(2)}s (${timePerRecord}s/record).`);
         } else {
-            console.log(`[JOB-W${workerId}] No scrape results for ${airport} ${dateStr}.`);
+            const duration = (Date.now() - startTime) / 1000;
+            console.log(`[JOB-W${workerId}] No scrape results for ${airport} ${dateStr} (took ${duration.toFixed(2)}s).`);
         }
     } catch (error) {
-        console.error(`[JOB-W${workerId}] Failed for ${airport} ${dateStr}:`, error);
+        const duration = (Date.now() - startTime) / 1000;
+        console.error(`[JOB-W${workerId}] Failed for ${airport} ${dateStr} after ${duration.toFixed(2)}s:`, error);
     }
 }
 

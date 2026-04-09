@@ -48,6 +48,12 @@ import { cn } from '@/lib/utils';
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
 const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'xl:h-[540px]';
+const COUNTRY_DISPLAY_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
+  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  : null;
+const COUNTRY_DISPLAY_ALIASES: Record<string, string> = {
+  CD: 'Kinshasa',
+};
 
 type TopCountryViewRow = {
   countryCode: string | null;
@@ -61,6 +67,12 @@ type TopCountryViewRow = {
   previousFlights: number;
   deltaFlights: number;
   deltaPercent: number;
+};
+
+type CountryLookupRow = AirportCountrySummary & {
+  displayName: string;
+  code: string;
+  key: string;
 };
 
 type TopAirportViewRow = {
@@ -1194,16 +1206,63 @@ function flagFromCountryCode(code?: string | null) {
   return String.fromCodePoint(0x1f1e6 + first - 65, 0x1f1e6 + second - 65);
 }
 
+function resolveCountryDisplayName(name: string, countryCode?: string | null) {
+  const normalizedName = (name || '').trim();
+  const normalizedCode = (countryCode || '').trim().toUpperCase();
+  const alias = normalizedCode ? COUNTRY_DISPLAY_ALIASES[normalizedCode] : undefined;
+
+  if (alias) {
+    return alias;
+  }
+
+  const lookupCode = normalizedCode || (/^[A-Z0-9]{2,3}$/.test(normalizedName.toUpperCase()) ? normalizedName.toUpperCase() : '');
+  if (lookupCode && COUNTRY_DISPLAY_NAMES) {
+    const displayName = COUNTRY_DISPLAY_NAMES.of(lookupCode);
+    if (displayName && displayName !== lookupCode) {
+      return displayName;
+    }
+  }
+
+  return normalizedName || normalizedCode || 'Unknown';
+}
+
 function toCountrySelection(row: TopCountryViewRow): CountryData {
-  const fallback = COUNTRIES.find((country) => country.name.toLowerCase() === row.name.toLowerCase());
+  const displayName = resolveCountryDisplayName(row.name, row.countryCode);
+  const fallback = COUNTRIES.find((country) => country.name.toLowerCase() === displayName.toLowerCase());
   return {
     flag: fallback?.flag || flagFromCountryCode(row.countryCode),
-    name: row.name,
+    name: displayName,
+    countryCode: row.countryCode,
     airports: row.airportCount,
     flights: row.flights,
     delta: `${row.deltaPercent >= 0 ? '+' : ''}${row.deltaPercent.toFixed(1)}%`,
     deltaN: row.deltaFlights,
     bar: 100,
+  };
+}
+
+function buildCountryDrillTarget(
+  countryCode: string,
+  countryName: string,
+  continentLabel?: string,
+  continentIcon?: string,
+) {
+  const displayName = resolveCountryDisplayName(countryName, countryCode);
+  const resolvedContinentLabel = continentLabel || 'Other';
+  const resolvedContinentIcon = continentIcon || '🌐';
+
+  return {
+    continent: toContinentSelection(resolvedContinentLabel, resolvedContinentIcon) as any,
+    country: {
+      flag: flagFromCountryCode(countryCode),
+      name: displayName,
+      countryCode,
+      airports: 0,
+      flights: 0,
+      delta: '0.0%',
+      deltaN: 0,
+      bar: 0,
+    },
   };
 }
 
@@ -1365,6 +1424,7 @@ function TopCountriesTable({
                 </tr>
               ) : (
                 rows.map((country, index) => {
+                  const displayName = resolveCountryDisplayName(country.name, country.countryCode);
                   return (
                     <tr key={`${country.name}-${country.countryCode ?? index}`} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
                       <td className="py-2.5 px-2.5 font-bold text-muted-foreground w-8 text-[14px] transition-colors">{index + 1}</td>
@@ -1374,14 +1434,14 @@ function TopCountriesTable({
                             type="button"
                             onClick={() => onSelectCountry(country)}
                             className="w-full cursor-pointer text-left"
-                            aria-label={`ไปยังประเทศ ${country.name}`}
+                            aria-label={`ไปยังประเทศ ${displayName}`}
                             title="คลิกเพื่อไปยังหน้า Country"
                           >
                             <div className="text-[14px] font-extrabold tracking-wide text-primary hover:underline">
                               {country.countryCode?.toUpperCase() || '--'}
                             </div>
                             <div className="text-[14px] font-semibold text-foreground truncate hover:text-primary">
-                              {country.name}
+                              {displayName}
                             </div>
                           </button>
                         </div>
@@ -1679,11 +1739,12 @@ function CountryLookupPanel() {
     });
   }, [countries, query]);
 
-  const mixedRows = useMemo(
+  const mixedRows = useMemo<CountryLookupRow[]>(
     () =>
       visibleCountries.map((country) => ({
+        ...country,
         code: (country.country_code || '--').toUpperCase(),
-        name: country.country,
+        displayName: resolveCountryDisplayName(country.country, country.country_code),
         key: `${country.country_code ?? 'xx'}-${country.country}`,
       })),
     [visibleCountries],
@@ -1752,21 +1813,8 @@ function CountryLookupPanel() {
                       <button
                         type="button"
                         className="w-full cursor-pointer text-left"
-                        onClick={() =>
-                          drillTo('country', {
-                            continent: toContinentSelection('Other', '🌐') as any,
-                            country: {
-                              flag: flagFromCountryCode(row.code),
-                              name: row.name,
-                              airports: 0,
-                              flights: 0,
-                              delta: '0.0%',
-                              deltaN: 0,
-                              bar: 0,
-                            },
-                          })
-                        }
-                        aria-label={`ไปยังประเทศ ${row.name}`}
+                        onClick={() => drillTo('country', buildCountryDrillTarget(row.code, row.displayName, row.continent_label, row.continent_icon))}
+                        aria-label={`ไปยังประเทศ ${row.displayName}`}
                         title="คลิกเพื่อไปยังหน้า Country"
                       >
                         <div className="text-[14px] font-extrabold tracking-wide text-primary hover:underline">{row.code}</div>
@@ -1776,24 +1824,11 @@ function CountryLookupPanel() {
                       <button
                         type="button"
                         className="w-full cursor-pointer text-left"
-                        onClick={() =>
-                          drillTo('country', {
-                            continent: toContinentSelection('Other', '🌐') as any,
-                            country: {
-                              flag: flagFromCountryCode(row.code),
-                              name: row.name,
-                              airports: 0,
-                              flights: 0,
-                              delta: '0.0%',
-                              deltaN: 0,
-                              bar: 0,
-                            },
-                          })
-                        }
-                        aria-label={`ไปยังประเทศ ${row.name}`}
+                        onClick={() => drillTo('country', buildCountryDrillTarget(row.code, row.displayName, row.continent_label, row.continent_icon))}
+                        aria-label={`ไปยังประเทศ ${row.displayName}`}
                         title="คลิกเพื่อไปยังหน้า Country"
                       >
-                        <div className="text-[14px] font-semibold text-foreground hover:text-primary">{row.name}</div>
+                        <div className="text-[14px] font-semibold text-foreground hover:text-primary">{row.displayName}</div>
                       </button>
                     </td>
                   </tr>

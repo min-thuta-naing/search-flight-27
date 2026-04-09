@@ -1762,6 +1762,8 @@ export class DashboardSummaryService {
         FROM airports
         WHERE code IS NOT NULL
           AND TRIM(code) <> ''
+          AND city IS NOT NULL
+          AND TRIM(city) <> ''
           AND (
             UPPER(TRIM(country_code)) = $1
             OR UPPER(TRIM(country)) = $1
@@ -1790,16 +1792,16 @@ export class DashboardSummaryService {
           AND arr_airport IN (SELECT code FROM country_airports)
       )
       SELECT
-        cr.airport_code,
-        COALESCE(a.name, a.code, cr.airport_code) AS airport_name,
-        COUNT(*)::int AS flights,
+        ca.code AS airport_code,
+        COALESCE(a.name, a.code, ca.code) AS airport_name,
+        COUNT(cr.airport_code)::int AS flights,
         COUNT(DISTINCT cr.counterpart_airport)::int AS routes,
         COUNT(DISTINCT cr.airline_id)::int AS airlines
-      FROM current_rows cr
-      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(cr.airport_code))
-      GROUP BY cr.airport_code, COALESCE(a.name, a.code, cr.airport_code)
-      ORDER BY COUNT(*) DESC, cr.airport_code ASC
-      LIMIT 12
+      FROM country_airports ca
+      LEFT JOIN current_rows cr ON UPPER(TRIM(cr.airport_code)) = ca.code
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = ca.code
+      GROUP BY ca.code, COALESCE(a.name, a.code, ca.code)
+      ORDER BY COUNT(cr.airport_code) DESC, ca.code ASC
     `;
 
     const inboundQuery = `
@@ -1991,7 +1993,7 @@ export class DashboardSummaryService {
       flights: Number(row.flights) || 0,
       routes: Number(row.routes) || 0,
       airlines: Number(row.airlines) || 0,
-    })).filter((row) => row.iata && row.flights > 0);
+    })).filter((row) => row.iata);
 
     const inbound = (inboundResult.rows as Array<{
       origin_country_code: string | null;

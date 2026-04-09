@@ -13,23 +13,30 @@ import {
 import {
   COUNTRIES,
   growthDeltaTypeFromPct,
-  parsePercentFromDelta,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import {
   getCountryOverview,
-  getCountryAirports,
-  getCountryTopAirline,
-  getCountryTopAirlineSharePercent,
-  getCountryInbound,
-  getCountryAirlineMarketShare,
 } from '@/lib/dashboard/services/drilldown';
 import { runDrillDownRequest } from '@/lib/dashboard/drill-down-cache';
-import { statisticsApi, type DashboardDateBoundsResponse } from '@/lib/api/statistics-api';
+import {
+  statisticsApi,
+  type DashboardDateBoundsResponse,
+  type DashboardCountryAirportBreakdownResponse,
+  type DashboardCountryInboundBreakdownResponse,
+  type DashboardCountryAirlineBreakdownResponse,
+} from '@/lib/api/statistics-api';
 import { useDrillDown, KPIRow, BackButton, TimeToggle } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
 import type { AirportInfo } from '@/types/dashboard';
+
+const COUNTRY_DISPLAY_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
+  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  : null;
+const COUNTRY_DISPLAY_ALIASES: Record<string, string> = {
+  CD: 'Kinshasa',
+};
 
 function parseIsoDateInput(dateInput?: string | null) {
   if (!dateInput) return null;
@@ -62,25 +69,48 @@ function buildCountryPresetRange(
   return { from: minDate, to: recommendedEndDate };
 }
 
+function filterActiveAirports<T extends { flights: number }>(airports: T[]) {
+  return airports.filter((airport) => airport.flights > 0);
+}
+
+function resolveCountryDisplayName(name: string, countryCode?: string | null) {
+  const normalizedName = (name || '').trim();
+  const normalizedCode = (countryCode || '').trim().toUpperCase();
+  const alias = normalizedCode ? COUNTRY_DISPLAY_ALIASES[normalizedCode] : undefined;
+
+  if (alias) {
+    return alias;
+  }
+
+  const lookupCode = normalizedCode || (/^[A-Z0-9]{2,3}$/.test(normalizedName.toUpperCase()) ? normalizedName.toUpperCase() : '');
+  if (lookupCode && COUNTRY_DISPLAY_NAMES) {
+    const displayName = COUNTRY_DISPLAY_NAMES.of(lookupCode);
+    if (displayName && displayName !== lookupCode) {
+      return displayName;
+    }
+  }
+
+  return normalizedName || normalizedCode || 'Unknown';
+}
+
 export function CountryView() {
   const { drillTo, selections, timeMode, rangePreset } = useDrillDown();
   const country = selections.country || COUNTRIES.find(c => c.name === 'N. Macedonia') || COUNTRIES[0];
-
-  const fallbackAirports = getCountryAirports(country.name);
-  const fallbackInbound = getCountryInbound(country.name);
-  const fallbackAirlineMarket = getCountryAirlineMarketShare(country.name);
-  const fallbackTopAirlineName = getCountryTopAirline(country.name);
-  const fallbackTopAirlineSharePct = getCountryTopAirlineSharePercent(country.name);
+  const displayCountryName = resolveCountryDisplayName(country.name, country.countryCode);
+  const countryQuery = (country.countryCode || country.name).trim();
 
   const [dateBounds, setDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
-  const [displayAirports, setDisplayAirports] = useState<AirportInfo[]>(fallbackAirports);
-  const [inboundRows, setInboundRows] = useState(fallbackInbound);
-  const [airlineMarketRows, setAirlineMarketRows] = useState(fallbackAirlineMarket);
-  const [topAirlineName, setTopAirlineName] = useState(fallbackTopAirlineName);
-  const [topAirlineSharePct, setTopAirlineSharePct] = useState<number | undefined>(fallbackTopAirlineSharePct);
+  const [displayAirports, setDisplayAirports] = useState<AirportInfo[]>([]);
+  const [inboundRows, setInboundRows] = useState<DashboardCountryInboundBreakdownResponse[]>([]);
+  const [airlineMarketRows, setAirlineMarketRows] = useState<DashboardCountryAirlineBreakdownResponse[]>([]);
+  const [topAirlineName, setTopAirlineName] = useState('');
+  const [topAirlineSharePct, setTopAirlineSharePct] = useState<number | undefined>(undefined);
   const [countryFlights, setCountryFlights] = useState(country.flights);
   const [countryDeltaText, setCountryDeltaText] = useState(`${country.deltaN >= 0 ? '▲' : '▼'} ${country.deltaN >= 0 ? '+' : ''}${country.deltaN} เที่ยวบิน (${country.delta})`);
-  const [countryDeltaPercent, setCountryDeltaPercent] = useState(parsePercentFromDelta(country.delta) ?? 0);
+  const [countryDeltaPercent, setCountryDeltaPercent] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
 
   const presetRange = buildCountryPresetRange(rangePreset, new Date(), dateBounds);
   const startDate = presetRange?.from ? formatLocalDateInput(presetRange.from) : undefined;
@@ -97,6 +127,8 @@ export function CountryView() {
       } catch {
         if (!alive) return;
         setDateBounds(null);
+        setLoadError('ไม่สามารถโหลดช่วงวันที่ได้');
+        setIsLoading(false);
       }
     };
 
@@ -108,22 +140,29 @@ export function CountryView() {
 
   useEffect(() => {
     if (!startDate || !endDate) {
+      if (dateBounds) {
+        setLoadError('ไม่สามารถกำหนดช่วงวันที่ได้');
+        setIsLoading(false);
+      }
       return;
     }
 
     let alive = true;
 
     const loadCountryOverview = async () => {
+      setIsLoading(true);
+      setLoadError(null);
+
       try {
         const payload = await runDrillDownRequest(
-          `country:overview:${country.name}:${startDate}__${endDate}`,
-          () => getCountryOverview(country.name, { startDate, endDate, timeoutMs: 60000 }),
+          `country:overview:${countryQuery}:${startDate}__${endDate}`,
+          () => getCountryOverview(countryQuery, { startDate, endDate, timeoutMs: 60000 }),
         );
 
         if (!alive) return;
 
         const colors = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#22c55e'];
-        setDisplayAirports(payload.airports.map((airport, idx) => ({
+        setDisplayAirports(filterActiveAirports(payload.airports).map((airport, idx) => ({
           iata: airport.iata,
           name: airport.name,
           flights: airport.flights,
@@ -136,23 +175,26 @@ export function CountryView() {
           ...airline,
           color: colors[idx % colors.length],
         })));
-        setTopAirlineName(payload.topAirline.name || fallbackTopAirlineName);
+        setTopAirlineName(payload.topAirline.name || '');
         setTopAirlineSharePct(payload.topAirline.sharePercent ?? undefined);
         setCountryFlights(payload.totals.flights);
         setCountryDeltaPercent(payload.totals.deltaPercent);
         setCountryDeltaText(
           `${payload.totals.deltaFlights >= 0 ? '▲' : '▼'} ${payload.totals.deltaFlights >= 0 ? '+' : ''}${payload.totals.deltaFlights.toLocaleString()} เที่ยวบิน (${payload.totals.deltaPercent >= 0 ? '+' : ''}${payload.totals.deltaPercent.toFixed(1)}%)`,
         );
+        setIsLoading(false);
       } catch {
         if (!alive) return;
-        setDisplayAirports(fallbackAirports);
-        setInboundRows(fallbackInbound);
-        setAirlineMarketRows(fallbackAirlineMarket);
-        setTopAirlineName(fallbackTopAirlineName);
-        setTopAirlineSharePct(fallbackTopAirlineSharePct);
-        setCountryFlights(country.flights);
-        setCountryDeltaPercent(parsePercentFromDelta(country.delta) ?? 0);
-        setCountryDeltaText(`${country.deltaN >= 0 ? '▲' : '▼'} ${country.deltaN >= 0 ? '+' : ''}${country.deltaN} เที่ยวบิน (${country.delta})`);
+        setDisplayAirports([]);
+        setInboundRows([]);
+        setAirlineMarketRows([]);
+        setTopAirlineName('');
+        setTopAirlineSharePct(undefined);
+        setCountryFlights(0);
+        setCountryDeltaPercent(0);
+        setCountryDeltaText('ไม่สามารถโหลดข้อมูลประเทศได้');
+        setLoadError('ไม่สามารถโหลดข้อมูลประเทศได้');
+        setIsLoading(false);
       }
     };
 
@@ -161,7 +203,7 @@ export function CountryView() {
     return () => {
       alive = false;
     };
-  }, [country.name, startDate, endDate]);
+  }, [country.name, country.countryCode, countryQuery, startDate, endDate, retryToken]);
 
   const totalRoutes = displayAirports.reduce((s, a) => s + a.routes, 0);
 
@@ -210,13 +252,37 @@ export function CountryView() {
     },
   ];
 
+  if (isLoading) {
+    return <CountryViewSkeleton countryName={displayCountryName} />;
+  }
+
+  if (loadError) {
+    return (
+      <div className="rounded-[10px] border border-border bg-card p-6">
+        <div className="space-y-3">
+          <div className="text-xl font-bold break-words">{country.flag} {displayCountryName}</div>
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {loadError}
+          </div>
+          <button
+            type="button"
+            onClick={() => setRetryToken((value) => value + 1)}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:opacity-90"
+          >
+            ลองโหลดใหม่
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
-          <h2 className="text-xl font-bold mb-1 break-words">{country.flag} {country.name}</h2>
+          <h2 className="text-xl font-bold mb-1 break-words">{country.flag} {displayCountryName}</h2>
           <p className="text-[15px] text-muted-foreground font-medium break-words">
-            เลือกสนามบินใน {country.name} เพื่อดูข้อมูลวิเคราะห์
+            เลือกสนามบินใน {displayCountryName} เพื่อดูข้อมูลวิเคราะห์
           </p>
         </div>
         <div className="shrink-0 self-start sm:self-auto">
@@ -232,8 +298,8 @@ export function CountryView() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        <InboundCountriesPanel countryName={country.name} rows={inboundRows} />
-        <AirlineMarketSharePanel countryName={country.name} rows={airlineMarketRows} />
+        <InboundCountriesPanel countryName={displayCountryName} rows={inboundRows} />
+        <AirlineMarketSharePanel countryName={displayCountryName} rows={airlineMarketRows} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
@@ -337,12 +403,52 @@ function BusiestAirportsPanel({ displayAirports }: { displayAirports: AirportInf
   );
 }
 
+function CountryViewSkeleton({ countryName }: { countryName: string }) {
+  return (
+    <div className="space-y-6 animate-pulse">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="h-7 w-64 rounded-md bg-muted" />
+          <div className="h-5 w-80 rounded-md bg-muted/70" />
+        </div>
+        <div className="h-10 w-28 rounded-md bg-muted/70" />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="h-[126px] rounded-[10px] border border-border bg-card p-4 sm:p-6" />
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[1fr_1.4fr]">
+        <div className="h-[320px] rounded-[10px] border border-border bg-card" />
+        <div className="h-[320px] rounded-[10px] border border-border bg-card" />
+      </div>
+
+      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
+        <div className="h-[260px] rounded-[10px] border border-border bg-card" />
+        <div className="h-[260px] rounded-[10px] border border-border bg-card" />
+      </div>
+
+      <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <div key={index} className="h-[180px] rounded-[10px] border border-border bg-card p-5" />
+        ))}
+      </div>
+
+      <div className="flex justify-center pt-1">
+        <div className="h-10 w-56 rounded-lg bg-muted/70" />
+      </div>
+    </div>
+  );
+}
+
 function InboundCountriesPanel({
   countryName,
   rows,
 }: {
   countryName: string;
-  rows: ReturnType<typeof getCountryInbound>;
+  rows: DashboardCountryInboundBreakdownResponse[];
 }) {
   const sorted = rows;
 
@@ -372,7 +478,7 @@ function InboundCountriesPanel({
                 </td>
               </tr>
             ) : (
-              sorted.map((c, i) => (
+              sorted.map((c: DashboardCountryInboundBreakdownResponse, i: number) => (
                 <tr key={c.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
                   <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
                   <td className="px-3 py-2.5">
@@ -397,7 +503,7 @@ function AirlineMarketSharePanel({
   rows,
 }: {
   countryName: string;
-  rows: ReturnType<typeof getCountryAirlineMarketShare>;
+  rows: DashboardCountryAirlineBreakdownResponse[];
 }) {
   const airlines = rows;
   const max = airlines[0]?.flights || 1;
@@ -429,7 +535,7 @@ function AirlineMarketSharePanel({
                 </td>
               </tr>
             ) : (
-              airlines.map((airline, i) => {
+              airlines.map((airline: DashboardCountryAirlineBreakdownResponse, i: number) => {
                 const barW = (airline.flights / max * 100).toFixed(0);
                 return (
                   <tr key={airline.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">

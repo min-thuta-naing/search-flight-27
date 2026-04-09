@@ -6,6 +6,7 @@ import { SearchStatisticsModel, PriceStatisticsModel } from '../models/SearchSta
 import { AirportModel } from '../models/Airport';
 import { convertToAirportCode } from '../utils/airportCodeConverter';
 import { DashboardSummaryService, clearDashboardMemoryCache, getDashboardMemoryCacheStats } from '../services/dashboardSummaryService';
+import { pool } from '../config/database';
 
 const DASHBOARD_QUERY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -87,6 +88,23 @@ function finishDashboardPreload(phase: 'completed' | 'failed', attempted: number
   });
 }
 
+export function markDashboardPreloadAsCompleted(override?: { attempted?: number; failed?: number }) {
+  const now = new Date().toISOString();
+  const attempted = override?.attempted ?? 0;
+  const failed = override?.failed ?? 0;
+
+  setDashboardPreloadStatus({
+    phase: 'completed',
+    startedAt: now,
+    finishedAt: now,
+    attempted,
+    failed,
+    durationMs: 0,
+    durationMinutes: 0,
+    error: null,
+  });
+}
+
 async function readDashboardQueryCacheSnapshot(): Promise<Record<string, DashboardCacheEntry>> {
   try {
     const raw = await readFile(DASHBOARD_CACHE_FILE, 'utf8');
@@ -144,6 +162,20 @@ async function getDashboardQueryCacheStats() {
   return {
     cacheEntries: Object.keys(entries).length,
     inFlightEntries: dashboardQueryInFlight.size,
+  };
+}
+
+export async function getDashboardQueryCacheFreshness() {
+  const entries = await readDashboardQueryCacheSnapshot();
+  const now = Date.now();
+  const totalEntries = Object.keys(entries).length;
+  const freshEntries = Object.values(entries).filter((entry) => entry.expiresAt > now).length;
+
+  return {
+    totalEntries,
+    freshEntries,
+    hasFreshEntries: freshEntries > 0,
+    ttlHours: DASHBOARD_QUERY_CACHE_TTL_MS / (60 * 60 * 1000),
   };
 }
 
@@ -245,6 +277,163 @@ function buildPresetDateRange(
   return { startDate: minDate, endDate: recommendedEndDate };
 }
 
+function normalizeCountryBatchSize(value: unknown, fallback = 15): number {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number.parseInt(value, 10)
+      : Number.NaN;
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(20, Math.floor(parsed));
+}
+
+function normalizeRssLimitMb(value: unknown, fallback = 2048): number {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number.parseInt(value, 10)
+      : Number.NaN;
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(16384, Math.floor(parsed));
+}
+
+async function getAllCountryNames(): Promise<string[]> {
+  const countriesResult = await pool.query<{ country_name: string }>(
+    `
+      SELECT DISTINCT
+        TRIM(COALESCE(NULLIF(a.country_name, ''), NULLIF(a.country, ''), NULLIF(a.country_code, ''))) AS country_name
+      FROM airports a
+      WHERE a.code IS NOT NULL
+        AND TRIM(a.code) <> ''
+        AND TRIM(COALESCE(NULLIF(a.country_name, ''), NULLIF(a.country, ''), NULLIF(a.country_code, ''))) <> ''
+      ORDER BY country_name ASC
+    `,
+  );
+
+  return countriesResult.rows
+    .map((row) => row.country_name?.trim())
+    .filter((name): name is string => Boolean(name));
+}
+
+function getProcessRssMb(): number {
+  return Math.round(process.memoryUsage().rss / (1024 * 1024));
+}
+
+type PreloadCacheMode = 'append' | 'override';
+
+async function preloadCountryOverviewsForRange(options: {
+  startDate: string;
+  endDate: string;
+  countryBatchSize: number;
+  maxCountryRssMb: number;
+  cacheMode: PreloadCacheMode;
+}) {
+  const { startDate, endDate, countryBatchSize, maxCountryRssMb, cacheMode } = options;
+  console.log(
+    `[dashboard-preload] country preload start; mode=${cacheMode}; range=${startDate}->${endDate}; batchSize=${countryBatchSize}; rssLimit=${maxCountryRssMb}MB`
+  );
+  const countryNames = await getAllCountryNames();
+
+  let attempted = 0;
+  let failed = 0;
+  let batches = 0;
+  let stoppedByRss = false;
+  let cacheAliasWrites = 0;
+  const failedCountries: Array<{ country: string; error: string }> = [];
+
+  for (let index = 0; index < countryNames.length; index += countryBatchSize) {
+    const batch = countryNames.slice(index, index + countryBatchSize);
+    batches += 1;
+
+    const batchResults = await Promise.all(
+      batch.map(async (countryName) => {
+        const queryWithWindow = {
+          country: countryName,
+          window_days: '15',
+          start_date: startDate,
+          end_date: endDate,
+        } as Request['query'];
+
+        const queryWithoutWindow = {
+          country: countryName,
+          start_date: startDate,
+          end_date: endDate,
+        } as Request['query'];
+
+        try {
+          const cacheKeyWithWindow = buildDashboardQueryCacheKey('dashboard-country-overview', queryWithWindow);
+          const payload = await getOrSetDashboardQueryCache(cacheKeyWithWindow, () =>
+            DashboardSummaryService.getCountryOverview({
+              country: countryName,
+              windowDays: 15,
+              startDateInput: startDate,
+              endDateInput: endDate,
+            })
+          );
+
+          // Mirror to the key shape used by endpoint calls that pass only start/end (no window_days).
+          const cacheKeyWithoutWindow = buildDashboardQueryCacheKey('dashboard-country-overview', queryWithoutWindow);
+          if (cacheKeyWithoutWindow !== cacheKeyWithWindow) {
+            await writeDashboardQueryCache(cacheKeyWithoutWindow, payload);
+          }
+
+          return { ok: true as const, country: countryName };
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          return { ok: false as const, country: countryName, error: errorMessage };
+        }
+      })
+    );
+
+    attempted += batch.length;
+    const batchFailures = batchResults.filter((result) => !result.ok);
+    failed += batchFailures.length;
+    cacheAliasWrites += batch.length - batchFailures.length;
+
+    for (const failure of batchFailures) {
+      if (failedCountries.length >= 20) {
+        break;
+      }
+      failedCountries.push({ country: failure.country, error: failure.error });
+    }
+
+    await waitForDashboardCacheWrites();
+    const cleared = clearDashboardMemoryCache();
+
+    const currentRssMb = getProcessRssMb();
+    console.log(
+      `[dashboard-preload] country batch ${batches} done; mode=${cacheMode}; countries=${batch.length}; memory-cleared=${cleared.totalCleared}; rss=${currentRssMb}MB; limit=${maxCountryRssMb}MB`
+    );
+
+    if (currentRssMb >= maxCountryRssMb) {
+      stoppedByRss = true;
+      console.log(`[dashboard-preload] country preload stopped by RSS guard at ${currentRssMb}MB`);
+      break;
+    }
+  }
+
+  return {
+    attempted,
+    failed,
+    countries: countryNames.length,
+    countryBatchSize,
+    batches,
+    maxCountryRssMb,
+    stoppedByRss,
+    cacheAliasWrites,
+    source: 'database-active-countries' as const,
+    failedCountries,
+  };
+}
+
 async function readDashboardQueryCache<T>(key: string): Promise<T | null> {
   const entries = await readDashboardQueryCacheSnapshot();
   const cached = entries[key];
@@ -297,9 +486,20 @@ async function getOrSetDashboardQueryCache<T>(key: string, factory: () => Promis
   return request;
 }
 
-export async function warmDashboardCachesOnStartup(): Promise<{ attempted: number; failed: number }> {
+export async function warmDashboardCachesOnStartup(options?: {
+  preloadPresetData?: boolean;
+  preloadCountryOverview?: boolean;
+  countryBatchSize?: number;
+  maxCountryRssMb?: number;
+  cacheMode?: PreloadCacheMode;
+}): Promise<{ attempted: number; failed: number; presetPreloadEnabled: boolean; countryPreloadEnabled: boolean }> {
   let attempted = 0;
   let failed = 0;
+  const preloadPresetData = options?.preloadPresetData ?? true;
+  const preloadCountryOverview = options?.preloadCountryOverview ?? true;
+  const countryBatchSize = normalizeCountryBatchSize(options?.countryBatchSize, 15);
+  const maxCountryRssMb = normalizeRssLimitMb(options?.maxCountryRssMb, 1024);
+  const cacheMode = options?.cacheMode ?? 'override';
   const startedAt = beginDashboardPreload();
   console.log(`[dashboard-preload] start at ${startedAt}`);
 
@@ -310,68 +510,93 @@ export async function warmDashboardCachesOnStartup(): Promise<{ attempted: numbe
     if (!bounds.minDate || !bounds.recommendedEndDate) {
       finishDashboardPreload('completed', attempted, failed);
       console.log('[dashboard-preload] completed without date bounds');
-      return { attempted, failed };
+      return {
+        attempted,
+        failed,
+        presetPreloadEnabled: preloadPresetData,
+        countryPreloadEnabled: preloadCountryOverview,
+      };
     }
 
     const now = new Date();
     const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-    for (const preset of DASHBOARD_PRELOAD_PRESETS) {
-      const { startDate, endDate } = buildPresetDateRange(preset, bounds.minDate, bounds.recommendedEndDate, utcToday);
-      const chunks = buildPreloadChunks(startDate, endDate, 3);
+    if (preloadPresetData) {
+      for (const preset of DASHBOARD_PRELOAD_PRESETS) {
+        const { startDate, endDate } = buildPresetDateRange(preset, bounds.minDate, bounds.recommendedEndDate, utcToday);
+        const chunks = buildPreloadChunks(startDate, endDate, 3);
 
-      console.log(`[dashboard-preload] preset ${preset} start (${startDate} -> ${endDate}); chunks=${chunks.length}`);
+        console.log(`[dashboard-preload] preset ${preset} start (${startDate} -> ${endDate}); chunks=${chunks.length}`);
 
-      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-        const chunk = chunks[chunkIndex];
-        const query = {
-          window_days: '15',
-          start_date: chunk.startDate,
-          end_date: chunk.endDate,
-        } as Request['query'];
+        for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+          const chunk = chunks[chunkIndex];
+          const query = {
+            window_days: '15',
+            start_date: chunk.startDate,
+            end_date: chunk.endDate,
+          } as Request['query'];
 
-        console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} start (${chunk.startDate} -> ${chunk.endDate})`);
+          console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} start (${chunk.startDate} -> ${chunk.endDate})`);
 
-        const tasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
-          {
-            scope: 'dashboard-summary',
-            run: () => DashboardSummaryService.getWorldSummary({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
-          },
-          {
-            scope: 'dashboard-top-ranks',
-            run: () => DashboardSummaryService.getWorldTopRanks({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
-          },
-          {
-            scope: 'dashboard-top-destinations',
-            run: () => DashboardSummaryService.getWorldTopDestinations({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
-          },
-        ];
+          const tasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
+            {
+              scope: 'dashboard-summary',
+              run: () => DashboardSummaryService.getWorldSummary({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+            },
+            {
+              scope: 'dashboard-top-ranks',
+              run: () => DashboardSummaryService.getWorldTopRanks({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+            },
+            {
+              scope: 'dashboard-top-destinations',
+              run: () => DashboardSummaryService.getWorldTopDestinations({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+            },
+          ];
 
-        for (const task of tasks) {
-          attempted += 1;
-          setDashboardPreloadStatus({ attempted, failed });
-          try {
-            const cacheKey = buildDashboardQueryCacheKey(task.scope, query);
-            await getOrSetDashboardQueryCache(cacheKey, task.run);
-          } catch {
-            failed += 1;
+          for (const task of tasks) {
+            attempted += 1;
             setDashboardPreloadStatus({ attempted, failed });
+            try {
+              const cacheKey = buildDashboardQueryCacheKey(task.scope, query);
+              await getOrSetDashboardQueryCache(cacheKey, task.run);
+            } catch {
+              failed += 1;
+              setDashboardPreloadStatus({ attempted, failed });
+            }
           }
+
+          // Flush each 3-month chunk before moving on so the snapshot and RAM stay bounded.
+          await waitForDashboardCacheWrites();
+          const cleared = clearDashboardMemoryCache();
+
+          console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} done; dump-flushed=yes; memory-cleared=${cleared.totalCleared}`);
         }
 
-        // Flush each 3-month chunk before moving on so the snapshot and RAM stay bounded.
-        await waitForDashboardCacheWrites();
-        const cleared = clearDashboardMemoryCache();
-
-        console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} done; dump-flushed=yes; memory-cleared=${cleared.totalCleared}`);
+        console.log(`[dashboard-preload] preset ${preset} done; chunked-flush=3-month; chunks=${chunks.length}`);
       }
+    } else {
+      console.log('[dashboard-preload] preset preload disabled; skipping world preset warmup');
+    }
 
-      console.log(`[dashboard-preload] preset ${preset} done; chunked-flush=3-month; chunks=${chunks.length}`);
+    if (preloadCountryOverview) {
+      const result = await preloadCountryOverviewsForRange({
+        startDate: bounds.minDate,
+        endDate: bounds.recommendedEndDate,
+        countryBatchSize,
+        maxCountryRssMb,
+        cacheMode,
+      });
+      attempted += result.attempted;
+      failed += result.failed;
+      setDashboardPreloadStatus({ attempted, failed });
+      console.log(`[dashboard-preload] country preload done; mode=${result.source}; attempted=${result.attempted}; failed=${result.failed}; batches=${result.batches}`);
+    } else {
+      console.log('[dashboard-preload] country preload disabled; skipping country warmup');
     }
 
     finishDashboardPreload('completed', attempted, failed);
     console.log(`[dashboard-preload] completed in ${dashboardPreloadStatus.durationMinutes.toFixed(2)} min; attempted=${attempted}; failed=${failed}; dumped-to=${DASHBOARD_CACHE_FILE}`);
-    return { attempted, failed };
+    return { attempted, failed, presetPreloadEnabled: preloadPresetData, countryPreloadEnabled: preloadCountryOverview };
   } catch (error) {
     finishDashboardPreload('failed', attempted, failed, error instanceof Error ? error.message : String(error));
     console.warn(`[dashboard-preload] failed in ${dashboardPreloadStatus.durationMinutes.toFixed(2)} min; attempted=${attempted}; failed=${failed}; error=${dashboardPreloadStatus.error}`);
@@ -383,29 +608,78 @@ export async function refreshDashboardQueryCacheSnapshot(options?: {
   clearFirst?: boolean;
   preset?: DashboardPreloadPreset;
   fullPreload?: boolean;
+  preloadPresetData?: boolean;
+  cacheMode?: PreloadCacheMode;
+  preloadCountryOverview?: boolean;
+  countryBatchSize?: number;
+  maxCountryRssMb?: number;
 }) {
   const clearFirst = options?.clearFirst ?? true;
   const preset = options?.preset ?? 'focus';
   const fullPreload = options?.fullPreload ?? false;
+  const preloadPresetData = options?.preloadPresetData ?? true;
+  const cacheMode = options?.cacheMode ?? (clearFirst ? 'override' : 'append');
+  const preloadCountryOverview = options?.preloadCountryOverview ?? true;
+  const countryBatchSize = normalizeCountryBatchSize(options?.countryBatchSize, 15);
+  const maxCountryRssMb = normalizeRssLimitMb(options?.maxCountryRssMb, 2048);
+  const effectiveClearFirst = cacheMode === 'override' ? true : clearFirst;
   let cleared = {
     queryCache: { cacheEntries: 0, inFlightEntries: 0, totalCleared: 0 },
     memoryCache: { totalCleared: 0 },
   };
+  let countryPreload = {
+    enabled: preloadCountryOverview,
+    attempted: 0,
+    failed: 0,
+    countries: 0,
+    countryBatchSize,
+    maxCountryRssMb,
+    batches: 0,
+    stoppedByRss: false,
+    cacheAliasWrites: 0,
+    source: 'database-active-countries' as const,
+    failedCountries: [] as Array<{ country: string; error: string }>,
+    skipped: false,
+  };
 
-  if (clearFirst) {
+  console.log(
+    `[dashboard-preload] refresh start; mode=${cacheMode}; clearFirst=${effectiveClearFirst}; preset=${preset}; fullPreload=${fullPreload}; preloadPreset=${preloadPresetData}; preloadCountry=${preloadCountryOverview}; countryBatchSize=${countryBatchSize}; maxCountryRssMb=${maxCountryRssMb}`
+  );
+
+  if (effectiveClearFirst) {
     const queryCache = await clearDashboardQueryCacheStore();
     const memoryCache = clearDashboardMemoryCache();
     cleared = {
       queryCache,
       memoryCache,
     };
+    console.log(
+      `[dashboard-preload] cache cleared; query=${queryCache.totalCleared}; memory=${memoryCache.totalCleared}`
+    );
+  } else {
+    console.log('[dashboard-preload] cache clear skipped (append mode or clear=false)');
   }
 
   let preload: { attempted: number; failed: number };
 
   if (fullPreload) {
-    preload = await warmDashboardCachesOnStartup();
+    console.log('[dashboard-preload] entering full preload flow');
+    const fullPreloadResult = await warmDashboardCachesOnStartup({
+      preloadPresetData,
+      preloadCountryOverview,
+      countryBatchSize,
+      maxCountryRssMb,
+      cacheMode,
+    });
+    preload = {
+      attempted: fullPreloadResult.attempted,
+      failed: fullPreloadResult.failed,
+    };
+    console.log(
+      `[dashboard-preload] full preload flow done; attempted=${preload.attempted}; failed=${preload.failed}`
+    );
   } else {
+    console.log('[dashboard-preload] entering targeted preload flow');
     const boundsKey = buildDashboardQueryCacheKey('dashboard-date-bounds', {} as Request['query']);
     const bounds = await getOrSetDashboardQueryCache(boundsKey, () => DashboardSummaryService.getDashboardDataBounds());
 
@@ -414,39 +688,93 @@ export async function refreshDashboardQueryCacheSnapshot(options?: {
     } else {
       const now = new Date();
       const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-      const { startDate, endDate } = buildPresetDateRange(preset, bounds.minDate, bounds.recommendedEndDate, utcToday);
-      const query = {
-        window_days: '15',
-        start_date: startDate,
-        end_date: endDate,
-      } as Request['query'];
-
-      const tasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
-        {
-          scope: 'dashboard-summary',
-          run: () => DashboardSummaryService.getWorldSummary({ startDateInput: startDate, endDateInput: endDate }),
-        },
-        {
-          scope: 'dashboard-top-ranks',
-          run: () => DashboardSummaryService.getWorldTopRanks({ startDateInput: startDate, endDateInput: endDate }),
-        },
-        {
-          scope: 'dashboard-top-destinations',
-          run: () => DashboardSummaryService.getWorldTopDestinations({ startDateInput: startDate, endDateInput: endDate }),
-        },
-      ];
 
       let attempted = 0;
       let failed = 0;
 
-      for (const task of tasks) {
-        attempted += 1;
-        try {
-          const cacheKey = buildDashboardQueryCacheKey(task.scope, query);
-          await getOrSetDashboardQueryCache(cacheKey, task.run);
-        } catch {
-          failed += 1;
+      if (preloadPresetData) {
+        const { startDate, endDate } = buildPresetDateRange(preset, bounds.minDate, bounds.recommendedEndDate, utcToday);
+        const query = {
+          window_days: '15',
+          start_date: startDate,
+          end_date: endDate,
+        } as Request['query'];
+
+        const tasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
+          {
+            scope: 'dashboard-summary',
+            run: () => DashboardSummaryService.getWorldSummary({ startDateInput: startDate, endDateInput: endDate }),
+          },
+          {
+            scope: 'dashboard-top-ranks',
+            run: () => DashboardSummaryService.getWorldTopRanks({ startDateInput: startDate, endDateInput: endDate }),
+          },
+          {
+            scope: 'dashboard-top-destinations',
+            run: () => DashboardSummaryService.getWorldTopDestinations({ startDateInput: startDate, endDateInput: endDate }),
+          },
+        ];
+
+        for (const task of tasks) {
+          attempted += 1;
+          try {
+            const cacheKey = buildDashboardQueryCacheKey(task.scope, query);
+            console.log(`[dashboard-preload] preset task start: ${task.scope}`);
+            await getOrSetDashboardQueryCache(cacheKey, task.run);
+            console.log(`[dashboard-preload] preset task done: ${task.scope}`);
+          } catch {
+            failed += 1;
+            console.warn(`[dashboard-preload] preset task failed: ${task.scope}`);
+          }
         }
+      } else {
+        console.log('[dashboard-preload] preset preload skipped by flag');
+      }
+
+      const { startDate, endDate } = buildPresetDateRange(preset, bounds.minDate, bounds.recommendedEndDate, utcToday);
+
+      if (preloadCountryOverview) {
+        console.log('[dashboard-preload] country preload phase start');
+        const result = await preloadCountryOverviewsForRange({
+          startDate,
+          endDate,
+          countryBatchSize,
+          maxCountryRssMb,
+          cacheMode,
+        });
+        countryPreload = {
+          enabled: true,
+          attempted: result.attempted,
+          failed: result.failed,
+          countries: result.countries,
+          countryBatchSize: result.countryBatchSize,
+          maxCountryRssMb: result.maxCountryRssMb,
+          batches: result.batches,
+          stoppedByRss: result.stoppedByRss,
+          cacheAliasWrites: result.cacheAliasWrites,
+          source: result.source,
+          failedCountries: result.failedCountries,
+          skipped: false,
+        };
+        console.log(
+          `[dashboard-preload] country preload phase done; attempted=${result.attempted}; failed=${result.failed}; batches=${result.batches}; stoppedByRss=${result.stoppedByRss}`
+        );
+      } else {
+        countryPreload = {
+          enabled: false,
+          attempted: 0,
+          failed: 0,
+          countries: 0,
+          countryBatchSize,
+          maxCountryRssMb,
+          batches: 0,
+          stoppedByRss: false,
+          cacheAliasWrites: 0,
+          source: 'database-active-countries',
+          failedCountries: [],
+          skipped: true,
+        };
+        console.log('[dashboard-preload] country preload skipped by flag');
       }
 
       await waitForDashboardCacheWrites();
@@ -459,10 +787,16 @@ export async function refreshDashboardQueryCacheSnapshot(options?: {
 
   return {
     clearFirst,
+    cacheMode,
     preset,
     fullPreload,
+    preloadPresetData,
+    preloadCountryOverview,
+    countryBatchSize,
+    maxCountryRssMb,
     cleared,
     preload,
+    countryPreload,
     queryCache,
     memoryCache,
     preloadStatus: { ...dashboardPreloadStatus },

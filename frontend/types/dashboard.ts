@@ -151,6 +151,7 @@ export interface ContinentData {
 export interface CountryData {
   flag: string;
   name: string;
+  countryCode?: string | null;
   airports: number;
   flights: number;
   delta: string;

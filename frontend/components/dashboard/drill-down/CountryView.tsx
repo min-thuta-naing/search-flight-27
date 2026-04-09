@@ -1,7 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { addDays, subDays } from 'date-fns';
+import { useEffect, useRef, useState } from 'react';
+import { addDays, format, subDays } from 'date-fns';
+import { th } from 'date-fns/locale';
+import { ChevronDown } from 'lucide-react';
+import { DateRange, type MonthCaptionProps, useDayPicker } from 'react-day-picker';
 
 import {
   ResponsiveContainer,
@@ -22,14 +25,17 @@ import { runDrillDownRequest } from '@/lib/dashboard/drill-down-cache';
 import {
   statisticsApi,
   type DashboardDateBoundsResponse,
-  type DashboardCountryAirportBreakdownResponse,
   type DashboardCountryInboundBreakdownResponse,
   type DashboardCountryAirlineBreakdownResponse,
 } from '@/lib/api/statistics-api';
-import { useDrillDown, KPIRow, BackButton, TimeToggle } from './DrillDownDashboard';
+import { Calendar } from '@/components/ui/calendar';
+import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { useDrillDown, KPIRow, BackButton } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
 import type { AirportInfo } from '@/types/dashboard';
+import { cn } from '@/lib/utils';
 
 const COUNTRY_DISPLAY_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
   ? new Intl.DisplayNames(['en'], { type: 'region' })
@@ -37,6 +43,76 @@ const COUNTRY_DISPLAY_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in I
 const COUNTRY_DISPLAY_ALIASES: Record<string, string> = {
   CD: 'Kinshasa',
 };
+const COUNTRY_PRESET_LABELS: Record<RangePreset, string> = {
+  focus: '± 15 วัน',
+  '7': '7 วัน',
+  '30': '30 วัน',
+  all: 'ทั้งหมด',
+  '90': 'ไตรมาสนี้',
+  '180': '6 เดือน',
+  '365': '1 ปี',
+};
+const CALENDAR_MONTH_OPTIONS = Array.from({ length: 12 }, (_, monthIndex) => ({
+  value: monthIndex,
+  label: format(new Date(2024, monthIndex, 1), 'LLLL', { locale: th }),
+}));
+const CALENDAR_YEAR_RANGE = (() => {
+  const currentYear = new Date().getFullYear();
+  return Array.from({ length: 8 }, (_, index) => currentYear - 2 + index);
+})();
+
+function CountryCalendarCaption({
+  calendarMonth,
+  displayIndex: _displayIndex,
+  ...props
+}: MonthCaptionProps) {
+  const { goToMonth } = useDayPicker();
+  const currentMonth = calendarMonth.date.getMonth();
+  const currentYear = calendarMonth.date.getFullYear();
+
+  const handleMonthChange = (value: string) => {
+    goToMonth(new Date(currentYear, Number(value), 1));
+  };
+
+  const handleYearChange = (value: string) => {
+    goToMonth(new Date(Number(value), currentMonth, 1));
+  };
+
+  return (
+    <div
+      {...props}
+      className={cn(
+        'flex h-8 w-full items-center justify-between gap-2 px-2',
+        props.className,
+      )}
+    >
+      <select
+        aria-label="เลือกเดือน"
+        className="border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-[3px]"
+        value={String(currentMonth)}
+        onChange={(event) => handleMonthChange(event.target.value)}
+      >
+        {CALENDAR_MONTH_OPTIONS.map((month) => (
+          <option key={month.value} value={month.value}>
+            {month.label}
+          </option>
+        ))}
+      </select>
+      <select
+        aria-label="เลือกปี"
+        className="border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-[96px] shrink-0 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-[3px]"
+        value={String(currentYear)}
+        onChange={(event) => handleYearChange(event.target.value)}
+      >
+        {CALENDAR_YEAR_RANGE.map((year) => (
+          <option key={year} value={year}>
+            {year}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
 
 function parseIsoDateInput(dateInput?: string | null) {
   if (!dateInput) return null;
@@ -93,8 +169,164 @@ function resolveCountryDisplayName(name: string, countryCode?: string | null) {
   return normalizedName || normalizedCode || 'Unknown';
 }
 
+function CountryPresetBar({
+  durationMode,
+  isExtendedRangeOpen,
+  setIsExtendedRangeOpen,
+  showCustomDateRange,
+  onToggleCustom,
+  onSelect,
+}: {
+  durationMode: RangePreset | null;
+  isExtendedRangeOpen: boolean;
+  setIsExtendedRangeOpen: (open: boolean) => void;
+  showCustomDateRange: boolean;
+  onToggleCustom: () => void;
+  onSelect: (preset: RangePreset) => void;
+}) {
+  return (
+    <div className="flex min-h-[52px] max-w-full min-w-0 flex-wrap content-start items-end gap-2.5 border-b border-border/70 pb-1">
+      <Button
+        type="button"
+        variant={durationMode === 'focus' ? 'default' : 'outline'}
+        size="sm"
+        className="h-9 px-3.5 text-xs sm:text-sm"
+        onClick={() => onSelect('focus')}
+      >
+        ± 15 วัน
+      </Button>
+      <Button
+        type="button"
+        variant={durationMode === '7' ? 'default' : 'outline'}
+        size="sm"
+        className="h-9 px-3.5 text-xs sm:text-sm"
+        onClick={() => onSelect('7')}
+      >
+        7 วัน
+      </Button>
+      <Button
+        type="button"
+        variant={durationMode === '30' ? 'default' : 'outline'}
+        size="sm"
+        className="h-9 px-3.5 text-xs sm:text-sm"
+        onClick={() => onSelect('30')}
+      >
+        30 วัน
+      </Button>
+      <Button
+        type="button"
+        variant={durationMode === 'all' ? 'default' : 'outline'}
+        size="sm"
+        className="h-9 px-3.5 text-xs sm:text-sm"
+        onClick={() => onSelect('all')}
+      >
+        ทั้งหมด
+      </Button>
+      <Popover open={isExtendedRangeOpen} onOpenChange={setIsExtendedRangeOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant={durationMode === '90' || durationMode === '180' || durationMode === '365' ? 'default' : 'outline'}
+            size="sm"
+            className="h-9 px-3.5 text-xs sm:text-sm"
+          >
+            {durationMode === '90' ? 'ไตรมาสนี้' : durationMode === '180' ? '6 เดือน' : durationMode === '365' ? '1 ปี' : 'รอบเดือน'}
+            <ChevronDown className="ml-1 h-3.5 w-3.5" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-44 p-1" align="start">
+          <div className="flex flex-col gap-1">
+            <Button
+              type="button"
+              variant={durationMode === '90' ? 'default' : 'ghost'}
+              size="sm"
+              className="justify-start"
+              onClick={() => onSelect('90')}
+            >
+              ไตรมาสนี้
+            </Button>
+            <Button
+              type="button"
+              variant={durationMode === '180' ? 'default' : 'ghost'}
+              size="sm"
+              className="justify-start"
+              onClick={() => onSelect('180')}
+            >
+              6 เดือน
+            </Button>
+            <Button
+              type="button"
+              variant={durationMode === '365' ? 'default' : 'ghost'}
+              size="sm"
+              className="justify-start"
+              onClick={() => onSelect('365')}
+            >
+              1 ปี
+            </Button>
+          </div>
+        </PopoverContent>
+      </Popover>
+      <button
+        type="button"
+        className={cn(
+          'inline-flex h-9 items-center gap-1 rounded-md border px-3.5 text-xs sm:text-sm font-medium leading-none transition-colors sm:ml-auto',
+          showCustomDateRange
+            ? 'border-primary/20 bg-muted/30 text-foreground'
+            : 'border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground'
+        )}
+        onClick={onToggleCustom}
+      >
+        <span>กำหนดเอง</span>
+        <ChevronDown className={cn('h-4 w-4 transition-transform duration-200', showCustomDateRange && 'rotate-180')} />
+      </button>
+    </div>
+  );
+}
+
+function applyCountryPresetRange(
+  mode: RangePreset,
+  setDateRange: (range: DateRange | undefined) => void,
+  setDurationMode: (mode: RangePreset | null) => void,
+  setFromCalendarMonth: (date: Date) => void,
+  setToCalendarMonth: (date: Date) => void,
+  setShowCustomDateRange: (show: boolean | ((prev: boolean) => boolean)) => void,
+  setIsExtendedRangeOpen: (open: boolean) => void,
+  setDateError: (error: boolean) => void,
+  bounds?: Pick<DashboardDateBoundsResponse, 'minDate' | 'recommendedEndDate'> | null,
+) {
+  const range = buildCountryPresetRange(mode, new Date(), bounds);
+
+  if (!range) {
+    setDateRange(undefined);
+    setDurationMode(mode);
+    setDateError(false);
+    return;
+  }
+
+  const from = range.from || new Date();
+  const to = range.to || from;
+
+  setDateRange({ from, to });
+  setFromCalendarMonth(from);
+  setToCalendarMonth(to);
+  setDurationMode(mode);
+  setShowCustomDateRange(false);
+  setIsExtendedRangeOpen(false);
+  setDateError(false);
+}
+
+function handleCountryCustomDateToggle(
+  setShowCustomDateRange: (show: boolean | ((prev: boolean) => boolean)) => void,
+  setDurationMode: (mode: RangePreset | null) => void,
+  setDateError: (error: boolean) => void,
+) {
+  setShowCustomDateRange((prev) => !prev);
+  setDurationMode(null);
+  setDateError(false);
+}
+
 export function CountryView() {
-  const { drillTo, selections, timeMode, rangePreset } = useDrillDown();
+  const { drillTo, selections, timeMode, rangePreset, setRangePreset } = useDrillDown();
   const country = selections.country || COUNTRIES.find(c => c.name === 'N. Macedonia') || COUNTRIES[0];
   const displayCountryName = resolveCountryDisplayName(country.name, country.countryCode);
   const countryQuery = (country.countryCode || country.name).trim();
@@ -111,10 +343,35 @@ export function CountryView() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined);
+  const [durationMode, setDurationMode] = useState<RangePreset | null>(rangePreset);
+  const [showCustomDateRange, setShowCustomDateRange] = useState(false);
+  const [fromCalendarMonth, setFromCalendarMonth] = useState(new Date());
+  const [toCalendarMonth, setToCalendarMonth] = useState(new Date());
+  const [isExtendedRangeOpen, setIsExtendedRangeOpen] = useState(false);
+  const [dateError, setDateError] = useState(false);
+  const hasLoadedOnceRef = useRef(false);
 
-  const presetRange = buildCountryPresetRange(rangePreset, new Date(), dateBounds);
-  const startDate = presetRange?.from ? formatLocalDateInput(presetRange.from) : undefined;
-  const endDate = presetRange?.to ? formatLocalDateInput(presetRange.to) : undefined;
+  const startDate = dateRange?.from ? formatLocalDateInput(dateRange.from) : undefined;
+  const endDate = dateRange?.to ? formatLocalDateInput(dateRange.to) : undefined;
+
+  useEffect(() => {
+    if (rangePreset === 'all' && !dateBounds?.minDate) {
+      return;
+    }
+
+    applyCountryPresetRange(
+      rangePreset,
+      setDateRange,
+      setDurationMode,
+      setFromCalendarMonth,
+      setToCalendarMonth,
+      setShowCustomDateRange,
+      setIsExtendedRangeOpen,
+      setDateError,
+      dateBounds,
+    );
+  }, [rangePreset, dateBounds]);
 
   useEffect(() => {
     let alive = true;
@@ -139,7 +396,12 @@ export function CountryView() {
   }, []);
 
   useEffect(() => {
-    if (!startDate || !endDate) {
+    if (!dateRange?.from || !dateRange?.to) {
+      if (showCustomDateRange) {
+        setDateError(true);
+        return;
+      }
+
       if (dateBounds) {
         setLoadError('ไม่สามารถกำหนดช่วงวันที่ได้');
         setIsLoading(false);
@@ -148,9 +410,12 @@ export function CountryView() {
     }
 
     let alive = true;
+    setDateError(false);
 
     const loadCountryOverview = async () => {
-      setIsLoading(true);
+      if (!hasLoadedOnceRef.current) {
+        setIsLoading(true);
+      }
       setLoadError(null);
 
       try {
@@ -182,6 +447,7 @@ export function CountryView() {
         setCountryDeltaText(
           `${payload.totals.deltaFlights >= 0 ? '▲' : '▼'} ${payload.totals.deltaFlights >= 0 ? '+' : ''}${payload.totals.deltaFlights.toLocaleString()} เที่ยวบิน (${payload.totals.deltaPercent >= 0 ? '+' : ''}${payload.totals.deltaPercent.toFixed(1)}%)`,
         );
+        hasLoadedOnceRef.current = true;
         setIsLoading(false);
       } catch {
         if (!alive) return;
@@ -194,6 +460,7 @@ export function CountryView() {
         setCountryDeltaPercent(0);
         setCountryDeltaText('ไม่สามารถโหลดข้อมูลประเทศได้');
         setLoadError('ไม่สามารถโหลดข้อมูลประเทศได้');
+        hasLoadedOnceRef.current = true;
         setIsLoading(false);
       }
     };
@@ -203,7 +470,7 @@ export function CountryView() {
     return () => {
       alive = false;
     };
-  }, [country.name, country.countryCode, countryQuery, startDate, endDate, retryToken]);
+  }, [country.name, country.countryCode, countryQuery, startDate, endDate, retryToken, showCustomDateRange, dateBounds, dateRange]);
 
   const totalRoutes = displayAirports.reduce((s, a) => s + a.routes, 0);
 
@@ -233,7 +500,7 @@ export function CountryView() {
     },
     {
       label: 'จุดหมายที่ให้บริการ',
-      value: `${totalRoutes}+`,
+      value: `${totalRoutes} Airport${totalRoutes !== 1 ? 's' : ''}`,
       delta: 'ครอบคลุมหลายภูมิภาค',
       deltaType: 'neutral',
       growthColored: false,
@@ -285,8 +552,103 @@ export function CountryView() {
             เลือกสนามบินใน {displayCountryName} เพื่อดูข้อมูลวิเคราะห์
           </p>
         </div>
-        <div className="shrink-0 self-start sm:self-auto">
-          <TimeToggle />
+        <div className="min-w-0 w-full sm:w-auto sm:min-w-[420px]">
+          <div className="mb-2 text-sm font-medium text-muted-foreground">ช่วงวันที่</div>
+          <CountryPresetBar
+            durationMode={durationMode}
+            isExtendedRangeOpen={isExtendedRangeOpen}
+            setIsExtendedRangeOpen={setIsExtendedRangeOpen}
+            showCustomDateRange={showCustomDateRange}
+            onToggleCustom={() => handleCountryCustomDateToggle(setShowCustomDateRange, setDurationMode, setDateError)}
+            onSelect={setRangePreset}
+          />
+          <div className="space-y-2 pt-0">
+            <div
+              className={cn(
+                'overflow-hidden transition-all duration-300 ease-in-out',
+                showCustomDateRange ? 'max-h-48 opacity-100' : 'max-h-0 opacity-0'
+              )}
+            >
+              <div className="grid w-full min-w-0 grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        'min-w-0 justify-start text-left font-normal h-11 sm:h-12 bg-white border-gray-300 focus-visible:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500/10 px-2.5 sm:px-3',
+                        !dateRange?.from && 'text-muted-foreground',
+                        dateError && !dateRange?.from && 'border-red-500 ring-1 ring-red-500/20'
+                      )}
+                    >
+                      <span className="truncate">{dateRange?.from ? format(dateRange.from, 'dd/MM/yyyy') : 'วันเริ่มต้น'}</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0 flight-routes-accent" align="start">
+                    <Calendar
+                      mode="single"
+                      month={fromCalendarMonth}
+                      onMonthChange={setFromCalendarMonth}
+                      selected={dateRange?.from}
+                      captionLayout="label"
+                      hideNavigation
+                      startMonth={new Date(CALENDAR_YEAR_RANGE[0], 0, 1)}
+                      endMonth={new Date(CALENDAR_YEAR_RANGE[CALENDAR_YEAR_RANGE.length - 1], 11, 1)}
+                      components={{
+                        MonthCaption: CountryCalendarCaption,
+                      }}
+                      onSelect={(date) => {
+                        setDurationMode(null);
+                        setDateError(false);
+                        if (date) setFromCalendarMonth(date);
+                        setDateRange((prev) => ({
+                          from: date,
+                          to: prev?.to && date && prev.to < date ? date : prev?.to,
+                        }));
+                      }}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        'min-w-0 justify-start text-left font-normal h-11 sm:h-12 bg-white border-gray-300 focus-visible:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500/10 px-2.5 sm:px-3',
+                        !dateRange?.to && 'text-muted-foreground'
+                      )}
+                    >
+                      <span className="truncate">{dateRange?.to ? format(dateRange.to, 'dd/MM/yyyy') : 'วันสิ้นสุด'}</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0 flight-routes-accent" align="start">
+                    <Calendar
+                      mode="single"
+                      month={toCalendarMonth}
+                      onMonthChange={setToCalendarMonth}
+                      selected={dateRange?.to}
+                      captionLayout="label"
+                      hideNavigation
+                      startMonth={new Date(CALENDAR_YEAR_RANGE[0], 0, 1)}
+                      endMonth={new Date(CALENDAR_YEAR_RANGE[CALENDAR_YEAR_RANGE.length - 1], 11, 1)}
+                      components={{
+                        MonthCaption: CountryCalendarCaption,
+                      }}
+                      onSelect={(date) => {
+                        setDurationMode(null);
+                        setDateError(false);
+                        if (date) setToCalendarMonth(date);
+                        setDateRange((prev) => ({ from: prev?.from, to: date }));
+                      }}
+                      disabled={(date) => (dateRange?.from ? date < dateRange.from : false)}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

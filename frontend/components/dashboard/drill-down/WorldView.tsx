@@ -896,7 +896,7 @@ export function WorldView() {
             <button
               type="button"
               className={cn(
-                'inline-flex h-9 items-center gap-1 rounded-md border px-3.5 text-xs sm:text-sm font-medium leading-none transition-colors',
+                'inline-flex h-9 items-center gap-1 rounded-md border px-3.5 text-xs sm:text-sm font-medium leading-none transition-colors sm:ml-auto',
                 showCustomDateRange
                   ? 'border-primary/20 bg-muted/30 text-foreground'
                   : 'border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground'

@@ -66,6 +66,13 @@ export async function getContinentTrends(
   return statisticsApi.getDashboardContinentTrends(continentName, options);
 }
 
+export async function getCountryOverview(
+  countryName: string,
+  options?: Parameters<typeof statisticsApi.getDashboardCountryOverview>[1],
+) {
+  return statisticsApi.getDashboardCountryOverview(countryName, options);
+}
+
 // ── Country level ──
 
 export function getCountryAirports(countryName: string): AirportInfo[] {

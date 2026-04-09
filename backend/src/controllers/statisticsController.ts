@@ -161,6 +161,7 @@ function buildDashboardQueryCacheKey(scope: string, query: Request['query']): st
     `window_days=${toQueryValue(query.window_days)}`,
     `start_date=${toQueryValue(query.start_date)}`,
     `end_date=${toQueryValue(query.end_date)}`,
+    `country=${toQueryValue(query.country)}`,
     `continent=${toQueryValue(query.continent)}`,
     `limit=${toQueryValue(query.limit)}`,
     `include_core=${toQueryValue(query.include_core)}`,
@@ -180,6 +181,35 @@ function addUtcDays(date: Date, days: number): Date {
   const next = new Date(date);
   next.setUTCDate(next.getUTCDate() + days);
   return next;
+}
+
+function addUtcMonths(date: Date, months: number): Date {
+  const next = new Date(date);
+  next.setUTCMonth(next.getUTCMonth() + months);
+  return next;
+}
+
+function buildPreloadChunks(startDate: string, endDate: string, chunkMonths = 3): Array<{ startDate: string; endDate: string }> {
+  const chunks: Array<{ startDate: string; endDate: string }> = [];
+  let currentStart = new Date(`${startDate}T00:00:00.000Z`);
+  const finalEnd = new Date(`${endDate}T00:00:00.000Z`);
+
+  while (currentStart <= finalEnd) {
+    const nextChunkStart = addUtcMonths(currentStart, chunkMonths);
+    const chunkEnd = new Date(nextChunkStart);
+    chunkEnd.setUTCDate(chunkEnd.getUTCDate() - 1);
+
+    const effectiveEnd = chunkEnd < finalEnd ? chunkEnd : finalEnd;
+
+    chunks.push({
+      startDate: formatDateForKey(currentStart),
+      endDate: formatDateForKey(effectiveEnd),
+    });
+
+    currentStart = addUtcDays(effectiveEnd, 1);
+  }
+
+  return chunks;
 }
 
 function buildPresetDateRange(
@@ -288,13 +318,108 @@ export async function warmDashboardCachesOnStartup(): Promise<{ attempted: numbe
 
     for (const preset of DASHBOARD_PRELOAD_PRESETS) {
       const { startDate, endDate } = buildPresetDateRange(preset, bounds.minDate, bounds.recommendedEndDate, utcToday);
+      const chunks = buildPreloadChunks(startDate, endDate, 3);
+
+      console.log(`[dashboard-preload] preset ${preset} start (${startDate} -> ${endDate}); chunks=${chunks.length}`);
+
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+        const chunk = chunks[chunkIndex];
+        const query = {
+          window_days: '15',
+          start_date: chunk.startDate,
+          end_date: chunk.endDate,
+        } as Request['query'];
+
+        console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} start (${chunk.startDate} -> ${chunk.endDate})`);
+
+        const tasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
+          {
+            scope: 'dashboard-summary',
+            run: () => DashboardSummaryService.getWorldSummary({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+          },
+          {
+            scope: 'dashboard-top-ranks',
+            run: () => DashboardSummaryService.getWorldTopRanks({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+          },
+          {
+            scope: 'dashboard-top-destinations',
+            run: () => DashboardSummaryService.getWorldTopDestinations({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+          },
+        ];
+
+        for (const task of tasks) {
+          attempted += 1;
+          setDashboardPreloadStatus({ attempted, failed });
+          try {
+            const cacheKey = buildDashboardQueryCacheKey(task.scope, query);
+            await getOrSetDashboardQueryCache(cacheKey, task.run);
+          } catch {
+            failed += 1;
+            setDashboardPreloadStatus({ attempted, failed });
+          }
+        }
+
+        // Flush each 3-month chunk before moving on so the snapshot and RAM stay bounded.
+        await waitForDashboardCacheWrites();
+        const cleared = clearDashboardMemoryCache();
+
+        console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} done; dump-flushed=yes; memory-cleared=${cleared.totalCleared}`);
+      }
+
+      console.log(`[dashboard-preload] preset ${preset} done; chunked-flush=3-month; chunks=${chunks.length}`);
+    }
+
+    finishDashboardPreload('completed', attempted, failed);
+    console.log(`[dashboard-preload] completed in ${dashboardPreloadStatus.durationMinutes.toFixed(2)} min; attempted=${attempted}; failed=${failed}; dumped-to=${DASHBOARD_CACHE_FILE}`);
+    return { attempted, failed };
+  } catch (error) {
+    finishDashboardPreload('failed', attempted, failed, error instanceof Error ? error.message : String(error));
+    console.warn(`[dashboard-preload] failed in ${dashboardPreloadStatus.durationMinutes.toFixed(2)} min; attempted=${attempted}; failed=${failed}; error=${dashboardPreloadStatus.error}`);
+    throw error;
+  }
+}
+
+export async function refreshDashboardQueryCacheSnapshot(options?: {
+  clearFirst?: boolean;
+  preset?: DashboardPreloadPreset;
+  fullPreload?: boolean;
+}) {
+  const clearFirst = options?.clearFirst ?? true;
+  const preset = options?.preset ?? 'focus';
+  const fullPreload = options?.fullPreload ?? false;
+  let cleared = {
+    queryCache: { cacheEntries: 0, inFlightEntries: 0, totalCleared: 0 },
+    memoryCache: { totalCleared: 0 },
+  };
+
+  if (clearFirst) {
+    const queryCache = await clearDashboardQueryCacheStore();
+    const memoryCache = clearDashboardMemoryCache();
+    cleared = {
+      queryCache,
+      memoryCache,
+    };
+  }
+
+  let preload: { attempted: number; failed: number };
+
+  if (fullPreload) {
+    preload = await warmDashboardCachesOnStartup();
+  } else {
+    const boundsKey = buildDashboardQueryCacheKey('dashboard-date-bounds', {} as Request['query']);
+    const bounds = await getOrSetDashboardQueryCache(boundsKey, () => DashboardSummaryService.getDashboardDataBounds());
+
+    if (!bounds.minDate || !bounds.recommendedEndDate) {
+      preload = { attempted: 0, failed: 0 };
+    } else {
+      const now = new Date();
+      const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      const { startDate, endDate } = buildPresetDateRange(preset, bounds.minDate, bounds.recommendedEndDate, utcToday);
       const query = {
         window_days: '15',
         start_date: startDate,
         end_date: endDate,
       } as Request['query'];
-
-      console.log(`[dashboard-preload] preset ${preset} start (${startDate} -> ${endDate})`);
 
       const tasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
         {
@@ -311,33 +436,37 @@ export async function warmDashboardCachesOnStartup(): Promise<{ attempted: numbe
         },
       ];
 
+      let attempted = 0;
+      let failed = 0;
+
       for (const task of tasks) {
         attempted += 1;
-        setDashboardPreloadStatus({ attempted, failed });
         try {
           const cacheKey = buildDashboardQueryCacheKey(task.scope, query);
           await getOrSetDashboardQueryCache(cacheKey, task.run);
         } catch {
           failed += 1;
-          setDashboardPreloadStatus({ attempted, failed });
         }
       }
 
-      // Ensure all disk writes are completed before releasing per-preset RAM caches.
       await waitForDashboardCacheWrites();
-      const cleared = clearDashboardMemoryCache();
-
-      console.log(`[dashboard-preload] preset ${preset} done; dump-flushed=yes; memory-cleared=${cleared.totalCleared}`);
+      preload = { attempted, failed };
     }
-
-    finishDashboardPreload('completed', attempted, failed);
-    console.log(`[dashboard-preload] completed in ${dashboardPreloadStatus.durationMinutes.toFixed(2)} min; attempted=${attempted}; failed=${failed}; dumped-to=${DASHBOARD_CACHE_FILE}`);
-    return { attempted, failed };
-  } catch (error) {
-    finishDashboardPreload('failed', attempted, failed, error instanceof Error ? error.message : String(error));
-    console.warn(`[dashboard-preload] failed in ${dashboardPreloadStatus.durationMinutes.toFixed(2)} min; attempted=${attempted}; failed=${failed}; error=${dashboardPreloadStatus.error}`);
-    throw error;
   }
+
+  const queryCache = await getDashboardQueryCacheStats();
+  const memoryCache = getDashboardMemoryCacheStats();
+
+  return {
+    clearFirst,
+    preset,
+    fullPreload,
+    cleared,
+    preload,
+    queryCache,
+    memoryCache,
+    preloadStatus: { ...dashboardPreloadStatus },
+  };
 }
 
 /**
@@ -801,6 +930,50 @@ export async function getDashboardContinentTrends(req: Request, res: Response, n
     });
 
     res.json(trends);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get country overview data for drill-down dashboard
+ * GET /api/statistics/dashboard-country-overview?country=Thailand&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+ */
+export async function getDashboardCountryOverview(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { country, date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!country || typeof country !== 'string') {
+      res.status(400).json({
+        error: 'Missing country parameter',
+        message: 'country is required',
+      });
+      return;
+    }
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-country-overview', req.query);
+    const overview = await getOrSetDashboardQueryCache(cacheKey, () =>
+      DashboardSummaryService.getCountryOverview({
+        country,
+        centerDateInput: typeof date === 'string' ? date : undefined,
+        windowDays,
+        startDateInput: typeof start_date === 'string' ? start_date : undefined,
+        endDateInput: typeof end_date === 'string' ? end_date : undefined,
+      })
+    );
+
+    res.json(overview);
   } catch (error) {
     next(error);
   }

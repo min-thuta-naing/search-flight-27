@@ -5,6 +5,7 @@ import airlineRoutes from './airlineRoutes';
 import destinationRoutes from './destinationRoutes';
 import statisticsRoutes from './statisticsRoutes';
 import healthRoutes from './healthRoutes';
+import debugRoutes from './debugRoutes';
 
 const router = Router();
 
@@ -15,6 +16,7 @@ router.use('/airlines', airlineRoutes);
 router.use('/destinations', destinationRoutes);
 router.use('/statistics', statisticsRoutes);
 router.use('/health', healthRoutes);
+router.use('/debug', debugRoutes);
 
 export default router;
 

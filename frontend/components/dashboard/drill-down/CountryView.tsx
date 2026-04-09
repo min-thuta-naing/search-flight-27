@@ -1,5 +1,8 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import { addDays, subDays } from 'date-fns';
+
 import {
   ResponsiveContainer,
   PieChart,
@@ -10,32 +13,159 @@ import {
 import {
   COUNTRIES,
   growthDeltaTypeFromPct,
-  growthTextClass,
   parsePercentFromDelta,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import {
+  getCountryOverview,
   getCountryAirports,
   getCountryTopAirline,
   getCountryTopAirlineSharePercent,
   getCountryInbound,
   getCountryAirlineMarketShare,
 } from '@/lib/dashboard/services/drilldown';
+import { runDrillDownRequest } from '@/lib/dashboard/drill-down-cache';
+import { statisticsApi, type DashboardDateBoundsResponse } from '@/lib/api/statistics-api';
 import { useDrillDown, KPIRow, BackButton, TimeToggle } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
-import type { AirportInfo, TimeMode } from '@/types/dashboard';
+import type { RangePreset } from './DrillDownDashboard';
+import type { AirportInfo } from '@/types/dashboard';
+
+function parseIsoDateInput(dateInput?: string | null) {
+  if (!dateInput) return null;
+  const parsed = new Date(`${dateInput.split('T')[0]}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatLocalDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildCountryPresetRange(
+  mode: RangePreset,
+  baseDate = new Date(),
+  bounds?: Pick<DashboardDateBoundsResponse, 'minDate' | 'recommendedEndDate'> | null,
+) {
+  if (mode === 'focus') return { from: subDays(baseDate, 15), to: addDays(baseDate, 15) };
+  if (mode === '7') return { from: baseDate, to: addDays(baseDate, 6) };
+  if (mode === '30') return { from: baseDate, to: addDays(baseDate, 29) };
+  if (mode === '90') return { from: baseDate, to: addDays(baseDate, 89) };
+  if (mode === '180') return { from: baseDate, to: addDays(baseDate, 179) };
+  if (mode === '365') return { from: baseDate, to: addDays(baseDate, 364) };
+
+  const minDate = parseIsoDateInput(bounds?.minDate || null);
+  const recommendedEndDate = parseIsoDateInput(bounds?.recommendedEndDate || null);
+  if (!minDate || !recommendedEndDate) return null;
+  return { from: minDate, to: recommendedEndDate };
+}
 
 export function CountryView() {
-  const { drillTo, selections, timeMode } = useDrillDown();
+  const { drillTo, selections, timeMode, rangePreset } = useDrillDown();
   const country = selections.country || COUNTRIES.find(c => c.name === 'N. Macedonia') || COUNTRIES[0];
 
-  const displayAirports = getCountryAirports(country.name);
-  const topAirlineName = getCountryTopAirline(country.name);
-  const topAirlineSharePct = getCountryTopAirlineSharePercent(country.name);
+  const fallbackAirports = getCountryAirports(country.name);
+  const fallbackInbound = getCountryInbound(country.name);
+  const fallbackAirlineMarket = getCountryAirlineMarketShare(country.name);
+  const fallbackTopAirlineName = getCountryTopAirline(country.name);
+  const fallbackTopAirlineSharePct = getCountryTopAirlineSharePercent(country.name);
+
+  const [dateBounds, setDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
+  const [displayAirports, setDisplayAirports] = useState<AirportInfo[]>(fallbackAirports);
+  const [inboundRows, setInboundRows] = useState(fallbackInbound);
+  const [airlineMarketRows, setAirlineMarketRows] = useState(fallbackAirlineMarket);
+  const [topAirlineName, setTopAirlineName] = useState(fallbackTopAirlineName);
+  const [topAirlineSharePct, setTopAirlineSharePct] = useState<number | undefined>(fallbackTopAirlineSharePct);
+  const [countryFlights, setCountryFlights] = useState(country.flights);
+  const [countryDeltaText, setCountryDeltaText] = useState(`${country.deltaN >= 0 ? '▲' : '▼'} ${country.deltaN >= 0 ? '+' : ''}${country.deltaN} เที่ยวบิน (${country.delta})`);
+  const [countryDeltaPercent, setCountryDeltaPercent] = useState(parsePercentFromDelta(country.delta) ?? 0);
+
+  const presetRange = buildCountryPresetRange(rangePreset, new Date(), dateBounds);
+  const startDate = presetRange?.from ? formatLocalDateInput(presetRange.from) : undefined;
+  const endDate = presetRange?.to ? formatLocalDateInput(presetRange.to) : undefined;
+
+  useEffect(() => {
+    let alive = true;
+
+    const loadBounds = async () => {
+      try {
+        const bounds = await runDrillDownRequest('country:date-bounds', () => statisticsApi.getDashboardDateBounds());
+        if (!alive) return;
+        setDateBounds(bounds);
+      } catch {
+        if (!alive) return;
+        setDateBounds(null);
+      }
+    };
+
+    void loadBounds();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!startDate || !endDate) {
+      return;
+    }
+
+    let alive = true;
+
+    const loadCountryOverview = async () => {
+      try {
+        const payload = await runDrillDownRequest(
+          `country:overview:${country.name}:${startDate}__${endDate}`,
+          () => getCountryOverview(country.name, { startDate, endDate, timeoutMs: 60000 }),
+        );
+
+        if (!alive) return;
+
+        const colors = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#22c55e'];
+        setDisplayAirports(payload.airports.map((airport, idx) => ({
+          iata: airport.iata,
+          name: airport.name,
+          flights: airport.flights,
+          routes: airport.routes,
+          airlines: airport.airlines,
+          color: colors[idx % colors.length],
+        })));
+        setInboundRows(payload.inbound);
+        setAirlineMarketRows(payload.airlineMarket.map((airline, idx) => ({
+          ...airline,
+          color: colors[idx % colors.length],
+        })));
+        setTopAirlineName(payload.topAirline.name || fallbackTopAirlineName);
+        setTopAirlineSharePct(payload.topAirline.sharePercent ?? undefined);
+        setCountryFlights(payload.totals.flights);
+        setCountryDeltaPercent(payload.totals.deltaPercent);
+        setCountryDeltaText(
+          `${payload.totals.deltaFlights >= 0 ? '▲' : '▼'} ${payload.totals.deltaFlights >= 0 ? '+' : ''}${payload.totals.deltaFlights.toLocaleString()} เที่ยวบิน (${payload.totals.deltaPercent >= 0 ? '+' : ''}${payload.totals.deltaPercent.toFixed(1)}%)`,
+        );
+      } catch {
+        if (!alive) return;
+        setDisplayAirports(fallbackAirports);
+        setInboundRows(fallbackInbound);
+        setAirlineMarketRows(fallbackAirlineMarket);
+        setTopAirlineName(fallbackTopAirlineName);
+        setTopAirlineSharePct(fallbackTopAirlineSharePct);
+        setCountryFlights(country.flights);
+        setCountryDeltaPercent(parsePercentFromDelta(country.delta) ?? 0);
+        setCountryDeltaText(`${country.deltaN >= 0 ? '▲' : '▼'} ${country.deltaN >= 0 ? '+' : ''}${country.deltaN} เที่ยวบิน (${country.delta})`);
+      }
+    };
+
+    void loadCountryOverview();
+
+    return () => {
+      alive = false;
+    };
+  }, [country.name, startDate, endDate]);
 
   const totalRoutes = displayAirports.reduce((s, a) => s + a.routes, 0);
 
-  const countryPct = parsePercentFromDelta(country.delta);
+  const countryPct = countryDeltaPercent;
   const countryFlightTone =
     countryPct != null
       ? growthDeltaTypeFromPct(countryPct, timeMode)
@@ -46,8 +176,8 @@ export function CountryView() {
   const kpis: KPIItem[] = [
     {
       label: 'เที่ยวบินทั้งหมด',
-      value: country.flights.toLocaleString(),
-      delta: `${country.deltaN >= 0 ? '\u25B2' : '\u25BC'} ${country.deltaN >= 0 ? '+' : ''}${country.deltaN} เที่ยวบิน (${country.delta})`,
+      value: countryFlights.toLocaleString(),
+      delta: countryDeltaText,
       deltaType: countryFlightTone,
       accentColor: KPI_ACCENT.flights,
     },
@@ -102,8 +232,8 @@ export function CountryView() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        <InboundCountriesPanel countryName={country.name} timeMode={timeMode} />
-        <AirlineMarketSharePanel countryName={country.name} timeMode={timeMode} />
+        <InboundCountriesPanel countryName={country.name} rows={inboundRows} />
+        <AirlineMarketSharePanel countryName={country.name} rows={airlineMarketRows} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
@@ -207,71 +337,120 @@ function BusiestAirportsPanel({ displayAirports }: { displayAirports: AirportInf
   );
 }
 
-function InboundCountriesPanel({ countryName, timeMode }: { countryName: string; timeMode: TimeMode }) {
-  const sorted = getCountryInbound(countryName);
-  const max = sorted[0]?.flights || 1;
-  const avgPct = sorted.length ? sorted.reduce((sum, item) => sum + item.pct, 0) / sorted.length : 0;
+function InboundCountriesPanel({
+  countryName,
+  rows,
+}: {
+  countryName: string;
+  rows: ReturnType<typeof getCountryInbound>;
+}) {
+  const sorted = rows;
 
   return (
     <div className="bg-card border border-border rounded-[10px] p-5 h-full">
-      <div className="text-[16px] font-bold mb-4 break-words">
-        {'🛬'} 5 อันดับประเทศขาเข้า {'\u2014'} เที่ยวบินที่เข้าสู่ {countryName}
+      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-[16px] font-bold break-words">
+          {'🛬'} Top Inbound Countries — {countryName}
+        </div>
+        <div className="text-xs text-muted-foreground">อ้างอิง 5 อันดับล่าสุด</div>
       </div>
-      {sorted.map((c, i) => {
-        const barW = (c.flights / max * 100).toFixed(0);
-        const deltaPct = c.pct - avgPct;
-        const relTone = growthDeltaTypeFromPct(deltaPct, timeMode);
-        return (
-          <div key={c.name} className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2.5 py-2 border-b border-border/60 last:border-b-0">
-            <div className="flex items-center gap-2.5">
-              <span className="text-[14px] text-muted-foreground w-6 text-center shrink-0 font-bold">{i + 1}</span>
-              <span className="text-lg shrink-0">{c.flag}</span>
-              <span className="text-[15px] font-medium flex-1 min-w-0">{c.name}</span>
-            </div>
-            <div className="flex items-center gap-2.5 pl-[calc(1.5rem+0.625rem+1.125rem+0.625rem)] sm:pl-0 sm:ml-auto sm:shrink-0">
-              <div className="w-24 h-2 bg-muted rounded-full overflow-hidden shrink-0"><div className="h-full bg-primary rounded-full" style={{ width: `${barW}%` }} /></div>
-              <span className="text-[15px] font-bold w-12 text-right shrink-0 tabular-nums">{c.flights.toLocaleString()}</span>
-              <span className="text-[14px] text-muted-foreground w-14 text-right shrink-0 font-bold tabular-nums">{c.pct}%</span>
-              <span className={`text-[14px] w-14 text-right shrink-0 font-bold tabular-nums ${growthTextClass(relTone)}`}>
-                {deltaPct >= 0 ? '▲' : '▼'} {deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%
-              </span>
-            </div>
-          </div>
-        );
-      })}
+
+      <div className="overflow-x-auto rounded-[10px] border border-border/70">
+        <table className="w-full min-w-[420px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/20">
+              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
+              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ประเทศ</th>
+              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.length === 0 ? (
+              <tr>
+                <td colSpan={3} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  ไม่พบข้อมูลประเทศขาเข้า
+                </td>
+              </tr>
+            ) : (
+              sorted.map((c, i) => (
+                <tr key={c.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
+                  <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">{c.flag}</span>
+                      <span className="font-medium text-foreground">{c.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{c.flights.toLocaleString()}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
 
-function AirlineMarketSharePanel({ countryName, timeMode }: { countryName: string; timeMode: TimeMode }) {
-  const airlines = getCountryAirlineMarketShare(countryName);
+function AirlineMarketSharePanel({
+  countryName,
+  rows,
+}: {
+  countryName: string;
+  rows: ReturnType<typeof getCountryAirlineMarketShare>;
+}) {
+  const airlines = rows;
   const max = airlines[0]?.flights || 1;
 
   return (
     <div className="bg-card border border-border rounded-[10px] p-5 h-full">
-      <div className="text-[16px] font-bold mb-4 break-words">
-        {'✈️'} 5 อันดับสายการบินครองส่วนแบ่งตลาดใน{countryName}
+      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-[16px] font-bold break-words">
+          {'✈️'} Top Airlines Market Share — {countryName}
+        </div>
+        <div className="text-xs text-muted-foreground">อ้างอิง 5 อันดับล่าสุด</div>
       </div>
-      {airlines.map((airline, i) => {
-        const barW = (airline.flights / max * 100).toFixed(0);
-        const shareTone = growthDeltaTypeFromPct(airline.delta, timeMode);
-        return (
-          <div key={airline.name} className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2.5 py-2 border-b border-border/60 last:border-b-0">
-            <div className="flex items-center gap-2.5">
-              <span className="text-[14px] text-muted-foreground w-6 text-center shrink-0 font-bold">{i + 1}</span>
-              <span className="text-[15px] font-medium flex-1 min-w-0">{airline.name}</span>
-            </div>
-            <div className="flex items-center gap-2.5 pl-[calc(1.5rem+0.625rem)] sm:pl-0 sm:ml-auto sm:shrink-0">
-              <div className="w-24 h-2 bg-muted rounded-full overflow-hidden shrink-0"><div className="h-full bg-primary rounded-full" style={{ width: `${barW}%` }} /></div>
-              <span className="text-[15px] font-bold w-12 text-right shrink-0 tabular-nums">{airline.flights.toLocaleString()}</span>
-              <span className="text-[14px] text-muted-foreground w-14 text-right shrink-0 font-bold tabular-nums">{airline.share.toFixed(1)}%</span>
-              <span className={`text-[14px] w-14 text-right shrink-0 font-bold tabular-nums ${growthTextClass(shareTone)}`}>
-                {airline.delta >= 0 ? '▲' : '▼'} {airline.delta >= 0 ? '+' : ''}{airline.delta.toFixed(1)}%
-              </span>
-            </div>
-          </div>
-        );
-      })}
+
+      <div className="overflow-x-auto rounded-[10px] border border-border/70">
+        <table className="w-full min-w-[520px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/20">
+              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
+              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">สายการบิน</th>
+              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
+              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ส่วนแบ่ง</th>
+            </tr>
+          </thead>
+          <tbody>
+            {airlines.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  ไม่พบข้อมูลสายการบิน
+                </td>
+              </tr>
+            ) : (
+              airlines.map((airline, i) => {
+                const barW = (airline.flights / max * 100).toFixed(0);
+                return (
+                  <tr key={airline.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
+                    <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-2.5">
+                        <span className="font-medium text-foreground">{airline.name}</span>
+                        <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
+                          <div className="h-full rounded-full bg-primary" style={{ width: `${barW}%` }} />
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{airline.flights.toLocaleString()}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground font-bold">{airline.share.toFixed(1)}%</td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

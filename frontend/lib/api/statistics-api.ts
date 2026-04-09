@@ -68,7 +68,7 @@ export interface DashboardSummaryResponse {
   activeAirports: number;
   averageFlightsPerDay: number;
   busiestContinent: {
-    key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+    key: string;
     label: string;
     icon: string;
     airportCount: number;
@@ -80,7 +80,7 @@ export interface DashboardSummaryResponse {
     deltaPercent: number;
   };
   continentBreakdown: Array<{
-    key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+    key: string;
     label: string;
     icon: string;
     airportCount: number;
@@ -94,7 +94,7 @@ export interface DashboardSummaryResponse {
 }
 
 export interface DashboardContinentCardResponse {
-  key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+  key: string;
   label: string;
   icon: string;
   airports: string;
@@ -128,6 +128,9 @@ export interface DashboardContinentsResponse {
 export interface DashboardTopCountryRankResponse {
   countryCode: string | null;
   name: string;
+  continentKey: string;
+  continentLabel: string;
+  continentIcon: string;
   airportCount: number;
   flights: number;
   previousFlights: number;
@@ -140,6 +143,9 @@ export interface DashboardTopAirportRankResponse {
   airportName: string;
   city: string;
   country: string;
+  continentKey: string;
+  continentLabel: string;
+  continentIcon: string;
   flights: number;
   previousFlights: number;
   deltaFlights: number;
@@ -186,6 +192,54 @@ export interface DashboardTopDestinationsResponse {
   comparisonEnd: string;
   departures: DashboardTopAirportRankResponse[];
   arrivals: DashboardTopAirportRankResponse[];
+}
+
+export interface DashboardCountryAirportBreakdownResponse {
+  iata: string;
+  name: string;
+  flights: number;
+  routes: number;
+  airlines: number;
+}
+
+export interface DashboardCountryInboundBreakdownResponse {
+  flag: string;
+  name: string;
+  flights: number;
+  pct: number;
+}
+
+export interface DashboardCountryAirlineBreakdownResponse {
+  name: string;
+  flights: number;
+  share: number;
+  delta: number;
+}
+
+export interface DashboardCountryOverviewResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  country: {
+    name: string;
+    code: string | null;
+  };
+  totals: {
+    flights: number;
+    previousFlights: number;
+    deltaFlights: number;
+    deltaPercent: number;
+  };
+  airports: DashboardCountryAirportBreakdownResponse[];
+  inbound: DashboardCountryInboundBreakdownResponse[];
+  airlineMarket: DashboardCountryAirlineBreakdownResponse[];
+  topAirline: {
+    name: string;
+    sharePercent: number | null;
+  };
 }
 
 export interface DashboardContinentDetailResponse {
@@ -534,6 +588,31 @@ export class StatisticsApi {
       start_date: startDate,
       end_date: endDate,
     }, { signal });
+  }
+
+  /**
+   * Get country overview for drill-down dashboard.
+   */
+  async getDashboardCountryOverview(
+    country: string,
+    options: DashboardQueryOptions = {},
+  ): Promise<DashboardCountryOverviewResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardCountryOverviewResponse>('/statistics/dashboard-country-overview', {
+      country,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal, timeoutMs });
   }
 
   /**

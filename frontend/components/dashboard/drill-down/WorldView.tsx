@@ -53,6 +53,9 @@ type TopCountryViewRow = {
   countryCode: string | null;
   name: string;
   flag?: string;
+  continentKey: string;
+  continentLabel: string;
+  continentIcon: string;
   airportCount: number;
   flights: number;
   previousFlights: number;
@@ -65,6 +68,9 @@ type TopAirportViewRow = {
   airportName: string;
   city: string;
   country: string;
+  continentKey: string;
+  continentLabel: string;
+  continentIcon: string;
   flights: number;
   previousFlights: number;
   deltaFlights: number;
@@ -757,17 +763,19 @@ export function WorldView() {
   const summaryRangeText = isMounted ? formatRangeLabel(dateRange) : 'กำลังเลือกช่วงวันที่';
   const activePresetLabel = durationMode ? RANGE_PRESET_LABELS[durationMode] : 'กำหนดเอง';
   const handleDrillToCountry = (row: TopCountryViewRow) => {
-    const continentLabel = resolveContinentLabelByCountry(row.name, row.countryCode);
+    const continentLabel = row.continentLabel || 'Other';
+    const continentIcon = row.continentIcon || '🌐';
     drillTo('country', {
-      continent: toContinentSelection(continentLabel) as any,
+      continent: toContinentSelection(continentLabel, continentIcon) as any,
       country: toCountrySelection(row),
     });
   };
   const handleDrillToAirport = (row: TopAirportViewRow) => {
     const countryName = row.country?.trim() || 'Unknown';
-    const continentLabel = resolveContinentLabelByCountry(countryName, null);
+    const continentLabel = row.continentLabel || 'Other';
+    const continentIcon = row.continentIcon || '🌐';
     drillTo('airport', {
-      continent: toContinentSelection(continentLabel) as any,
+      continent: toContinentSelection(continentLabel, continentIcon) as any,
       country: {
         flag: '🌐',
         name: countryName,
@@ -1212,33 +1220,10 @@ function toAirportSelection(row: TopAirportViewRow): AirportInfo {
   };
 }
 
-function resolveContinentLabelByCountry(countryName?: string, countryCode?: string | null): string {
-  const code = (countryCode || '').trim().toUpperCase();
-  const name = (countryName || '').trim().toLowerCase();
-
-  const asiaCodes = new Set(['TH', 'CN', 'JP', 'KR', 'SG', 'MY', 'VN', 'ID', 'PH', 'IN', 'HK', 'TW']);
-  const europeCodes = new Set(['GB', 'FR', 'DE', 'IT', 'ES', 'NL', 'CH', 'AT', 'PL', 'SE', 'NO', 'FI', 'BE', 'PT']);
-  const naCodes = new Set(['US', 'CA', 'MX']);
-  const saCodes = new Set(['BR', 'AR', 'CL', 'CO', 'PE']);
-  const meCodes = new Set(['AE', 'SA', 'QA', 'KW', 'OM', 'BH', 'IL', 'JO']);
-  const africaCodes = new Set(['ZA', 'EG', 'MA', 'KE', 'ET', 'NG', 'TZ']);
-  const oceaniaCodes = new Set(['AU', 'NZ', 'FJ']);
-
-  if (asiaCodes.has(code) || /thailand|china|japan|korea|singapore|malaysia|vietnam|indonesia|india|philippines/.test(name)) return 'Asia-Pacific';
-  if (europeCodes.has(code) || /united kingdom|france|germany|italy|spain|netherlands|switzerland|austria|poland|sweden|norway|finland|belgium|portugal/.test(name)) return 'Europe';
-  if (naCodes.has(code) || /united states|canada|mexico/.test(name)) return 'North America';
-  if (saCodes.has(code) || /brazil|argentina|chile|colombia|peru/.test(name)) return 'South America';
-  if (meCodes.has(code) || /united arab emirates|saudi|qatar|kuwait|oman|bahrain|israel|jordan/.test(name)) return 'Middle East';
-  if (africaCodes.has(code) || /south africa|egypt|morocco|kenya|ethiopia|nigeria|tanzania/.test(name)) return 'Africa';
-  if (oceaniaCodes.has(code) || /australia|new zealand|fiji/.test(name)) return 'Oceania';
-
-  return 'Asia-Pacific';
-}
-
-function toContinentSelection(label: string) {
+function toContinentSelection(label: string, icon = '🌐') {
   return {
     name: label,
-    icon: label === 'Europe' ? '🏰' : label === 'North America' || label === 'South America' ? '🌎' : label === 'Middle East' ? '🕌' : label === 'Africa' ? '🦁' : '🌏',
+    icon,
     airports: '0 สนามบิน · 0 ประเทศ',
     flights: 0,
     delta: '▲ +0 (0.0%)',
@@ -1769,7 +1754,7 @@ function CountryLookupPanel() {
                         className="w-full cursor-pointer text-left"
                         onClick={() =>
                           drillTo('country', {
-                            continent: toContinentSelection(resolveContinentLabelByCountry(row.name, row.code)) as any,
+                            continent: toContinentSelection('Other', '🌐') as any,
                             country: {
                               flag: flagFromCountryCode(row.code),
                               name: row.name,
@@ -1793,7 +1778,7 @@ function CountryLookupPanel() {
                         className="w-full cursor-pointer text-left"
                         onClick={() =>
                           drillTo('country', {
-                            continent: toContinentSelection(resolveContinentLabelByCountry(row.name, row.code)) as any,
+                            continent: toContinentSelection('Other', '🌐') as any,
                             country: {
                               flag: flagFromCountryCode(row.code),
                               name: row.name,

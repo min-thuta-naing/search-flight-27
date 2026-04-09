@@ -242,6 +242,47 @@ export interface DashboardCountryOverviewResponse {
   };
 }
 
+export interface DashboardAirportOverviewResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  airport: {
+    code: string;
+    name: string;
+    city: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  totals: {
+    flights: number;
+    previousFlights: number;
+    deltaFlights: number;
+    deltaPercent: number;
+    daysInPeriod: number;
+  };
+  topDestination: {
+    iata: string;
+    name: string;
+    city: string;
+    country: string;
+    flag: string;
+    flights: number;
+  } | null;
+  topAirline: {
+    id: number;
+    name: string;
+    flights: number;
+    sharePercent: number;
+  } | null;
+  busiestDepartureHour: {
+    hour: number;
+    flights: number;
+  };
+}
+
 export interface DashboardContinentDetailResponse {
   centerDate: string;
   windowDays: number;
@@ -608,6 +649,31 @@ export class StatisticsApi {
 
     return apiClient.get<DashboardCountryOverviewResponse>('/statistics/dashboard-country-overview', {
       country,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get airport overview KPI payload for airport drill-down dashboard.
+   */
+  async getDashboardAirportOverview(
+    airport: string,
+    options: DashboardQueryOptions = {},
+  ): Promise<DashboardAirportOverviewResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardAirportOverviewResponse>('/statistics/dashboard-airport-overview', {
+      airport,
       date,
       window_days: windowDays,
       start_date: startDate,

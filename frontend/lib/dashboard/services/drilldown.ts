@@ -120,6 +120,13 @@ export function getCountryAirlineMarketShare(countryName: string): CountryAirlin
   });
 }
 
+export async function getAirportOverview(
+  airportCode: string,
+  options?: Parameters<typeof statisticsApi.getDashboardAirportOverview>[1],
+) {
+  return statisticsApi.getDashboardAirportOverview(airportCode, options);
+}
+
 // ── Airport level ──
 
 /**

@@ -193,6 +193,7 @@ function buildDashboardQueryCacheKey(scope: string, query: Request['query']): st
     `window_days=${toQueryValue(query.window_days)}`,
     `start_date=${toQueryValue(query.start_date)}`,
     `end_date=${toQueryValue(query.end_date)}`,
+    `airport=${toQueryValue(query.airport)}`,
     `country=${toQueryValue(query.country)}`,
     `continent=${toQueryValue(query.continent)}`,
     `limit=${toQueryValue(query.limit)}`,
@@ -1300,6 +1301,62 @@ export async function getDashboardCountryOverview(req: Request, res: Response, n
     const overview = await getOrSetDashboardQueryCache(cacheKey, () =>
       DashboardSummaryService.getCountryOverview({
         country,
+        centerDateInput: typeof date === 'string' ? date : undefined,
+        windowDays,
+        startDateInput: typeof start_date === 'string' ? start_date : undefined,
+        endDateInput: typeof end_date === 'string' ? end_date : undefined,
+      })
+    );
+
+    res.json(overview);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get airport overview KPI data for airport drill-down dashboard
+ * GET /api/statistics/dashboard-airport-overview?airport=BKK&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+ */
+export async function getDashboardAirportOverview(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { airport, date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!airport || typeof airport !== 'string') {
+      res.status(400).json({
+        error: 'Missing airport parameter',
+        message: 'airport is required',
+      });
+      return;
+    }
+
+    const airportCode = airport.trim().toUpperCase();
+    if (!/^[A-Z0-9]{3,4}$/.test(airportCode)) {
+      res.status(400).json({
+        error: 'Invalid airport parameter',
+        message: 'airport must be an airport code (3-4 alphanumeric characters)',
+      });
+      return;
+    }
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-airport-overview-v3', {
+      ...req.query,
+      airport: airportCode,
+    });
+    const overview = await getOrSetDashboardQueryCache(cacheKey, () =>
+      DashboardSummaryService.getAirportOverview({
+        airportCode,
         centerDateInput: typeof date === 'string' ? date : undefined,
         windowDays,
         startDateInput: typeof start_date === 'string' ? start_date : undefined,

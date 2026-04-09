@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useId } from 'react';
+import { useEffect, useMemo, useState, useId } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -25,21 +25,76 @@ import {
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import { buildWowWeeklyBarData, buildWowWeeklyTrendPoints, weeklyTotalsFromDailyRows } from '@/lib/dashboard/week-chart';
-import { getAirportDetail } from '@/lib/dashboard/services/drilldown';
+import { getAirportDetail, getAirportOverview } from '@/lib/dashboard/services/drilldown';
+import { runDrillDownRequest } from '@/lib/dashboard/drill-down-cache';
 import { useDrillDown, KPIRow, BackButton, TimeToggle } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
+import type { RangePreset } from './DrillDownDashboard';
 import type { TimeMode } from '@/types/dashboard';
+import type { DashboardAirportOverviewResponse } from '@/lib/api/statistics-api';
 
 type AirportDetail = ReturnType<typeof getAirportDetail>;
 
+function resolveAirportWindowDays(preset: RangePreset) {
+  if (preset === 'focus') return 15;
+  if (preset === '7') return 7;
+  if (preset === '30') return 30;
+  if (preset === '90') return 90;
+  if (preset === '180') return 180;
+  if (preset === '365') return 365;
+  return 3650;
+}
+
+function formatSignedPercent(value: number) {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+}
+
+function formatSignedFlights(value: number) {
+  return `${value >= 0 ? '+' : ''}${value.toLocaleString()}`;
+}
+
 export function AirportView() {
-  const { drillTo, timeMode, selections } = useDrillDown();
+  const { drillTo, timeMode, rangePreset, selections } = useDrillDown();
   const airport = selections.airport || MK_AIRPORTS[0];
+  const [airportOverview, setAirportOverview] = useState<DashboardAirportOverviewResponse | null>(null);
+  const [kpiLoading, setKpiLoading] = useState(true);
+  const [kpiError, setKpiError] = useState<string | null>(null);
+  const [kpiReloadKey, setKpiReloadKey] = useState(0);
 
   // Fetch per selected airport — currently returns the same mock data
   // but the architecture is ready for a per-airport API lookup.
   const detail = getAirportDetail(airport.iata);
-  const { routes: ROUTES, hourTotal: HOUR_TOTAL, daily: DAILY } = detail;
+
+  useEffect(() => {
+    let active = true;
+    const windowDays = resolveAirportWindowDays(rangePreset);
+    const cacheKey = `airport:kpi:v4:${airport.iata}:preset:${rangePreset}:window:${windowDays}`;
+
+    void (async () => {
+      setKpiError(null);
+      setKpiLoading(true);
+      try {
+        const payload = await runDrillDownRequest<DashboardAirportOverviewResponse>(cacheKey, () =>
+          getAirportOverview(airport.iata, { windowDays })
+        );
+        if (!active) return;
+        setAirportOverview(payload);
+      } catch (error) {
+        if (!active) return;
+        setAirportOverview(null);
+        setKpiError(error instanceof Error ? error.message : 'ไม่สามารถโหลดข้อมูล KPI สนามบินได้');
+      } finally {
+        if (active) {
+          setKpiLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [airport.iata, rangePreset, kpiReloadKey]);
+
   const countryForTone = selections.country;
   const countryPct = countryForTone ? parsePercentFromDelta(countryForTone.delta) : null;
   const countryTone =
@@ -49,18 +104,54 @@ export function AirportView() {
         ? 'down'
         : 'neutral';
 
-  // Derive KPIs from data
-  const topRoute = ROUTES.length > 0 ? ROUTES.reduce((a, b) => a.flights > b.flights ? a : b) : null;
-  const hourEntries = Object.entries(HOUR_TOTAL).map(([h, f]) => ({ hour: Number(h), flights: f }));
-  const busiestHour = hourEntries.reduce((a, b) => a.flights > b.flights ? a : b);
-  const totalDailyFlights = DAILY.reduce((s, d) => s + d.flights, 0);
+  const kpis: KPIItem[] = useMemo(() => {
+    if (!airportOverview) {
+      return [];
+    }
 
-  const kpis: KPIItem[] = [
-    { label: 'เที่ยวบินขาออกทั้งหมด', value: airport.flights.toLocaleString(), delta: `\u25B2 ช่วง ${DAILY.length} วัน`, deltaType: 'neutral', growthColored: false, accentColor: KPI_ACCENT.flights },
-    { label: 'เฉลี่ยต่อวัน', value: Math.round(totalDailyFlights / DAILY.length).toString(), delta: 'ตามรายงานล่าสุด', deltaType: 'neutral', growthColored: false, accentColor: KPI_ACCENT.airports },
-    { label: 'จุดหมายยอดนิยม', value: topRoute ? topRoute.city : '-', delta: topRoute ? `${topRoute.flights} เที่ยวบิน \u00B7 ${topRoute.flag}` : '-', deltaType: 'neutral', growthColored: false, accentColor: KPI_ACCENT.average },
-    { label: 'ชั่วโมงที่คึกคักที่สุด', value: `${busiestHour.hour.toString().padStart(2, '0')}:00`, delta: `${busiestHour.flights} เที่ยวบินขาออก`, deltaType: 'neutral', growthColored: false, accentColor: KPI_ACCENT.highlight },
-  ];
+    const totals = airportOverview.totals;
+    const airportFlights = Number(airport.flights) || 0;
+    const totalTone = totals.deltaFlights < 0 ? 'down' : totals.deltaFlights > 0 ? 'up' : 'neutral';
+    const averageFlightsPerDay = totals.daysInPeriod > 0
+      ? Math.round(airportFlights / totals.daysInPeriod)
+      : 0;
+    const topDestination = airportOverview.topDestination;
+    const topAirline = airportOverview.topAirline;
+
+    return [
+      {
+        label: 'เที่ยวบินทั้งหมด',
+        value: String(airport.flights),
+        delta: `${totals.deltaFlights >= 0 ? '\u25B2' : '\u25BC'} ${formatSignedFlights(totals.deltaFlights)} เที่ยวบิน (${formatSignedPercent(totals.deltaPercent)})`,
+        deltaType: totalTone,
+        accentColor: KPI_ACCENT.flights,
+      },
+      {
+        label: 'เฉลี่ยต่อวัน',
+        value: averageFlightsPerDay.toLocaleString(),
+        delta: `เฉลี่ยจาก ${totals.daysInPeriod} วัน`,
+        deltaType: 'neutral',
+        growthColored: false,
+        accentColor: KPI_ACCENT.airports,
+      },
+      {
+        label: 'จุดหมายยอดนิยม',
+        value: topDestination ? `${topDestination.name.replace(/\s+Airport$/i, '')} (${topDestination.country})` : '-',
+        delta: topDestination ? `${topDestination.flights.toLocaleString()} เที่ยวบินขาออก \u00B7 ${topDestination.flag}` : '-',
+        deltaType: 'neutral',
+        growthColored: false,
+        accentColor: KPI_ACCENT.average,
+      },
+      {
+        label: 'สายการบินหลัก',
+        value: topAirline ? topAirline.name : '-',
+        delta: topAirline ? `${topAirline.flights.toLocaleString()} เที่ยวบิน` : '-',
+        deltaType: 'neutral',
+        growthColored: false,
+        accentColor: KPI_ACCENT.highlight,
+      },
+    ];
+  }, [airport.flights, airportOverview]);
 
   return (
     <div className="space-y-6">
@@ -89,7 +180,26 @@ export function AirportView() {
         </div>
       </div>
 
-      <KPIRow items={kpis} />
+      {kpiLoading ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 animate-pulse">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="h-[126px] rounded-[10px] border border-border bg-card p-4" />
+          ))}
+        </div>
+      ) : kpiError ? (
+        <div className="rounded-[10px] border border-destructive/30 bg-destructive/5 p-4">
+          <p className="text-sm text-destructive">{kpiError}</p>
+          <button
+            type="button"
+            className="mt-3 inline-flex items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            onClick={() => setKpiReloadKey((current) => current + 1)}
+          >
+            ลองใหม่
+          </button>
+        </div>
+      ) : (
+        <KPIRow items={kpis} />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
         <TrendSparkChart timeMode={timeMode} detail={detail} />

@@ -1371,6 +1371,48 @@ export async function getDashboardAirportOverview(req: Request, res: Response, n
 }
 
 /**
+ * Get airport trend data for airport drill-down charts
+ * GET /api/statistics/dashboard-airport-trends?airport=BKK&date=YYYY-MM-DD
+ */
+export async function getDashboardAirportTrends(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { airport, date } = req.query;
+
+    if (!airport || typeof airport !== 'string') {
+      res.status(400).json({
+        error: 'Missing airport parameter',
+        message: 'airport is required',
+      });
+      return;
+    }
+
+    const airportCode = airport.trim().toUpperCase();
+    if (!/^[A-Z0-9]{3,4}$/.test(airportCode)) {
+      res.status(400).json({
+        error: 'Invalid airport parameter',
+        message: 'airport must be an airport code (3-4 alphanumeric characters)',
+      });
+      return;
+    }
+
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-airport-trends-v1', {
+      ...req.query,
+      airport: airportCode,
+    });
+    const trends = await getOrSetDashboardQueryCache(cacheKey, () =>
+      DashboardSummaryService.getAirportTrends({
+        airportCode,
+        centerDateInput: typeof date === 'string' ? date : undefined,
+      })
+    );
+
+    res.json(trends);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get top country and airport ranks for the world dashboard
  * GET /api/statistics/dashboard-top-ranks?date=YYYY-MM-DD&window_days=15
  */

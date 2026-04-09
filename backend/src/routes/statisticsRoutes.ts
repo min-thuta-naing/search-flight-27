@@ -13,6 +13,7 @@ import {
   getDashboardTopRanks,
   getDashboardCountryOverview,
   getDashboardAirportOverview,
+  getDashboardAirportTrends,
   getDashboardTopCountries,
   getDashboardTopAirports,
   getDashboardTopDestinations,
@@ -61,6 +62,9 @@ router.get('/dashboard-country-overview', getDashboardCountryOverview);
 
 // Get airport overview data for airport drill-down dashboard
 router.get('/dashboard-airport-overview', getDashboardAirportOverview);
+
+// Get airport trend data for airport drill-down charts
+router.get('/dashboard-airport-trends', getDashboardAirportTrends);
 
 // Get top countries for the world dashboard
 router.get('/dashboard-top-countries', getDashboardTopCountries);

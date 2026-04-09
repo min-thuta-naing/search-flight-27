@@ -25,13 +25,14 @@ import {
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import { buildWowWeeklyBarData, buildWowWeeklyTrendPoints, weeklyTotalsFromDailyRows } from '@/lib/dashboard/week-chart';
-import { getAirportDetail, getAirportOverview } from '@/lib/dashboard/services/drilldown';
+import { getAirportDetail, getAirportOverview, getAirportTrends } from '@/lib/dashboard/services/drilldown';
 import { runDrillDownRequest } from '@/lib/dashboard/drill-down-cache';
 import { useDrillDown, KPIRow, BackButton, TimeToggle } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
 import type { TimeMode } from '@/types/dashboard';
 import type { DashboardAirportOverviewResponse } from '@/lib/api/statistics-api';
+import type { AirportTrendSeries } from '@/lib/dashboard/services/drilldown';
 
 type AirportDetail = ReturnType<typeof getAirportDetail>;
 
@@ -53,10 +54,18 @@ function formatSignedFlights(value: number) {
   return `${value >= 0 ? '+' : ''}${value.toLocaleString()}`;
 }
 
+function hasCompleteAirportTrendPreload(detail: Pick<AirportDetail, 'daily' | 'monthly' | 'monthLabels'>) {
+  const monthlyReady = detail.monthly.length === 12 && detail.monthly.every((value) => Number.isFinite(Number(value)));
+  const labelsReady = detail.monthLabels.length === 12;
+  const dailyReady = detail.daily.length >= 28 && detail.daily.every((row) => Number.isFinite(Number(row.flights)));
+  return monthlyReady && labelsReady && dailyReady;
+}
+
 export function AirportView() {
   const { drillTo, timeMode, rangePreset, selections } = useDrillDown();
   const airport = selections.airport || MK_AIRPORTS[0];
   const [airportOverview, setAirportOverview] = useState<DashboardAirportOverviewResponse | null>(null);
+  const [airportTrend, setAirportTrend] = useState<AirportTrendSeries | null>(null);
   const [kpiLoading, setKpiLoading] = useState(true);
   const [kpiError, setKpiError] = useState<string | null>(null);
   const [kpiReloadKey, setKpiReloadKey] = useState(0);
@@ -64,6 +73,35 @@ export function AirportView() {
   // Fetch per selected airport — currently returns the same mock data
   // but the architecture is ready for a per-airport API lookup.
   const detail = getAirportDetail(airport.iata);
+  const trendPreloadComplete = hasCompleteAirportTrendPreload(detail);
+
+  useEffect(() => {
+    let active = true;
+    if (trendPreloadComplete) {
+      setAirportTrend(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    const cacheKey = `airport:trend:v1:${airport.iata}`;
+    void (async () => {
+      try {
+        const payload = await runDrillDownRequest<AirportTrendSeries>(cacheKey, () =>
+          getAirportTrends(airport.iata)
+        );
+        if (!active) return;
+        setAirportTrend(payload);
+      } catch {
+        if (!active) return;
+        setAirportTrend(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [airport.iata, trendPreloadComplete]);
 
   useEffect(() => {
     let active = true;
@@ -153,6 +191,40 @@ export function AirportView() {
     ];
   }, [airport.flights, airportOverview]);
 
+  const trendSeries = useMemo(
+    () => (airportTrend
+      ? {
+          daily: airportTrend.daily,
+          monthly: airportTrend.monthly,
+          monthLabels: airportTrend.monthLabels,
+        }
+      : {
+        daily: detail.daily.map((row) => {
+          const departureFlights = Math.round(row.flights * 0.5);
+          const arrivalFlights = row.flights - departureFlights;
+          return {
+            date: row.date,
+            departureFlights,
+            arrivalFlights,
+            flights: row.flights,
+            delta: row.delta,
+          };
+        }),
+        monthly: detail.monthly.map((flights, index) => {
+          const departureFlights = Math.round(flights * 0.5);
+          const arrivalFlights = flights - departureFlights;
+          return {
+            month: index + 1,
+            departureFlights,
+            arrivalFlights,
+            flights,
+          };
+        }),
+          monthLabels: detail.monthLabels,
+        }),
+    [airportTrend, detail.daily, detail.monthly, detail.monthLabels],
+  );
+
   return (
     <div className="space-y-6">
 
@@ -202,7 +274,7 @@ export function AirportView() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        <TrendSparkChart timeMode={timeMode} detail={detail} />
+        <TrendSparkChart timeMode={timeMode} trend={trendSeries} />
         <SeasonalTrendChart timeMode={timeMode} detail={detail} />
       </div>
 
@@ -221,32 +293,125 @@ export function AirportView() {
   );
 }
 
-function TrendSparkChart({ timeMode, detail }: { timeMode: TimeMode; detail: AirportDetail }) {
+function TrendSparkChart(
+  {
+    timeMode,
+    trend,
+  }: {
+    timeMode: TimeMode;
+    trend: {
+      daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number }>;
+      monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number }>;
+      monthLabels: string[];
+    };
+  },
+) {
   const gradientId = useId();
-  const { daily: DAILY, monthly: MONTHLY, monthLabels: AP_MONTHS } = detail;
+  const { daily: DAILY, monthly: MONTHLY, monthLabels: AP_MONTHS } = trend;
+  const [activeSeries, setActiveSeries] = useState<'all' | 'dep' | 'arr'>('all');
+
+  const getSeriesTone = (series: 'dep' | 'arr') => {
+    const isMuted = activeSeries !== 'all' && activeSeries !== series;
+    const baseColor = series === 'dep' ? 'var(--chart-1)' : 'var(--chart-2)';
+
+    return {
+      stroke: isMuted ? 'hsl(215 16% 68%)' : `hsl(${series === 'dep' ? '221 83% 53%' : '142 76% 36%'})`,
+      fillOpacity: isMuted ? 0.1 : 0.18,
+      dotFill: isMuted ? 'hsl(215 16% 68%)' : baseColor,
+      lineColorCss: isMuted ? 'hsl(215 16% 68%)' : baseColor,
+    };
+  };
+
+  const legendButtons: Array<{ key: 'all' | 'dep' | 'arr'; label: string }> = [
+    { key: 'dep', label: 'ขาออก' },
+    { key: 'arr', label: 'ขาเข้า' },
+    { key: 'all', label: 'รวม' },
+  ];
+
+  // Mirror flight-routes-chart behavior: trim only leading/trailing zero periods.
+  const trimZeroEdges = <T extends { total: number }>(rows: T[]): T[] => {
+    if (!rows.length) return rows;
+
+    let firstIndex = -1;
+    let lastIndex = -1;
+
+    for (let idx = 0; idx < rows.length; idx += 1) {
+      if ((rows[idx]?.total || 0) > 0) {
+        if (firstIndex === -1) firstIndex = idx;
+        lastIndex = idx;
+      }
+    }
+
+    if (firstIndex === -1) {
+      return rows;
+    }
+    return rows.slice(firstIndex, lastIndex + 1);
+  };
+
+  // For monthly axes, keep month categories but avoid drawing values for zero months.
+  const toRenderableMonthly = <T extends { day: string; dep: number; arr: number; total: number }>(rows: T[]) =>
+    rows.map((row) => ({
+      ...row,
+      dep: row.dep === 0 ? null : row.dep,
+      arr: row.arr === 0 ? null : row.arr,
+      total: row.total === 0 ? null : row.total,
+    }));
+
   const now = new Date();
   const nowIdx = now.getMonth();
   const nowYear = now.getFullYear();
 
   // WoW: 5 weeks (±2 from current), Thai brief ranges; totals scaled from daily sample avg × 7
-  const wowData = buildWowWeeklyTrendPoints(DAILY);
+  const wowDepData = buildWowWeeklyTrendPoints(DAILY.map((row) => ({ flights: row.departureFlights })));
+  const wowArrData = buildWowWeeklyTrendPoints(DAILY.map((row) => ({ flights: row.arrivalFlights })));
+  const wowData = wowDepData.map((depPoint, idx) => {
+    const arrFlights = wowArrData[idx]?.flights || 0;
+    const depFlights = depPoint.flights;
+    return {
+      day: depPoint.day,
+      dep: depFlights,
+      arr: arrFlights,
+      total: depFlights + arrFlights,
+    };
+  });
 
   // MoM: ±2 months around calendar “เดือนนี้” (not a fixed mock month)
   const startIdx = Math.max(0, nowIdx - 2);
   const endIdx = Math.min(11, nowIdx + 2);
-  const momData = MONTHLY
-    .map((v, i) => ({ day: AP_MONTHS[i], flights: v, _idx: i }))
+  const momDataRaw = MONTHLY
+    .map((row, i) => ({
+      day: AP_MONTHS[i],
+      dep: row.departureFlights,
+      arr: row.arrivalFlights,
+      total: row.flights,
+      _idx: i,
+    }))
     .filter((d) => d._idx >= startIdx && d._idx <= endIdx);
 
   // YoY: all 12 months
-  const yoyData = AP_MONTHS.map((m, i) => ({ day: m, flights: MONTHLY[i] }));
+  const yoyDataRaw = AP_MONTHS.map((m, i) => ({
+    day: m,
+    dep: MONTHLY[i]?.departureFlights || 0,
+    arr: MONTHLY[i]?.arrivalFlights || 0,
+    total: MONTHLY[i]?.flights || 0,
+  }));
+
+  const momData = toRenderableMonthly(trimZeroEdges(momDataRaw));
+  const yoyData = toRenderableMonthly(trimZeroEdges(yoyDataRaw));
 
   const tData = timeMode === 'wow' ? wowData : timeMode === 'mom' ? momData : yoyData;
-  const peak = Math.max(...tData.map((d) => d.flights));
-  const total = tData.reduce((s, d) => s + d.flights, 0);
-  const peakEntry = tData.find((d) => d.flights === peak)!;
+  const plottedValues = tData
+    .map((row) => (activeSeries === 'all' ? row.total : activeSeries === 'dep' ? row.dep : row.arr))
+    .filter((v): v is number => typeof v === 'number');
+  const peak = plottedValues.length ? Math.max(...plottedValues) : 0;
+  const total = plottedValues.reduce((s, v) => s + v, 0);
+  const peakEntry =
+    tData.find((row) => {
+      const value = activeSeries === 'all' ? row.total : activeSeries === 'dep' ? row.dep : row.arr;
+      return value === peak;
+    }) || tData[0] || { day: '-', total: 0 };
 
-  const minVal = Math.min(...tData.map((d) => d.flights));
+  const minVal = plottedValues.length ? Math.min(...plottedValues) : 0;
   const yDomain: [number, number] = [Math.floor(minVal * 0.9), Math.ceil(peak * 1.1)];
 
   const subtitle = timeMode === 'wow'
@@ -271,14 +436,32 @@ function TrendSparkChart({ timeMode, detail }: { timeMode: TimeMode; detail: Air
   return (
     <div className="relative overflow-hidden bg-card border border-border rounded-[10px] p-4 hover:border-primary hover:-translate-y-0.5 transition-all">
       <div className="absolute top-0 left-0 right-0 h-[3px] bg-primary" />
-      <div className="flex items-start justify-between mb-3">
+      <div className="flex items-start justify-between mb-3 gap-3">
         <div>
           <div className="text-base uppercase tracking-wider text-muted-foreground">{subtitle}</div>
           <div className="text-[15px] font-bold">แนวโน้มเที่ยวบิน</div>
         </div>
-        <div className="text-right">
-          <div className="text-[22px] font-bold leading-none">{total.toLocaleString()}</div>
-          <div className="text-[13px] text-accent font-semibold mt-1">{'\u25B2'} คงที่</div>
+        <div className="text-right space-y-2">
+          <div>
+            <div className="text-[22px] font-bold leading-none">{total.toLocaleString()}</div>
+            <div className="text-[13px] text-accent font-semibold mt-1">{'\u25B2'} คงที่</div>
+          </div>
+          <div className="inline-flex rounded-md border border-border overflow-hidden bg-background">
+            {legendButtons.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setActiveSeries(item.key)}
+                className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  activeSeries === item.key
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       <ResponsiveContainer width="100%" minHeight={180} height={192}>
@@ -312,12 +495,52 @@ function TrendSparkChart({ timeMode, detail }: { timeMode: TimeMode; detail: Air
             tickCount={5}
             width={48}
           />
-          <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '14px' }} formatter={(value: number) => [`${value} เที่ยวบิน`, '']} />
-          <Area type="monotone" dataKey="flights" stroke="#2563eb" strokeWidth={2.5} fill={`url(#${gradientId})`} />
+          <Tooltip
+            contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '14px' }}
+            formatter={(value: number, name: string) => [`${value} เที่ยวบิน`, name]}
+          />
+          {activeSeries === 'all' ? (
+            <Area
+              type="monotone"
+              dataKey="total"
+              name="รวม"
+              connectNulls={false}
+              stroke="hsl(212 76% 35%)"
+              strokeWidth={2.5}
+              fill={`url(#${gradientId})`}
+            />
+          ) : (
+            <>
+              <Area
+                type="monotone"
+                dataKey="dep"
+                name="ขาออก"
+                connectNulls={false}
+                stroke={getSeriesTone('dep').stroke}
+                strokeWidth={2.5}
+                fill={`url(#${gradientId})`}
+                fillOpacity={getSeriesTone('dep').fillOpacity}
+              />
+              <Area
+                type="monotone"
+                dataKey="arr"
+                name="ขาเข้า"
+                connectNulls={false}
+                stroke={getSeriesTone('arr').stroke}
+                strokeWidth={2.5}
+                fill={`url(#${gradientId})`}
+                fillOpacity={getSeriesTone('arr').fillOpacity}
+              />
+            </>
+          )}
           {(timeMode === 'mom' || timeMode === 'yoy') && (
             <ReferenceDot
               x={AP_MONTHS[nowIdx]}
-              y={MONTHLY[nowIdx]}
+              y={activeSeries === 'all'
+                ? MONTHLY[nowIdx]?.flights || 0
+                : activeSeries === 'dep'
+                  ? MONTHLY[nowIdx]?.departureFlights || 0
+                  : MONTHLY[nowIdx]?.arrivalFlights || 0}
               r={6}
               fill="#d29922"
               stroke="#fff"
@@ -330,7 +553,14 @@ function TrendSparkChart({ timeMode, detail }: { timeMode: TimeMode; detail: Air
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between text-[15px] font-medium text-muted-foreground mt-2.5">
         <span>{dateRange}</span>
         <span className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
-          <span className="text-primary font-bold">{'\u25CF'} แนวโน้ม</span>
+          {activeSeries === 'all' ? (
+            <span style={{ color: 'hsl(212 76% 35%)' }} className="font-bold">{'\u25CF'} รวม</span>
+          ) : (
+            <>
+              <span style={{ color: getSeriesTone('dep').lineColorCss }} className="font-bold">{'\u25CF'} ขาออก</span>
+              <span style={{ color: getSeriesTone('arr').lineColorCss }} className="font-bold">{'\u25CF'} ขาเข้า</span>
+            </>
+          )}
           <span style={{ color: 'var(--chart-current)' }} className="font-bold">
             {'\u25CF'} {timeMode === 'wow' ? 'สัปดาห์นี้' : 'เดือนนี้'}
             {currentPeriodDetail ? ` \u00B7 ${currentPeriodDetail}` : ''}

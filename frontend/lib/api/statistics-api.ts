@@ -283,6 +283,32 @@ export interface DashboardAirportOverviewResponse {
   };
 }
 
+export interface DashboardAirportTrendDailyPointResponse {
+  date: string;
+  departureFlights: number;
+  arrivalFlights: number;
+  flights: number;
+  deltaPercent: number | null;
+}
+
+export interface DashboardAirportTrendsResponse {
+  centerDate: string;
+  airport: {
+    code: string;
+    name: string;
+    city: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  daily: DashboardAirportTrendDailyPointResponse[];
+  monthly: Array<{
+    month: number;
+    departureFlights: number;
+    arrivalFlights: number;
+    flights: number;
+  }>;
+}
+
 export interface DashboardContinentDetailResponse {
   centerDate: string;
   windowDays: number;
@@ -678,6 +704,25 @@ export class StatisticsApi {
       window_days: windowDays,
       start_date: startDate,
       end_date: endDate,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get airport trend series for airport drill-down trend charts.
+   */
+  async getDashboardAirportTrends(
+    airport: string,
+    options: Pick<DashboardQueryOptions, 'date' | 'signal' | 'timeoutMs'> = {},
+  ): Promise<DashboardAirportTrendsResponse> {
+    const {
+      date,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardAirportTrendsResponse>('/statistics/dashboard-airport-trends', {
+      airport,
+      date,
     }, { signal, timeoutMs });
   }
 

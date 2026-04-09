@@ -191,6 +191,32 @@ export interface DashboardAirportOverviewResponse {
   };
 }
 
+export interface DashboardAirportTrendDailyPoint {
+  date: string;
+  departureFlights: number;
+  arrivalFlights: number;
+  flights: number;
+  deltaPercent: number | null;
+}
+
+export interface DashboardAirportTrendsResponse {
+  centerDate: string;
+  airport: {
+    code: string;
+    name: string;
+    city: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  daily: DashboardAirportTrendDailyPoint[];
+  monthly: Array<{
+    month: number;
+    departureFlights: number;
+    arrivalFlights: number;
+    flights: number;
+  }>;
+}
+
 export interface DashboardCountryOverviewResponse {
   centerDate: string;
   windowDays: number;
@@ -428,6 +454,10 @@ interface CountryOverviewInput extends WorldRangeInput {
 }
 
 interface AirportOverviewInput extends WorldRangeInput {
+  airportCode: string;
+}
+
+interface AirportTrendsInput extends WorldRangeInput {
   airportCode: string;
 }
 
@@ -2001,6 +2031,208 @@ export class DashboardSummaryService {
         hour: Number(busiestHourRow.hour_num) || 0,
         flights: Number(busiestHourRow.flights) || 0,
       },
+    };
+  }
+
+  static async getAirportTrends(
+    input: AirportTrendsInput,
+  ): Promise<DashboardAirportTrendsResponse> {
+    const airportCode = (input.airportCode || '').trim().toUpperCase();
+    if (!airportCode) {
+      throw new Error('airportCode is required');
+    }
+
+    const centerDate = input.centerDateInput
+      ? parseDateInput(input.centerDateInput)
+      : new Date();
+
+    if (!centerDate) {
+      throw new Error('Invalid center date provided');
+    }
+
+    const centerDateKey = formatDateForQuery(centerDate);
+    const centerYear = centerDate.getUTCFullYear();
+
+    const airportMetaQuery = `
+      SELECT
+        UPPER(TRIM(code)) AS airport_code,
+        COALESCE(name, UPPER(TRIM(code))) AS airport_name,
+        city,
+        COALESCE(country_name, country, NULL) AS country_name,
+        COALESCE(country_code, country, NULL) AS country_code
+      FROM airports
+      WHERE UPPER(TRIM(code)) = $1
+      LIMIT 1
+    `;
+
+    const dailyTrendQuery = `
+      WITH dep_rows AS (
+        SELECT departure_date::date AS flight_date
+        FROM departure_flight_paths
+        WHERE departure_date::date >= ($2::date - INTERVAL '34 day')
+          AND departure_date::date <= $2::date
+          AND UPPER(TRIM(dep_airport)) = $1
+        UNION ALL
+        SELECT departure_date::date AS flight_date
+        FROM arrival_flight_paths
+        WHERE departure_date::date >= ($2::date - INTERVAL '34 day')
+          AND departure_date::date <= $2::date
+          AND UPPER(TRIM(dep_airport)) = $1
+      ),
+      arr_rows AS (
+        SELECT departure_date::date AS flight_date
+        FROM departure_flight_paths
+        WHERE departure_date::date >= ($2::date - INTERVAL '34 day')
+          AND departure_date::date <= $2::date
+          AND UPPER(TRIM(arr_airport)) = $1
+        UNION ALL
+        SELECT departure_date::date AS flight_date
+        FROM arrival_flight_paths
+        WHERE departure_date::date >= ($2::date - INTERVAL '34 day')
+          AND departure_date::date <= $2::date
+          AND UPPER(TRIM(arr_airport)) = $1
+      ),
+      dep_by_day AS (
+        SELECT flight_date, COUNT(*)::int AS dep_flights
+        FROM dep_rows
+        GROUP BY flight_date
+      ),
+      arr_by_day AS (
+        SELECT flight_date, COUNT(*)::int AS arr_flights
+        FROM arr_rows
+        GROUP BY flight_date
+      ),
+      all_days AS (
+        SELECT flight_date FROM dep_by_day
+        UNION
+        SELECT flight_date FROM arr_by_day
+      ),
+      merged AS (
+        SELECT
+          d.flight_date,
+          COALESCE(dep.dep_flights, 0)::int AS departure_flights,
+          COALESCE(arr.arr_flights, 0)::int AS arrival_flights,
+          (COALESCE(dep.dep_flights, 0) + COALESCE(arr.arr_flights, 0))::int AS flights
+        FROM all_days d
+        LEFT JOIN dep_by_day dep ON dep.flight_date = d.flight_date
+        LEFT JOIN arr_by_day arr ON arr.flight_date = d.flight_date
+      ),
+      with_lag AS (
+        SELECT
+          flight_date,
+          departure_flights,
+          arrival_flights,
+          flights,
+          LAG(flights) OVER (ORDER BY flight_date ASC) AS prev_flights
+        FROM merged
+      )
+      SELECT
+        flight_date,
+        departure_flights,
+        arrival_flights,
+        flights,
+        CASE
+          WHEN prev_flights IS NULL OR prev_flights = 0 THEN NULL
+          ELSE ((flights - prev_flights)::numeric / prev_flights::numeric) * 100
+        END AS delta_percent
+      FROM with_lag
+      ORDER BY flight_date ASC
+    `;
+
+    const monthlyTrendQuery = `
+      WITH dep_rows AS (
+        SELECT EXTRACT(MONTH FROM departure_date)::int AS month_num
+        FROM departure_flight_paths
+        WHERE departure_date::date >= make_date($2, 1, 1)
+          AND departure_date::date < make_date($2 + 1, 1, 1)
+          AND UPPER(TRIM(dep_airport)) = $1
+        UNION ALL
+        SELECT EXTRACT(MONTH FROM departure_date)::int AS month_num
+        FROM arrival_flight_paths
+        WHERE departure_date::date >= make_date($2, 1, 1)
+          AND departure_date::date < make_date($2 + 1, 1, 1)
+          AND UPPER(TRIM(dep_airport)) = $1
+      ),
+      arr_rows AS (
+        SELECT EXTRACT(MONTH FROM departure_date)::int AS month_num
+        FROM departure_flight_paths
+        WHERE departure_date::date >= make_date($2, 1, 1)
+          AND departure_date::date < make_date($2 + 1, 1, 1)
+          AND UPPER(TRIM(arr_airport)) = $1
+        UNION ALL
+        SELECT EXTRACT(MONTH FROM departure_date)::int AS month_num
+        FROM arrival_flight_paths
+        WHERE departure_date::date >= make_date($2, 1, 1)
+          AND departure_date::date < make_date($2 + 1, 1, 1)
+          AND UPPER(TRIM(arr_airport)) = $1
+      ),
+      dep_counts AS (
+        SELECT month_num, COUNT(*)::int AS departure_flights
+        FROM dep_rows
+        GROUP BY month_num
+      ),
+      arr_counts AS (
+        SELECT month_num, COUNT(*)::int AS arrival_flights
+        FROM arr_rows
+        GROUP BY month_num
+      )
+      SELECT
+        m.month_num,
+        COALESCE(dep.departure_flights, 0)::int AS departure_flights,
+        COALESCE(arr.arrival_flights, 0)::int AS arrival_flights,
+        (COALESCE(dep.departure_flights, 0) + COALESCE(arr.arrival_flights, 0))::int AS flights
+      FROM generate_series(1, 12) AS m(month_num)
+      LEFT JOIN dep_counts dep ON dep.month_num = m.month_num
+      LEFT JOIN arr_counts arr ON arr.month_num = m.month_num
+      ORDER BY m.month_num ASC
+    `;
+
+    const [airportMetaResult, dailyResult, monthlyResult] = await Promise.all([
+      pool.query(airportMetaQuery, [airportCode]),
+      pool.query(dailyTrendQuery, [airportCode, centerDateKey]),
+      pool.query(monthlyTrendQuery, [airportCode, centerYear]),
+    ]);
+
+    const airportMetaRow = (airportMetaResult.rows[0] || {}) as {
+      airport_code?: string | null;
+      airport_name?: string | null;
+      city?: string | null;
+      country_name?: string | null;
+      country_code?: string | null;
+    };
+
+    const daily = (dailyResult.rows as Array<{
+      flight_date: Date | string;
+      departure_flights: number;
+      arrival_flights: number;
+      flights: number;
+      delta_percent: number | null;
+    }>).map((row) => ({
+      date: formatDateForQuery(new Date(row.flight_date)),
+      departureFlights: Number(row.departure_flights) || 0,
+      arrivalFlights: Number(row.arrival_flights) || 0,
+      flights: Number(row.flights) || 0,
+      deltaPercent: row.delta_percent == null ? null : Number(row.delta_percent),
+    }));
+
+    const monthly = (monthlyResult.rows as Array<{ month_num: number; departure_flights: number; arrival_flights: number; flights: number }>).map((row) => ({
+      month: Number(row.month_num) || 0,
+      departureFlights: Number(row.departure_flights) || 0,
+      arrivalFlights: Number(row.arrival_flights) || 0,
+      flights: Number(row.flights) || 0,
+    }));
+
+    return {
+      centerDate: centerDateKey,
+      airport: {
+        code: airportCode,
+        name: (airportMetaRow.airport_name || airportCode).trim(),
+        city: airportMetaRow.city || null,
+        country: airportMetaRow.country_name || null,
+        countryCode: airportMetaRow.country_code || null,
+      },
+      daily,
+      monthly,
     };
   }
 

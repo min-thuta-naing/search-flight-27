@@ -127,6 +127,50 @@ export async function getAirportOverview(
   return statisticsApi.getDashboardAirportOverview(airportCode, options);
 }
 
+const THAI_MONTH_LABELS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'] as const;
+
+export interface AirportTrendSeries {
+  daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number; delta: number | null }>;
+  monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number }>;
+  monthLabels: string[];
+}
+
+export async function getAirportTrends(
+  airportCode: string,
+  options?: Parameters<typeof statisticsApi.getDashboardAirportTrends>[1],
+): Promise<AirportTrendSeries> {
+  const response = await statisticsApi.getDashboardAirportTrends(airportCode, options);
+  const monthly = Array.from({ length: 12 }, (_, idx) => {
+    const monthNumber = idx + 1;
+    const point = response.monthly.find((row) => row.month === monthNumber);
+    return point
+      ? {
+          month: monthNumber,
+          departureFlights: point.departureFlights ?? Math.round(point.flights * 0.5),
+          arrivalFlights: point.arrivalFlights ?? (point.flights - Math.round(point.flights * 0.5)),
+          flights: point.flights,
+        }
+      : {
+          month: monthNumber,
+          departureFlights: 0,
+          arrivalFlights: 0,
+          flights: 0,
+        };
+  });
+
+  return {
+    daily: response.daily.map((point) => ({
+      date: point.date,
+      departureFlights: point.departureFlights ?? Math.round(point.flights * 0.5),
+      arrivalFlights: point.arrivalFlights ?? (point.flights - Math.round(point.flights * 0.5)),
+      flights: point.flights,
+      delta: point.deltaPercent,
+    })),
+    monthly,
+    monthLabels: [...THAI_MONTH_LABELS],
+  };
+}
+
 // ── Airport level ──
 
 /**

@@ -309,6 +309,45 @@ export interface DashboardAirportTrendsResponse {
   }>;
 }
 
+export interface DashboardAirportInsightRouteResponse {
+  iata: string;
+  name: string;
+  city: string;
+  country: string;
+  flag: string;
+  flights: number;
+}
+
+export interface DashboardAirportInsightAirlineResponse {
+  id: number;
+  name: string;
+  flights: number;
+  sharePercent: number;
+}
+
+export interface DashboardAirportInsightsResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  airport: {
+    code: string;
+    name: string;
+    city: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  topDepartureRoutes: DashboardAirportInsightRouteResponse[];
+  topArrivalRoutes: DashboardAirportInsightRouteResponse[];
+  airlineShare: DashboardAirportInsightAirlineResponse[];
+  hourlyDistribution: {
+    departure: number[];
+    arrival: number[];
+  };
+}
+
 export interface DashboardContinentDetailResponse {
   centerDate: string;
   windowDays: number;
@@ -704,6 +743,35 @@ export class StatisticsApi {
       window_days: windowDays,
       start_date: startDate,
       end_date: endDate,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get airport insights payload for airport drill-down panels.
+   */
+  async getDashboardAirportInsights(
+    airport: string,
+    options: DashboardQueryOptions & { routeLimit?: number; airlineLimit?: number } = {},
+  ): Promise<DashboardAirportInsightsResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+      routeLimit = 5,
+      airlineLimit = 8,
+    } = options;
+
+    return apiClient.get<DashboardAirportInsightsResponse>('/statistics/dashboard-airport-insights', {
+      airport,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+      route_limit: routeLimit,
+      airline_limit: airlineLimit,
     }, { signal, timeoutMs });
   }
 

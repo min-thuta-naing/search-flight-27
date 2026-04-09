@@ -217,6 +217,45 @@ export interface DashboardAirportTrendsResponse {
   }>;
 }
 
+export interface DashboardAirportInsightRoute {
+  iata: string;
+  name: string;
+  city: string;
+  country: string;
+  flag: string;
+  flights: number;
+}
+
+export interface DashboardAirportInsightAirline {
+  id: number;
+  name: string;
+  flights: number;
+  sharePercent: number;
+}
+
+export interface DashboardAirportInsightsResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  airport: {
+    code: string;
+    name: string;
+    city: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  topDepartureRoutes: DashboardAirportInsightRoute[];
+  topArrivalRoutes: DashboardAirportInsightRoute[];
+  airlineShare: DashboardAirportInsightAirline[];
+  hourlyDistribution: {
+    departure: number[];
+    arrival: number[];
+  };
+}
+
 export interface DashboardCountryOverviewResponse {
   centerDate: string;
   windowDays: number;
@@ -455,6 +494,12 @@ interface CountryOverviewInput extends WorldRangeInput {
 
 interface AirportOverviewInput extends WorldRangeInput {
   airportCode: string;
+}
+
+interface AirportInsightsInput extends WorldRangeInput {
+  airportCode: string;
+  routeLimit?: number;
+  airlineLimit?: number;
 }
 
 interface AirportTrendsInput extends WorldRangeInput {
@@ -2030,6 +2075,251 @@ export class DashboardSummaryService {
       busiestDepartureHour: {
         hour: Number(busiestHourRow.hour_num) || 0,
         flights: Number(busiestHourRow.flights) || 0,
+      },
+    };
+  }
+
+  static async getAirportInsights(
+    input: AirportInsightsInput,
+  ): Promise<DashboardAirportInsightsResponse> {
+    const airportCode = (input.airportCode || '').trim().toUpperCase();
+    if (!airportCode) {
+      throw new Error('airportCode is required');
+    }
+
+    const routeLimit = Math.min(Math.max(input.routeLimit ?? 5, 1), 20);
+    const airlineLimit = Math.min(Math.max(input.airlineLimit ?? 8, 1), 20);
+
+    const { startDate, endDate, comparisonStartDate, comparisonEndDate, windowDays } = resolveWorldRange(input);
+    const centerDate = resolveCenterDate(input, startDate, endDate);
+    const periodStart = formatDateForQuery(startDate);
+    const periodEnd = formatDateForQuery(endDate);
+    const comparisonStart = formatDateForQuery(comparisonStartDate);
+    const comparisonEnd = formatDateForQuery(comparisonEndDate);
+
+    const airportMetaQuery = `
+      SELECT
+        UPPER(TRIM(code)) AS airport_code,
+        COALESCE(name, UPPER(TRIM(code))) AS airport_name,
+        city,
+        COALESCE(country_name, country, NULL) AS country_name,
+        COALESCE(country_code, country, NULL) AS country_code
+      FROM airports
+      WHERE UPPER(TRIM(code)) = $1
+      LIMIT 1
+    `;
+
+    const topDepartureRoutesQuery = `
+      WITH route_rows AS (
+        SELECT UPPER(TRIM(arr_airport)) AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $2 AND departure_date <= $3
+          AND UPPER(TRIM(dep_airport)) = $1
+        UNION ALL
+        SELECT UPPER(TRIM(arr_airport)) AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $2 AND departure_date <= $3
+          AND UPPER(TRIM(dep_airport)) = $1
+      ),
+      agg AS (
+        SELECT airport_code, COUNT(*)::int AS flights
+        FROM route_rows
+        WHERE airport_code IS NOT NULL AND airport_code <> ''
+        GROUP BY airport_code
+      )
+      SELECT
+        agg.airport_code,
+        agg.flights,
+        COALESCE(a.name, agg.airport_code) AS airport_name,
+        COALESCE(a.city, a.name, agg.airport_code) AS city,
+        COALESCE(a.country_name, a.country, 'Other') AS country_name,
+        COALESCE(a.country_code, a.country, NULL) AS country_code
+      FROM agg
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = agg.airport_code
+      ORDER BY agg.flights DESC, agg.airport_code ASC
+      LIMIT $4
+    `;
+
+    const topArrivalRoutesQuery = `
+      WITH route_rows AS (
+        SELECT UPPER(TRIM(dep_airport)) AS airport_code
+        FROM departure_flight_paths
+        WHERE departure_date >= $2 AND departure_date <= $3
+          AND UPPER(TRIM(arr_airport)) = $1
+        UNION ALL
+        SELECT UPPER(TRIM(dep_airport)) AS airport_code
+        FROM arrival_flight_paths
+        WHERE departure_date >= $2 AND departure_date <= $3
+          AND UPPER(TRIM(arr_airport)) = $1
+      ),
+      agg AS (
+        SELECT airport_code, COUNT(*)::int AS flights
+        FROM route_rows
+        WHERE airport_code IS NOT NULL AND airport_code <> ''
+        GROUP BY airport_code
+      )
+      SELECT
+        agg.airport_code,
+        agg.flights,
+        COALESCE(a.name, agg.airport_code) AS airport_name,
+        COALESCE(a.city, a.name, agg.airport_code) AS city,
+        COALESCE(a.country_name, a.country, 'Other') AS country_name,
+        COALESCE(a.country_code, a.country, NULL) AS country_code
+      FROM agg
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = agg.airport_code
+      ORDER BY agg.flights DESC, agg.airport_code ASC
+      LIMIT $4
+    `;
+
+    const airlineShareQuery = `
+      WITH airport_rows AS (
+        SELECT airline_id
+        FROM departure_flight_paths
+        WHERE departure_date >= $2 AND departure_date <= $3
+          AND (
+            UPPER(TRIM(dep_airport)) = $1
+            OR UPPER(TRIM(arr_airport)) = $1
+          )
+        UNION ALL
+        SELECT airline_id
+        FROM arrival_flight_paths
+        WHERE departure_date >= $2 AND departure_date <= $3
+          AND (
+            UPPER(TRIM(dep_airport)) = $1
+            OR UPPER(TRIM(arr_airport)) = $1
+          )
+      ),
+      airline_agg AS (
+        SELECT airline_id, COUNT(*)::int AS flights
+        FROM airport_rows
+        WHERE airline_id IS NOT NULL
+        GROUP BY airline_id
+      ),
+      totals AS (
+        SELECT COALESCE(SUM(flights), 0)::int AS total_flights
+        FROM airline_agg
+      )
+      SELECT
+        aa.airline_id,
+        aa.flights,
+        COALESCE(al.name, CONCAT('Airline #', aa.airline_id::text)) AS airline_name,
+        CASE
+          WHEN totals.total_flights > 0 THEN (aa.flights::numeric / totals.total_flights::numeric) * 100
+          ELSE 0
+        END AS share_percent
+      FROM airline_agg aa
+      LEFT JOIN airlines al ON al.id = aa.airline_id
+      CROSS JOIN totals
+      ORDER BY aa.flights DESC, aa.airline_id ASC
+      LIMIT $4
+    `;
+
+    const departureTimeAvailable = await hasFlightPathColumn('departure_time');
+    const hourlyDepartureQuery = departureTimeAvailable
+      ? `
+          WITH hourly_rows AS (
+            SELECT COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num
+            FROM departure_flight_paths
+            WHERE departure_date >= $2 AND departure_date <= $3
+              AND UPPER(TRIM(dep_airport)) = $1
+            UNION ALL
+            SELECT COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num
+            FROM arrival_flight_paths
+            WHERE departure_date >= $2 AND departure_date <= $3
+              AND UPPER(TRIM(dep_airport)) = $1
+          )
+          SELECT hour_num, COUNT(*)::int AS flights
+          FROM hourly_rows
+          GROUP BY hour_num
+        `
+      : null;
+
+    const hourlyArrivalQuery = departureTimeAvailable
+      ? `
+          WITH hourly_rows AS (
+            SELECT COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num
+            FROM departure_flight_paths
+            WHERE departure_date >= $2 AND departure_date <= $3
+              AND UPPER(TRIM(arr_airport)) = $1
+            UNION ALL
+            SELECT COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num
+            FROM arrival_flight_paths
+            WHERE departure_date >= $2 AND departure_date <= $3
+              AND UPPER(TRIM(arr_airport)) = $1
+          )
+          SELECT hour_num, COUNT(*)::int AS flights
+          FROM hourly_rows
+          GROUP BY hour_num
+        `
+      : null;
+
+    const [airportMetaResult, topDepartureResult, topArrivalResult, airlineShareResult, hourlyDepartureResult, hourlyArrivalResult] = await Promise.all([
+      pool.query(airportMetaQuery, [airportCode]),
+      pool.query(topDepartureRoutesQuery, [airportCode, periodStart, periodEnd, routeLimit]),
+      pool.query(topArrivalRoutesQuery, [airportCode, periodStart, periodEnd, routeLimit]),
+      pool.query(airlineShareQuery, [airportCode, periodStart, periodEnd, airlineLimit]),
+      hourlyDepartureQuery ? pool.query(hourlyDepartureQuery, [airportCode, periodStart, periodEnd]) : Promise.resolve({ rows: [] } as any),
+      hourlyArrivalQuery ? pool.query(hourlyArrivalQuery, [airportCode, periodStart, periodEnd]) : Promise.resolve({ rows: [] } as any),
+    ]);
+
+    const airportMetaRow = (airportMetaResult.rows[0] || {}) as {
+      airport_code?: string | null;
+      airport_name?: string | null;
+      city?: string | null;
+      country_name?: string | null;
+      country_code?: string | null;
+    };
+
+    const mapRoutes = (rows: Array<any>): DashboardAirportInsightRoute[] => rows.map((row) => ({
+      iata: (row.airport_code || '').trim().toUpperCase(),
+      name: (row.airport_name || row.airport_code || '').trim(),
+      city: (row.city || row.airport_name || row.airport_code || '').trim(),
+      country: row.country_name || row.country_code || 'Other',
+      flag: countryFlagFromCode(row.country_code || null),
+      flights: Number(row.flights) || 0,
+    }));
+
+    const departureByHour = Array.from({ length: 24 }, () => 0);
+    for (const row of hourlyDepartureResult.rows as Array<{ hour_num?: number; flights?: number }>) {
+      const hour = Number(row.hour_num);
+      if (Number.isFinite(hour) && hour >= 0 && hour <= 23) {
+        departureByHour[hour] = Number(row.flights) || 0;
+      }
+    }
+
+    const arrivalByHour = Array.from({ length: 24 }, () => 0);
+    for (const row of hourlyArrivalResult.rows as Array<{ hour_num?: number; flights?: number }>) {
+      const hour = Number(row.hour_num);
+      if (Number.isFinite(hour) && hour >= 0 && hour <= 23) {
+        arrivalByHour[hour] = Number(row.flights) || 0;
+      }
+    }
+
+    return {
+      centerDate: formatDateForQuery(centerDate),
+      windowDays,
+      periodStart,
+      periodEnd,
+      comparisonStart,
+      comparisonEnd,
+      airport: {
+        code: airportCode,
+        name: (airportMetaRow.airport_name || airportCode).trim(),
+        city: airportMetaRow.city || null,
+        country: airportMetaRow.country_name || null,
+        countryCode: airportMetaRow.country_code || null,
+      },
+      topDepartureRoutes: mapRoutes(topDepartureResult.rows as Array<any>),
+      topArrivalRoutes: mapRoutes(topArrivalResult.rows as Array<any>),
+      airlineShare: (airlineShareResult.rows as Array<any>).map((row) => ({
+        id: Number(row.airline_id) || 0,
+        name: (row.airline_name || 'Unknown Airline').trim(),
+        flights: Number(row.flights) || 0,
+        sharePercent: Number(row.share_percent) || 0,
+      })),
+      hourlyDistribution: {
+        departure: departureByHour,
+        arrival: arrivalByHour,
       },
     };
   }

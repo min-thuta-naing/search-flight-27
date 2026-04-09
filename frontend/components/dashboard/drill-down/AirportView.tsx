@@ -20,15 +20,12 @@ import {
 } from 'recharts';
 import {
   MK_AIRPORTS,
-  calcInvestScore,
-  getInvestTier,
   growthCardBadgeClasses,
   growthDeltaTypeFromPct,
-  growthPillSurfaceClasses,
   parsePercentFromDelta,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
-import { getAirportDetail, getAirportOverview, getAirportTrends } from '@/lib/dashboard/services/drilldown';
+import { getAirportInsights, getAirportOverview, getAirportTrends } from '@/lib/dashboard/services/drilldown';
 import { runDrillDownRequest } from '@/lib/dashboard/drill-down-cache';
 import { FlightRoutesChart } from '@/components/flight-routes-chart';
 import { Button } from '@/components/ui/button';
@@ -39,12 +36,10 @@ import { useDrillDown, KPIRow, BackButton } from './DrillDownDashboard';
 import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
 import type { TimeMode } from '@/types/dashboard';
-import type { DashboardAirportOverviewResponse } from '@/lib/api/statistics-api';
+import type { DashboardAirportOverviewResponse, DashboardAirportInsightsResponse } from '@/lib/api/statistics-api';
 import type { AirportTrendSeries } from '@/lib/dashboard/services/drilldown';
 import type { DateRange } from 'react-day-picker';
 import { cn } from '@/lib/utils';
-
-type AirportDetail = ReturnType<typeof getAirportDetail>;
 
 function resolveAirportWindowDays(preset: RangePreset) {
   if (preset === 'focus') return 15;
@@ -64,12 +59,9 @@ function formatSignedFlights(value: number) {
   return `${value >= 0 ? '+' : ''}${value.toLocaleString()}`;
 }
 
-function hasCompleteAirportTrendPreload(detail: Pick<AirportDetail, 'daily' | 'monthly' | 'monthLabels'>) {
-  const monthlyReady = detail.monthly.length === 12 && detail.monthly.every((value) => Number.isFinite(Number(value)));
-  const labelsReady = detail.monthLabels.length === 12;
-  const dailyReady = detail.daily.length >= 28 && detail.daily.every((row) => Number.isFinite(Number(row.flights)));
-  return monthlyReady && labelsReady && dailyReady;
-}
+const THAI_MONTH_LABELS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'] as const;
+type AirportInsightRoute = DashboardAirportInsightsResponse['topDepartureRoutes'][number];
+type AirportInsightAirline = DashboardAirportInsightsResponse['airlineShare'][number];
 
 const AIRPORT_PRESET_LABELS: Record<RangePreset, string> = {
   focus: '± 15 วัน',
@@ -165,6 +157,8 @@ export function AirportView() {
   const { drillTo, timeMode, rangePreset, setRangePreset, selections } = useDrillDown();
   const airport = selections.airport || MK_AIRPORTS[0];
   const [airportOverview, setAirportOverview] = useState<DashboardAirportOverviewResponse | null>(null);
+  const [airportInsights, setAirportInsights] = useState<DashboardAirportInsightsResponse | null>(null);
+  const [airportHourlyYearly, setAirportHourlyYearly] = useState<{ departure: number[]; arrival: number[] } | null>(null);
   const [airportTrend, setAirportTrend] = useState<AirportTrendSeries | null>(null);
   const [kpiLoading, setKpiLoading] = useState(true);
   const [kpiError, setKpiError] = useState<string | null>(null);
@@ -177,20 +171,8 @@ export function AirportView() {
   const [toCalendarMonth, setToCalendarMonth] = useState(() => new Date());
   const [dateError, setDateError] = useState(false);
 
-  // Fetch per selected airport — currently returns the same mock data
-  // but the architecture is ready for a per-airport API lookup.
-  const detail = getAirportDetail(airport.iata);
-  const trendPreloadComplete = hasCompleteAirportTrendPreload(detail);
-
   useEffect(() => {
     let active = true;
-    if (trendPreloadComplete) {
-      setAirportTrend(null);
-      return () => {
-        active = false;
-      };
-    }
-
     const cacheKey = `airport:trend:v1:${airport.iata}`;
     void (async () => {
       try {
@@ -208,7 +190,7 @@ export function AirportView() {
     return () => {
       active = false;
     };
-  }, [airport.iata, trendPreloadComplete]);
+  }, [airport.iata]);
 
   useEffect(() => {
     let active = true;
@@ -240,6 +222,51 @@ export function AirportView() {
     };
   }, [airport.iata, rangePreset, kpiReloadKey]);
 
+  useEffect(() => {
+    let active = true;
+    const windowDays = resolveAirportWindowDays(rangePreset);
+    const cacheKey = `airport:insights:v1:${airport.iata}:preset:${rangePreset}:window:${windowDays}`;
+
+    void (async () => {
+      try {
+        const payload = await runDrillDownRequest<DashboardAirportInsightsResponse>(cacheKey, () =>
+          getAirportInsights(airport.iata, { windowDays })
+        );
+        if (!active) return;
+        setAirportInsights(payload);
+      } catch {
+        if (!active) return;
+        setAirportInsights(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [airport.iata, rangePreset]);
+
+  useEffect(() => {
+    let active = true;
+    const cacheKey = `airport:hourly:yoy:v1:${airport.iata}:window:365`;
+
+    void (async () => {
+      try {
+        const payload = await runDrillDownRequest<DashboardAirportInsightsResponse>(cacheKey, () =>
+          getAirportInsights(airport.iata, { windowDays: 365 })
+        );
+        if (!active) return;
+        setAirportHourlyYearly(payload.hourlyDistribution);
+      } catch {
+        if (!active) return;
+        setAirportHourlyYearly(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [airport.iata]);
+
   const countryForTone = selections.country;
   const countryPct = countryForTone ? parsePercentFromDelta(countryForTone.delta) : null;
   const countryTone =
@@ -250,15 +277,7 @@ export function AirportView() {
         : 'neutral';
 
   const presetLabel = AIRPORT_PRESET_LABELS[rangePreset] ?? AIRPORT_PRESET_LABELS.focus;
-  const baseAirportFlights = Math.max(1, Number(airport.flights) || 1);
   const activeAirportFlights = airportOverview?.totals.flights ?? (Number(airport.flights) || 0);
-  const presetScale = useMemo(() => {
-    const ratio = activeAirportFlights / baseAirportFlights;
-    if (!Number.isFinite(ratio) || ratio <= 0) {
-      return 1;
-    }
-    return Math.max(0.1, Math.min(ratio, 50));
-  }, [activeAirportFlights, baseAirportFlights]);
 
   const kpis: KPIItem[] = useMemo(() => {
     if (!airportOverview) {
@@ -309,37 +328,17 @@ export function AirportView() {
   }, [airportOverview]);
 
   const trendSeries = useMemo(
-    () => (airportTrend
-      ? {
-          daily: airportTrend.daily,
-          monthly: airportTrend.monthly,
-          monthLabels: airportTrend.monthLabels,
-        }
-      : {
-        daily: detail.daily.map((row) => {
-          const departureFlights = Math.round(row.flights * 0.5);
-          const arrivalFlights = row.flights - departureFlights;
-          return {
-            date: row.date,
-            departureFlights,
-            arrivalFlights,
-            flights: row.flights,
-            delta: row.delta,
-          };
-        }),
-        monthly: detail.monthly.map((flights, index) => {
-          const departureFlights = Math.round(flights * 0.5);
-          const arrivalFlights = flights - departureFlights;
-          return {
-            month: index + 1,
-            departureFlights,
-            arrivalFlights,
-            flights,
-          };
-        }),
-          monthLabels: detail.monthLabels,
-        }),
-    [airportTrend, detail.daily, detail.monthly, detail.monthLabels],
+    () => ({
+      daily: airportTrend?.daily ?? [],
+      monthly: airportTrend?.monthly ?? Array.from({ length: 12 }, (_, idx) => ({
+        month: idx + 1,
+        departureFlights: 0,
+        arrivalFlights: 0,
+        flights: 0,
+      })),
+      monthLabels: airportTrend?.monthLabels ?? [...THAI_MONTH_LABELS],
+    }),
+    [airportTrend],
   );
 
   const airportDataRange = useMemo<DateRange | undefined>(() => {
@@ -659,17 +658,22 @@ export function AirportView() {
         chartHeightClass="h-[208px]"
       />
 
+      <TopDestinationsPanel
+        departures={airportInsights?.topDepartureRoutes ?? []}
+        arrivals={airportInsights?.topArrivalRoutes ?? []}
+        subtitle={presetLabel}
+      />
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
         <TrendSparkChart trend={trendSeries} />
         <SeasonalTrendChart trend={trendSeries} />
       </div>
 
-      <TopDestinationsPanel detail={detail} scale={presetScale} subtitle={presetLabel} />
-      <InvestmentPanel timeMode={timeMode} detail={detail} scale={presetScale} />
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        <AirlineSharePanel detail={detail} scale={presetScale} />
-        <HourDistributionPanel timeMode={timeMode} detail={detail} scale={presetScale} />
+        <AirlineSharePanel airlines={airportInsights?.airlineShare ?? []} />
+        <HourDistributionPanel
+          hourlyDistribution={airportHourlyYearly ?? { departure: Array(24).fill(0), arrival: Array(24).fill(0) }}
+        />
       </div>
 
       <div className="flex justify-center pt-1">
@@ -1154,15 +1158,16 @@ function SeasonalTrendChart(
   );
 }
 
-function TopDestinationsPanel({ detail, scale, subtitle }: { detail: AirportDetail; scale: number; subtitle: string }) {
-  const { routes: ROUTES, arrivals: ARRIVALS } = detail;
-  const top5dep = ROUTES.slice(0, 5).map((row) => ({ ...row, flights: Math.max(1, Math.round(row.flights * scale)) }));
-  const topArrivals = ARRIVALS.map((row) => ({ ...row, flights: Math.max(1, Math.round(row.flights * scale)) }));
+function TopDestinationsPanel({ departures, arrivals, subtitle }: { departures: AirportInsightRoute[]; arrivals: AirportInsightRoute[]; subtitle: string }) {
+  const top5dep = departures.slice(0, 5);
+  const topArrivals = arrivals.slice(0, 5);
   const maxDep = top5dep[0]?.flights || 1;
   const maxArr = topArrivals[0]?.flights || 1;
+  const fallbackColors = ['#2563eb', '#0ea5e9', '#22c55e', '#f59e0b', '#ef4444'];
 
-  const renderRow = (r: typeof ROUTES[0], i: number, maxF: number) => {
+  const renderRow = (r: AirportInsightRoute, i: number, maxF: number) => {
     const barW = ((r.flights / maxF) * 100).toFixed(0);
+    const rowColor = fallbackColors[i % fallbackColors.length];
     return (
       <div key={r.city + i} className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2 py-2 border-b border-border/60 last:border-b-0">
         <div className="flex items-center gap-2">
@@ -1174,7 +1179,7 @@ function TopDestinationsPanel({ detail, scale, subtitle }: { detail: AirportDeta
         </div>
         <div className="flex items-center gap-2 pl-[calc(1.5rem+0.5rem+1.125rem+0.5rem)] sm:pl-0 sm:ml-auto sm:shrink-0">
           <div className="w-24 h-2 bg-muted rounded-full overflow-hidden shrink-0">
-            <div className="h-full rounded-full" style={{ width: `${barW}%`, background: r.color }} />
+            <div className="h-full rounded-full" style={{ width: `${barW}%`, background: rowColor }} />
           </div>
           <span className="text-[15px] font-bold w-10 text-right shrink-0 tabular-nums">{r.flights}</span>
         </div>
@@ -1186,7 +1191,7 @@ function TopDestinationsPanel({ detail, scale, subtitle }: { detail: AirportDeta
     <div className="bg-card border border-border rounded-[10px]">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between p-5 border-b border-border">
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="text-[16px] font-bold">จุดหมายปลายทางยอดนิยม</div>
+          <div className="text-[16px] font-bold">เส้นทางยอดนิยม</div>
           <div className="text-[14px] text-muted-foreground">{subtitle} {'\u00B7'} 5 อันดับแรกแต่ละทิศทาง</div>
         </div>
         <div className="flex gap-1.5 shrink-0">
@@ -1213,104 +1218,8 @@ function TopDestinationsPanel({ detail, scale, subtitle }: { detail: AirportDeta
     </div>
   );
 }
-
-function InvestmentPanel({ timeMode, detail, scale }: { timeMode: TimeMode; detail: AirportDetail; scale: number }) {
-  const { investRoutes: INVEST_ROUTES } = detail;
-  const modeKey = timeMode;
-  const modeShort = timeMode.toUpperCase();
-
-  const scaledRoutes = INVEST_ROUTES.map((r) => ({
-    ...r,
-    flights: Math.max(1, Math.round(r.flights * scale)),
-  }));
-
-  const scored = scaledRoutes.map((r) => ({ ...r, _score: calcInvestScore(r, timeMode) }))
-    .sort((a, b) => b._score - a._score);
-
-  const factors = [
-    { label: `การเติบโต ${modeShort}`, weight: '40%', active: true },
-    { label: 'ความต้องการที่ยังไม่ถูกตอบสนอง', weight: '35%', active: false },
-    { label: 'ความง่ายในการเข้าสู่ตลาด', weight: '15%', active: false },
-    { label: 'ความสม่ำเสมอของแนวโน้ม', weight: '10%', active: false },
-  ];
-
-  return (
-    <div className="bg-card border border-border rounded-[10px] p-5">
-      <div className="flex items-start justify-between mb-2">
-        <div>
-          <div className="text-base font-bold">{'💡'} โอกาสการลงทุน {'\u2014'} จัดอันดับตามคะแนน {modeShort}</div>
-          <div className="text-sm text-muted-foreground mt-1 leading-relaxed">
-            เส้นทางที่มีอุปสงค์ยังไม่ถูกตอบสนอง: กำลังเติบโต แต่ยังให้บริการน้อย การแข่งขันต่ำ แนวโน้มต่อเนื่อง
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-1.5 p-2.5 bg-muted rounded-lg mb-4 text-sm text-muted-foreground">
-        <span className="font-semibold text-foreground mr-1">คะแนน =</span>
-        {factors.map((f, i) => (
-          <span key={i} className="flex items-center gap-1">
-            <span className={`inline-flex items-center gap-1 py-1 px-2.5 rounded-full text-[13px] font-bold border whitespace-nowrap ${
-              f.active ? 'bg-primary/15 border-primary text-primary' : 'bg-card border-border text-muted-foreground'
-            }`}>
-              {f.active && '📊 '}{f.label} <span className="opacity-70">{'\u00D7'}{f.weight}</span>
-            </span>
-            {i < factors.length - 1 && <span className="text-border">+</span>}
-          </span>
-        ))}
-      </div>
-
-      {scored.map((r, i) => {
-        const tier = getInvestTier(r._score);
-        const scoreColor = r._score >= 75 ? '#16a34a' : r._score >= 58 ? '#2563eb' : r._score >= 42 ? '#ca8a04' : '#6b7280';
-        return (
-          <div key={r.city} className="flex items-start gap-2.5 py-3 border-b border-border/60 last:border-b-0">
-            <span className="text-sm text-muted-foreground w-5 text-center shrink-0 pt-0.5">{i + 1}</span>
-            <span className="text-xl shrink-0 pt-0.5">{r.flag}</span>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-base font-bold">{r.city}</span>
-                <span className="text-sm text-muted-foreground">{r.country}</span>
-                <span className="ml-auto text-[13px] font-bold py-1 px-2.5 rounded-full whitespace-nowrap" style={{ background: `${tier.color}15`, color: tier.color }}>
-                  {tier.label}
-                </span>
-              </div>
-              <div className="flex gap-1.5 flex-wrap mt-1.5 mb-1">
-                {(['wow', 'mom', 'yoy'] as const).map((mode) => {
-                  const val = r[mode];
-                  const isActive = mode === modeKey;
-                  return (
-                    <span key={mode} className={`text-[13px] font-semibold py-1 px-2.5 rounded border whitespace-nowrap ${
-                      isActive
-                        ? 'bg-primary/12 border-primary text-primary text-sm font-bold'
-                        : `${growthPillSurfaceClasses(growthDeltaTypeFromPct(val, mode))} border-border`
-                    }`}>
-                      {mode.toUpperCase()} {val > 0 ? '+' : ''}{val}%
-                    </span>
-                  );
-                })}
-              </div>
-              <div className="text-[13px] text-muted-foreground">{'\u2708'} {r.flights} เที่ยวบิน {'\u00B7'} {r.airlines} สายการบิน {'\u00B7'} {r.airlineNames}</div>
-              <div className="text-[13px] text-muted-foreground mt-0.5 italic opacity-80">{r.note}</div>
-              <div className="text-sm text-primary font-semibold mt-1.5">{'\u2192'} {tier.action}</div>
-            </div>
-            <div className="flex flex-col items-end gap-1 shrink-0 min-w-[72px] pt-0.5">
-              <span className="text-[28px] font-extrabold leading-none" style={{ color: scoreColor }}>{r._score}</span>
-              <span className="text-[13px] text-muted-foreground text-right">/100</span>
-              <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
-                <div className="h-full rounded-full transition-all duration-400" style={{ width: `${r._score}%`, background: scoreColor }} />
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function AirlineSharePanel({ detail, scale }: { detail: AirportDetail; scale: number }) {
-  const { airlines: AIRLINES } = detail;
-  const airlines = AIRLINES.map((row) => ({ ...row, count: Math.max(1, Math.round(row.count * scale)) }));
-  const max = airlines[0]?.count || 1;
+function AirlineSharePanel({ airlines }: { airlines: AirportInsightAirline[] }) {
+  const max = airlines[0]?.flights || 1;
   return (
     <div className="bg-card border border-border rounded-[10px] p-4">
       <div className="text-[15px] font-bold mb-3.5">ส่วนแบ่งตลาดสายการบิน</div>
@@ -1320,26 +1229,22 @@ function AirlineSharePanel({ detail, scale }: { detail: AirportDetail; scale: nu
             {a.name}
           </div>
           <div className="flex-1 min-w-0 h-3 bg-muted rounded-full overflow-hidden">
-            <div className="h-full rounded-full" style={{ width: `${(a.count / max * 100).toFixed(0)}%`, background: a.color }} />
+            <div className="h-full rounded-full bg-primary" style={{ width: `${(a.flights / max * 100).toFixed(0)}%` }} />
           </div>
-          <div className="text-[15px] font-semibold text-muted-foreground min-w-11 text-right shrink-0 tabular-nums">{a.count}</div>
+          <div className="text-[15px] font-semibold text-muted-foreground min-w-11 text-right shrink-0 tabular-nums">{a.flights}</div>
         </div>
       ))}
     </div>
   );
 }
 
-function HourDistributionPanel({ timeMode, detail, scale }: { timeMode: TimeMode; detail: AirportDetail; scale: number }) {
-  const { rangePreset, setRangePreset } = useDrillDown();
-  const { hourTotal: HOUR_TOTAL, hourTotalArr: HOUR_TOTAL_ARR } = detail;
-  const subtitle = AIRPORT_PRESET_LABELS[rangePreset] ?? AIRPORT_PRESET_LABELS.focus;
+function HourDistributionPanel({ hourlyDistribution }: { hourlyDistribution: { departure: number[]; arrival: number[] } }) {
+  const subtitle = 'ภาพรวมรายปี';
 
-  const modeScale = timeMode === 'wow' ? 1 : timeMode === 'mom' ? 4 : 52;
-  const appliedScale = modeScale * scale;
   const hours = Array.from({ length: 24 }, (_, h) => ({
     hour: h,
-    dep: Math.round((HOUR_TOTAL[h] || 0) * appliedScale),
-    arr: Math.round((HOUR_TOTAL_ARR[h] || 0) * appliedScale),
+    dep: Math.round(hourlyDistribution.departure[h] || 0),
+    arr: Math.round(hourlyDistribution.arrival[h] || 0),
   }));
 
   const chartData = hours.map((h) => ({
@@ -1351,42 +1256,14 @@ function HourDistributionPanel({ timeMode, detail, scale }: { timeMode: TimeMode
 
   const xTickHours = new Set([0, 3, 6, 9, 12, 15, 18, 21, 23]);
 
-  const presetButtons: Array<{ key: RangePreset; label: string }> = [
-    { key: 'focus', label: '± 15 วัน' },
-    { key: '7', label: '7 วัน' },
-    { key: '30', label: '30 วัน' },
-    { key: 'all', label: 'ทั้งหมด' },
-    { key: '90', label: 'ไตรมาสนี้' },
-    { key: '180', label: '6 เดือน' },
-    { key: '365', label: '1 ปี' },
-  ];
-
   return (
     <div className="bg-card border border-border rounded-[10px] p-4">
-      <div className="flex flex-col gap-2 mb-1 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2">
-          <div className="text-[15px] font-bold">เที่ยวบินตามชั่วโมง</div>
-          <div className="text-[14px] text-muted-foreground font-medium">{subtitle}</div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {presetButtons.map((button) => (
-            <button
-              key={button.key}
-              type="button"
-              onClick={() => setRangePreset(button.key)}
-              className={`h-8 rounded-lg border px-3 text-xs font-medium transition-colors ${
-                rangePreset === button.key
-                  ? 'border-primary bg-primary text-primary-foreground'
-                  : 'border-border bg-background text-muted-foreground hover:bg-muted'
-              }`}
-            >
-              {button.label}
-            </button>
-          ))}
-        </div>
+      <div className="flex flex-col gap-1 mb-2">
+        <div className="text-[15px] font-bold">เที่ยวบินตามชั่วโมง</div>
+        <div className="text-[14px] text-muted-foreground font-medium">{subtitle}</div>
       </div>
       <div className="text-[14px] font-medium text-muted-foreground mb-2">
-        แกน X แสดงเวลาในแต่ละชั่วโมง (00:00 - 23:00)
+        แกน X แสดงเวลาในแต่ละชั่วโมง (00:00 - 23:00) {'\u00B7'} ข้อมูลรายปี
       </div>
       <div className="h-[250px] -ml-2">
         <ResponsiveContainer width="100%" height="100%">

@@ -1371,6 +1371,66 @@ export async function getDashboardAirportOverview(req: Request, res: Response, n
 }
 
 /**
+ * Get airport insights data for airport drill-down panels
+ * GET /api/statistics/dashboard-airport-insights?airport=BKK&window_days=30&route_limit=5&airline_limit=8
+ */
+export async function getDashboardAirportInsights(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { airport, date, window_days, start_date, end_date, route_limit, airline_limit } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+    const routeLimit = typeof route_limit === 'string' ? Number.parseInt(route_limit, 10) : 5;
+    const airlineLimit = typeof airline_limit === 'string' ? Number.parseInt(airline_limit, 10) : 8;
+
+    if (!airport || typeof airport !== 'string') {
+      res.status(400).json({
+        error: 'Missing airport parameter',
+        message: 'airport is required',
+      });
+      return;
+    }
+
+    const airportCode = airport.trim().toUpperCase();
+    if (!/^[A-Z0-9]{3,4}$/.test(airportCode)) {
+      res.status(400).json({
+        error: 'Invalid airport parameter',
+        message: 'airport must be an airport code (3-4 alphanumeric characters)',
+      });
+      return;
+    }
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-airport-insights-v1', {
+      ...req.query,
+      airport: airportCode,
+    });
+    const insights = await getOrSetDashboardQueryCache(cacheKey, () =>
+      DashboardSummaryService.getAirportInsights({
+        airportCode,
+        centerDateInput: typeof date === 'string' ? date : undefined,
+        windowDays,
+        startDateInput: typeof start_date === 'string' ? start_date : undefined,
+        endDateInput: typeof end_date === 'string' ? end_date : undefined,
+        routeLimit: Number.isNaN(routeLimit) ? 5 : routeLimit,
+        airlineLimit: Number.isNaN(airlineLimit) ? 8 : airlineLimit,
+      })
+    );
+
+    res.json(insights);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get airport trend data for airport drill-down charts
  * GET /api/statistics/dashboard-airport-trends?airport=BKK&date=YYYY-MM-DD
  */

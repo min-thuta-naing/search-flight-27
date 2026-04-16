@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDays, format, subDays } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { ChevronDown } from 'lucide-react';
@@ -8,9 +8,12 @@ import { DateRange, type MonthCaptionProps, useDayPicker } from 'react-day-picke
 
 import {
   ResponsiveContainer,
-  PieChart,
-  Pie,
+  BarChart,
+  Bar,
   Cell,
+  CartesianGrid,
+  XAxis,
+  YAxis,
   Tooltip,
 } from 'recharts';
 import {
@@ -148,6 +151,9 @@ function buildCountryPresetRange(
 function filterActiveAirports<T extends { flights: number }>(airports: T[]) {
   return airports.filter((airport) => airport.flights > 0);
 }
+
+const AIRPORT_TABLE_INITIAL_ROWS = 5;
+const AIRPORT_TABLE_STEP_ROWS = 10;
 
 function resolveCountryDisplayName(name: string, countryCode?: string | null) {
   const normalizedName = (name || '').trim();
@@ -332,6 +338,7 @@ export function CountryView() {
   const countryQuery = (country.countryCode || country.name).trim();
 
   const [dateBounds, setDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
+  const [allAirports, setAllAirports] = useState<AirportInfo[]>([]);
   const [displayAirports, setDisplayAirports] = useState<AirportInfo[]>([]);
   const [inboundRows, setInboundRows] = useState<DashboardCountryInboundBreakdownResponse[]>([]);
   const [airlineMarketRows, setAirlineMarketRows] = useState<DashboardCountryAirlineBreakdownResponse[]>([]);
@@ -427,14 +434,16 @@ export function CountryView() {
         if (!alive) return;
 
         const colors = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#22c55e'];
-        setDisplayAirports(filterActiveAirports(payload.airports).map((airport, idx) => ({
+        const mappedAirports = payload.airports.map((airport, idx) => ({
           iata: airport.iata,
           name: airport.name,
           flights: airport.flights,
           routes: airport.routes,
           airlines: airport.airlines,
           color: colors[idx % colors.length],
-        })));
+        }));
+        setAllAirports(mappedAirports);
+        setDisplayAirports(filterActiveAirports(mappedAirports));
         setInboundRows(payload.inbound);
         setAirlineMarketRows(payload.airlineMarket.map((airline, idx) => ({
           ...airline,
@@ -451,6 +460,7 @@ export function CountryView() {
         setIsLoading(false);
       } catch {
         if (!alive) return;
+        setAllAirports([]);
         setDisplayAirports([]);
         setInboundRows([]);
         setAirlineMarketRows([]);
@@ -500,7 +510,7 @@ export function CountryView() {
     },
     {
       label: 'จุดหมายที่ให้บริการ',
-      value: `${totalRoutes} Airport${totalRoutes !== 1 ? 's' : ''}`,
+      value: `${totalRoutes.toLocaleString()} Airport${totalRoutes !== 1 ? 's' : ''}`,
       delta: 'ครอบคลุมหลายภูมิภาค',
       deltaType: 'neutral',
       growthColored: false,
@@ -656,43 +666,12 @@ export function CountryView() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-3.5">
         <AirportPieChart displayAirports={displayAirports} />
-        <BusiestAirportsPanel displayAirports={displayAirports} />
+        <BusiestAirportsPanel airports={allAirports} drillTo={drillTo} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        <InboundCountriesPanel countryName={displayCountryName} rows={inboundRows} />
         <AirlineMarketSharePanel countryName={displayCountryName} rows={airlineMarketRows} />
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
-        {displayAirports.map((a) => (
-          <button
-            key={a.iata}
-            type="button"
-            onClick={() => drillTo('airport', { airport: a })}
-            className="bg-card border rounded-[10px] p-5 text-left transition-all cursor-pointer border-primary shadow-sm hover:-translate-y-0.5"
-          >
-            <div className="text-4xl font-extrabold tracking-tight mb-1 text-primary">
-              {a.iata}
-            </div>
-            <div className="text-sm text-muted-foreground mb-4">{a.name}</div>
-            <div className="flex gap-5">
-              <div>
-                <div className="text-lg font-bold">{a.flights.toLocaleString()}</div>
-                <div className="text-[15px] text-muted-foreground">เที่ยวบิน</div>
-              </div>
-              <div>
-                <div className="text-lg font-bold">{a.routes}</div>
-                <div className="text-[15px] text-muted-foreground">จุดหมาย</div>
-              </div>
-              <div>
-                <div className="text-lg font-bold">{a.airlines}</div>
-                <div className="text-[15px] text-muted-foreground">สายการบิน</div>
-              </div>
-            </div>
-            <div className="text-[15px] text-primary mt-4 font-bold">{'\u25B6'} ดูข้อมูลวิเคราะห์ทั้งหมด</div>
-          </button>
-        ))}
+        <InboundCountriesPanel countryName={displayCountryName} rows={inboundRows} />
       </div>
 
       <div className="flex justify-center pt-1">
@@ -703,64 +682,212 @@ export function CountryView() {
 }
 
 function AirportPieChart({ displayAirports }: { displayAirports: AirportInfo[] }) {
-  const total = displayAirports.reduce((s, a) => s + a.flights, 0);
+  const topAirports = [...displayAirports]
+    .sort((a, b) => b.flights - a.flights)
+    .slice(0, 5);
+  const totalTop5 = topAirports.reduce((sum, airport) => sum + airport.flights, 0);
 
-  const pieData = displayAirports.map((a) => ({
-    name: `${a.iata} (${a.name.split('"')[0].trim()})`,
-    value: a.flights,
-    color: a.color,
-    iata: a.iata,
-    pct: ((a.flights / (total || 1)) * 100).toFixed(1),
-  }));
+  const barData = topAirports
+    .map((airport) => ({
+      iata: airport.iata,
+      name: airport.name,
+      value: airport.flights,
+      color: airport.color,
+      pct: ((airport.flights / (totalTop5 || 1)) * 100).toFixed(1),
+    }))
+    .sort((a, b) => b.value - a.value);
 
   return (
     <div className="bg-card border border-border rounded-[10px] p-6">
-      <div className="text-[16px] font-bold mb-5">การกระจายปริมาณเที่ยวบินตามสนามบิน</div>
-      <div className="flex items-center gap-6 justify-center">
-        <ResponsiveContainer width={170} height={170}>
-          <PieChart>
-            <Pie data={pieData} cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={3} dataKey="value" nameKey="name" stroke="hsl(var(--background))" strokeWidth={2}>
-              {pieData.map((entry, i) => (<Cell key={i} fill={entry.color} />))}
-            </Pie>
-            <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '14px' }} formatter={(value: number, name: string) => [`${value} เที่ยวบิน`, name]} />
-          </PieChart>
+      <div className="flex items-center justify-between gap-2 mb-4">
+        <div className="text-[16px] font-bold">การกระจายปริมาณเที่ยวบินตามสนามบิน</div>
+        <div className="text-xs text-muted-foreground font-medium">Top 5</div>
+      </div>
+      <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
+        {barData.map((airport) => (
+          <span key={airport.iata} className="inline-flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: airport.color }} />
+            <span className="font-semibold">{airport.iata}</span>
+            <span>{airport.pct}%</span>
+          </span>
+        ))}
+      </div>
+      <div className="h-[270px] -ml-2">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={barData} layout="vertical" margin={{ top: 6, right: 10, left: 8, bottom: 6 }}>
+            <CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-border" />
+            <XAxis
+              type="number"
+              tick={{ fontSize: 12, fontWeight: 600 }}
+              tickFormatter={(value: number) => value.toLocaleString()}
+              className="text-muted-foreground"
+            />
+            <YAxis
+              type="category"
+              dataKey="iata"
+              width={54}
+              tick={{ fontSize: 13, fontWeight: 700 }}
+              className="text-muted-foreground"
+            />
+            <Tooltip
+              contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '14px' }}
+              labelFormatter={(label) => `สนามบิน ${label}`}
+              formatter={(value: number, _name: string, item: any) => [`${value.toLocaleString()} เที่ยวบิน (${item?.payload?.pct || '0.0'}%)`, item?.payload?.name || '']}
+            />
+            <Bar dataKey="value" radius={[0, 8, 8, 0]}>
+              {barData.map((entry, i) => (
+                <Cell key={i} fill={entry.color} />
+              ))}
+            </Bar>
+          </BarChart>
         </ResponsiveContainer>
-        <div className="flex flex-col gap-3">
-          {pieData.map((a) => (
-            <div key={a.iata} className="flex items-center gap-2.5 text-[14px] px-3 py-2 rounded-md hover:bg-primary/5 transition-colors">
-              <span className="w-3 h-3 rounded-full shrink-0" style={{ background: a.color }} />
-              <span><strong className="text-[15px]">{a.iata}</strong> {'\u00B7'} {a.value.toLocaleString()} เที่ยวบิน</span>
-              <span className="font-bold ml-auto pl-4">{a.pct}%</span>
-            </div>
-          ))}
-          <div className="text-center text-xl font-bold mt-2">{total.toLocaleString()} <span className="text-[13px] text-muted-foreground font-normal">เที่ยวบินทั้งหมด</span></div>
-        </div>
       </div>
     </div>
   );
 }
 
-function BusiestAirportsPanel({ displayAirports }: { displayAirports: AirportInfo[] }) {
-  const sorted = [...displayAirports].sort((a, b) => b.flights - a.flights);
+function BusiestAirportsPanel({
+  airports,
+  drillTo,
+}: {
+  airports: AirportInfo[];
+  drillTo: (level: 'airport', selection: { airport: AirportInfo }) => void;
+}) {
+  const [sortKey, setSortKey] = useState<'iata' | 'name' | 'flights' | 'routes' | 'airlines'>('flights');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [visibleCount, setVisibleCount] = useState(AIRPORT_TABLE_INITIAL_ROWS);
+
+  useEffect(() => {
+    setVisibleCount(AIRPORT_TABLE_INITIAL_ROWS);
+  }, [airports]);
+
+  const sorted = useMemo(() => {
+    return [...airports].sort((a, b) => {
+      const direction = sortDirection === 'asc' ? 1 : -1;
+
+      if (sortKey === 'iata') {
+        return direction * a.iata.localeCompare(b.iata);
+      }
+      if (sortKey === 'name') {
+        return direction * a.name.localeCompare(b.name);
+      }
+      if (sortKey === 'flights') {
+        return direction * (a.flights - b.flights);
+      }
+      if (sortKey === 'routes') {
+        return direction * (a.routes - b.routes);
+      }
+      return direction * (a.airlines - b.airlines);
+    });
+  }, [airports, sortDirection, sortKey]);
+
+  const visibleRows = sorted.slice(0, visibleCount);
+  const hasMoreRows = visibleCount < sorted.length;
+
+  const handleSort = (key: 'iata' | 'name' | 'flights' | 'routes' | 'airlines') => {
+    if (sortKey === key) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortKey(key);
+    setSortDirection(key === 'iata' || key === 'name' ? 'asc' : 'desc');
+  };
+
+  const sortMarker = (key: 'iata' | 'name' | 'flights' | 'routes' | 'airlines') => {
+    if (sortKey !== key) return '↕';
+    return sortDirection === 'asc' ? '↑' : '↓';
+  };
+
+  const handleMore = () => {
+    setVisibleCount((current) => Math.min(current + AIRPORT_TABLE_STEP_ROWS, sorted.length));
+  };
+
   return (
-    <div className="bg-card border border-border rounded-[10px] p-6">
-      <div className="text-[16px] font-bold mb-5">{'🏆'} สนามบินที่คึกคักที่สุด</div>
-      {sorted.map((a, i) => (
-        <div key={a.iata} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3.5 py-3 border-b border-border/60 last:border-b-0">
-          <div className="flex items-center gap-3.5">
-            <div className="text-2xl font-extrabold text-primary w-8 shrink-0">#{i + 1}</div>
-            <div className="flex-1 min-w-0">
-              <div className="text-[16px] font-extrabold text-primary">{a.iata}</div>
-              <div className="text-[14px] text-muted-foreground truncate font-medium">{a.name}</div>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2 sm:flex sm:gap-4 sm:shrink-0 pl-11 sm:pl-0 sm:ml-auto">
-            <div className="text-center"><div className="text-lg font-bold">{a.flights.toLocaleString()}</div><div className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold">เที่ยวบิน</div></div>
-            <div className="text-center"><div className="text-lg font-bold">{a.routes}</div><div className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold">เส้นทาง</div></div>
-            <div className="text-center"><div className="text-lg font-bold">{a.airlines}</div><div className="text-[13px] uppercase tracking-wider text-muted-foreground font-bold">สายการบิน</div></div>
-          </div>
+    <div className="bg-card border border-border rounded-[10px] p-4 lg:h-[400px] lg:flex lg:flex-col">
+      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-[16px] font-bold">สนามบินที่มีเที่ยวบินสูงสุด</div>
+        <div className="text-xs text-muted-foreground">
+          แสดง {Math.min(visibleCount, sorted.length).toLocaleString()} / {sorted.length.toLocaleString()}
         </div>
-      ))}
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border/70">
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="w-full min-w-[720px] border-collapse text-sm">
+            <thead className="sticky top-0 z-10">
+              <tr className="border-b border-border bg-card">
+                <th className="px-3 py-2.5 text-left">
+                  <button type="button" onClick={() => handleSort('iata')} className="inline-flex items-center gap-1 text-[12px] font-bold uppercase tracking-wide text-muted-foreground hover:text-foreground">
+                    IATA <span className="text-[11px]">{sortMarker('iata')}</span>
+                  </button>
+                </th>
+                <th className="px-3 py-2.5 text-left">
+                  <button type="button" onClick={() => handleSort('name')} className="inline-flex items-center gap-1 text-[12px] font-bold uppercase tracking-wide text-muted-foreground hover:text-foreground">
+                    สนามบิน <span className="text-[11px]">{sortMarker('name')}</span>
+                  </button>
+                </th>
+                <th className="px-3 py-2.5 text-right">
+                  <button type="button" onClick={() => handleSort('flights')} className="inline-flex items-center gap-1 text-[12px] font-bold uppercase tracking-wide text-muted-foreground hover:text-foreground">
+                    เที่ยวบิน <span className="text-[11px]">{sortMarker('flights')}</span>
+                  </button>
+                </th>
+                <th className="px-3 py-2.5 text-right">
+                  <button type="button" onClick={() => handleSort('routes')} className="inline-flex items-center gap-1 text-[12px] font-bold uppercase tracking-wide text-muted-foreground hover:text-foreground">
+                    เส้นทาง <span className="text-[11px]">{sortMarker('routes')}</span>
+                  </button>
+                </th>
+                <th className="px-3 py-2.5 text-right">
+                  <button type="button" onClick={() => handleSort('airlines')} className="inline-flex items-center gap-1 text-[12px] font-bold uppercase tracking-wide text-muted-foreground hover:text-foreground">
+                    สายการบิน <span className="text-[11px]">{sortMarker('airlines')}</span>
+                  </button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    ไม่พบข้อมูลสนามบิน
+                  </td>
+                </tr>
+              ) : (
+                visibleRows.map((airport) => (
+                  <tr
+                    key={airport.iata}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => drillTo('airport', { airport })}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        drillTo('airport', { airport });
+                      }
+                    }}
+                    className="border-b border-border/60 last:border-b-0 cursor-pointer hover:bg-primary/[0.03]"
+                  >
+                    <td className="px-3 py-2.5 font-extrabold text-primary">{airport.iata}</td>
+                    <td className="px-3 py-2.5 font-medium text-foreground">{airport.name}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{airport.flights.toLocaleString()}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-muted-foreground">{airport.routes}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-muted-foreground">{airport.airlines}</td>
+                  </tr>
+                ))
+              )}
+              {hasMoreRows ? (
+                <tr className="border-t border-border/70 bg-card">
+                  <td colSpan={5} className="px-3 py-3">
+                    <div className="flex justify-center">
+                      <Button type="button" variant="outline" onClick={handleMore} className="h-8 px-4 text-xs">
+                        เพิ่มเติม
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -812,54 +939,72 @@ function InboundCountriesPanel({
   countryName: string;
   rows: DashboardCountryInboundBreakdownResponse[];
 }) {
-  const sorted = rows;
+  const sorted = [...rows].sort((a, b) => b.flights - a.flights);
+  const totalFlights = sorted.reduce((sum, row) => sum + row.flights, 0) || 1;
+  const maxFlights = sorted[0]?.flights || 1;
 
   return (
-    <div className="bg-card border border-border rounded-[10px] p-5 h-full">
+    <div className="bg-card border border-border rounded-[10px] p-5 lg:h-[400px] lg:flex lg:flex-col">
       <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-[16px] font-bold break-words">
-          {'🛬'} Top Inbound Countries — {countryName}
+          {'🛬'} ประเทศที่บินเข้ามามากสุด — {countryName}
         </div>
         <div className="text-xs text-muted-foreground">อ้างอิง 5 อันดับล่าสุด</div>
       </div>
 
-      <div className="overflow-x-auto rounded-[10px] border border-border/70">
-        <table className="w-full min-w-[420px] border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-border bg-muted/20">
-              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
-              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ประเทศ</th>
-              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.length === 0 ? (
-              <tr>
-                <td colSpan={3} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                  ไม่พบข้อมูลประเทศขาเข้า
-                </td>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border/70">
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="w-full min-w-[420px] border-collapse text-sm">
+            <thead className="sticky top-0 z-10">
+              <tr className="border-b border-border bg-muted/20">
+                <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
+                <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ประเทศ</th>
+                <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
               </tr>
-            ) : (
-              sorted.map((c: DashboardCountryInboundBreakdownResponse, i: number) => (
-                <tr key={c.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
-                  <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
-                  <td className="px-3 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-base">{c.flag}</span>
-                      <span className="font-medium text-foreground">{c.name}</span>
-                    </div>
+            </thead>
+            <tbody>
+              {sorted.length === 0 ? (
+                <tr>
+                  <td colSpan={3} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    ไม่พบข้อมูลประเทศขาเข้า
                   </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{c.flights.toLocaleString()}</td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                sorted.map((c: DashboardCountryInboundBreakdownResponse, i: number) => {
+                  const share = (c.flights / totalFlights) * 100;
+                  const barWidth = (c.flights / maxFlights) * 100;
+
+                  return (
+                    <tr key={c.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
+                      <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">{c.flag}</span>
+                          <span className="font-medium text-foreground">{c.name}</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex flex-col items-end gap-1">
+                          <div className="tabular-nums font-bold text-primary">{c.flights.toLocaleString()}</div>
+                          <div className="flex w-full items-center gap-2">
+                            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                              <div className="h-full rounded-full bg-primary" style={{ width: `${barWidth}%` }} />
+                            </div>
+                            <div className="tabular-nums text-[11px] font-semibold text-muted-foreground">{share.toFixed(1)}%</div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
 }
-
 function AirlineMarketSharePanel({
   countryName,
   rows,
@@ -867,57 +1012,80 @@ function AirlineMarketSharePanel({
   countryName: string;
   rows: DashboardCountryAirlineBreakdownResponse[];
 }) {
+  const [visibleCount, setVisibleCount] = useState(5);
   const airlines = rows;
   const max = airlines[0]?.flights || 1;
+  const visibleAirlines = airlines.slice(0, visibleCount);
+  const hasMoreRows = visibleCount < airlines.length;
+
+  useEffect(() => {
+    setVisibleCount(5);
+  }, [rows]);
 
   return (
-    <div className="bg-card border border-border rounded-[10px] p-5 h-full">
+    <div className="bg-card border border-border rounded-[10px] p-5 lg:h-[400px] lg:flex lg:flex-col">
       <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-[16px] font-bold break-words">
           {'✈️'} Top Airlines Market Share — {countryName}
         </div>
-        <div className="text-xs text-muted-foreground">อ้างอิง 5 อันดับล่าสุด</div>
+        <div className="text-xs text-muted-foreground">นับเฉพาะเที่ยวบินจากต่างประเทศ</div>
       </div>
 
-      <div className="overflow-x-auto rounded-[10px] border border-border/70">
-        <table className="w-full min-w-[520px] border-collapse text-sm">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border/70">
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="w-full min-w-[620px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/20">
               <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
               <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">สายการบิน</th>
               <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
+              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">Bar score</th>
               <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ส่วนแบ่ง</th>
             </tr>
           </thead>
           <tbody>
             {airlines.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
                   ไม่พบข้อมูลสายการบิน
                 </td>
               </tr>
             ) : (
-              airlines.map((airline: DashboardCountryAirlineBreakdownResponse, i: number) => {
+              visibleAirlines.map((airline: DashboardCountryAirlineBreakdownResponse, i: number) => {
                 const barW = (airline.flights / max * 100).toFixed(0);
                 return (
                   <tr key={airline.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
                     <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
+                    <td className="px-3 py-2.5 font-medium text-foreground">{airline.name}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{airline.flights.toLocaleString()}</td>
                     <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2.5">
-                        <span className="font-medium text-foreground">{airline.name}</span>
-                        <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
-                          <div className="h-full rounded-full bg-primary" style={{ width: `${barW}%` }} />
-                        </div>
+                      <div className="h-2 w-28 rounded-full bg-muted overflow-hidden">
+                        <div className="h-full rounded-full bg-primary" style={{ width: `${barW}%` }} />
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{airline.flights.toLocaleString()}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground font-bold">{airline.share.toFixed(1)}%</td>
                   </tr>
                 );
               })
             )}
+            {hasMoreRows && (
+              <tr className="border-t border-border/70 bg-card">
+                <td colSpan={5} className="px-3 py-3">
+                  <div className="flex justify-center">
+                    <button
+                      type="button"
+                      onClick={() => setVisibleCount((current) => Math.min(current + 10, airlines.length))}
+                      className="inline-flex items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"
+                    >
+                      เพิ่มเติม
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )}
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     </div>
   );

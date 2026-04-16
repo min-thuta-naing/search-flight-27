@@ -2667,11 +2667,13 @@ export class DashboardSummaryService {
         FROM departure_flight_paths
         WHERE departure_date >= $3 AND departure_date <= $4
           AND arr_airport IN (SELECT code FROM country_airports)
+          AND dep_airport NOT IN (SELECT code FROM country_airports)
         UNION ALL
         SELECT dep_airport AS origin_airport
         FROM arrival_flight_paths
         WHERE departure_date >= $3 AND departure_date <= $4
           AND arr_airport IN (SELECT code FROM country_airports)
+          AND dep_airport NOT IN (SELECT code FROM country_airports)
       ),
       current_agg AS (
         SELECT
@@ -2745,11 +2747,10 @@ export class DashboardSummaryService {
         FROM current_rows
         GROUP BY airline_id
       ),
-      top_current AS (
+      current_ranked AS (
         SELECT airline_id, flights
         FROM current_agg
         ORDER BY flights DESC, airline_id ASC
-        LIMIT 5
       ),
       previous_rows AS (
         SELECT airline_id
@@ -2795,7 +2796,7 @@ export class DashboardSummaryService {
           WHEN totals.previous_total > 0 THEN (COALESCE(pa.flights, 0)::numeric / totals.previous_total::numeric) * 100
           ELSE 0
         END AS previous_share
-      FROM top_current tc
+      FROM current_ranked tc
       LEFT JOIN previous_agg pa ON pa.airline_id = tc.airline_id
       LEFT JOIN airlines al ON al.id = tc.airline_id
       CROSS JOIN totals

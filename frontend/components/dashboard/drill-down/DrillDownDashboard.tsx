@@ -88,6 +88,8 @@ export function DrillDownDashboard() {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     const pollStatus = async () => {
+      let shouldContinue = true;
+
       try {
         const status = await statisticsApi.getDashboardCacheStatus();
         if (cancelled) {
@@ -100,12 +102,17 @@ export function DrillDownDashboard() {
         if (status.preload.phase === 'failed' && status.preload.error) {
           setBootstrapError(status.preload.error);
         }
+
+        if (status.preload.phase !== 'running') {
+          shouldContinue = false;
+        }
       } catch (error) {
         if (!cancelled) {
           setBootstrapError(error instanceof Error ? error.message : 'Failed to load dashboard preload status');
         }
+        shouldContinue = false;
       } finally {
-        if (!cancelled) {
+        if (!cancelled && shouldContinue) {
           timeoutId = setTimeout(pollStatus, 3000);
         }
       }

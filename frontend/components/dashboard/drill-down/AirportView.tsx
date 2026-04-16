@@ -435,12 +435,12 @@ export function AirportView() {
                 className={`inline-flex max-w-full shrink-0 flex-wrap items-center gap-x-1 text-[13px] font-bold break-words rounded-full py-0.5 px-3 ${growthCardBadgeClasses(countryTone)}`}
               >
                 {selections.country.deltaN >= 0 ? '\u25B2' : '\u25BC'} {selections.country.deltaN >= 0 ? '+' : ''}
-                {selections.country.deltaN} เที่ยวบิน ({selections.country.delta})
+                {selections.country.deltaN.toLocaleString()} เที่ยวบิน ({selections.country.delta})
               </span>
             )}
           </div>
           <p className="text-[15px] text-muted-foreground break-words">
-            {activeAirportFlights.toLocaleString()} เที่ยวบิน {'\u00B7'} {airport.routes} จุดหมาย {'\u00B7'} {airport.airlines} สายการบิน
+            {activeAirportFlights.toLocaleString()} เที่ยวบิน {'\u00B7'} {airport.routes.toLocaleString()} จุดหมาย {'\u00B7'} {airport.airlines.toLocaleString()} สายการบิน
           </p>
         </div>
         <div className="min-w-0 w-full xl:w-auto xl:max-w-[48rem]">
@@ -1181,7 +1181,7 @@ function TopDestinationsPanel({ departures, arrivals, subtitle }: { departures: 
           <div className="w-24 h-2 bg-muted rounded-full overflow-hidden shrink-0">
             <div className="h-full rounded-full" style={{ width: `${barW}%`, background: rowColor }} />
           </div>
-          <span className="text-[15px] font-bold w-10 text-right shrink-0 tabular-nums">{r.flights}</span>
+          <span className="text-[15px] font-bold w-10 text-right shrink-0 tabular-nums">{r.flights.toLocaleString()}</span>
         </div>
       </div>
     );
@@ -1231,7 +1231,7 @@ function AirlineSharePanel({ airlines }: { airlines: AirportInsightAirline[] }) 
           <div className="flex-1 min-w-0 h-3 bg-muted rounded-full overflow-hidden">
             <div className="h-full rounded-full bg-primary" style={{ width: `${(a.flights / max * 100).toFixed(0)}%` }} />
           </div>
-          <div className="text-[15px] font-semibold text-muted-foreground min-w-11 text-right shrink-0 tabular-nums">{a.flights}</div>
+          <div className="text-[15px] font-semibold text-muted-foreground min-w-11 text-right shrink-0 tabular-nums">{a.flights.toLocaleString()}</div>
         </div>
       ))}
     </div>

@@ -53,6 +53,15 @@ const dashboardPreloadStatus: DashboardPreloadStatus = {
   error: null,
 };
 
+function normalizeQueryText(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function setDashboardPreloadStatus(nextStatus: Partial<DashboardPreloadStatus>) {
   Object.assign(dashboardPreloadStatus, nextStatus);
 }
@@ -128,9 +137,44 @@ async function writeDashboardQueryCacheSnapshot(entries: Record<string, Dashboar
     updatedAt: new Date().toISOString(),
     entries,
   };
+  const payload = JSON.stringify(snapshot, null, 2);
 
-  await writeFile(tempFile, JSON.stringify(snapshot, null, 2), 'utf8');
-  await rename(tempFile, DASHBOARD_CACHE_FILE);
+  await writeFile(tempFile, payload, 'utf8');
+
+  const isRecoverableRenameError = (error: unknown) => {
+    const code = (error as { code?: string })?.code;
+    return code === 'EPERM' || code === 'EEXIST' || code === 'EBUSY' || code === 'EACCES';
+  };
+
+  try {
+    // Best path on most platforms: atomic-ish swap from tmp to live file.
+    await rename(tempFile, DASHBOARD_CACHE_FILE);
+    return;
+  } catch (error) {
+    if (!isRecoverableRenameError(error)) {
+      throw error;
+    }
+  }
+
+  // Windows can reject rename when destination exists or is transiently locked.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await rm(DASHBOARD_CACHE_FILE, { force: true });
+      await rename(tempFile, DASHBOARD_CACHE_FILE);
+      return;
+    } catch (error) {
+      if (!isRecoverableRenameError(error)) {
+        throw error;
+      }
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+      }
+    }
+  }
+
+  // Last resort: write directly and clean temp file so API request does not fail.
+  await writeFile(DASHBOARD_CACHE_FILE, payload, 'utf8');
+  await rm(tempFile, { force: true });
 }
 
 function queueDashboardCacheWrite(task: () => Promise<void>): Promise<void> {
@@ -1277,6 +1321,9 @@ export async function getDashboardContinentTrends(req: Request, res: Response, n
 export async function getDashboardCountryOverview(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { country, date, window_days, start_date, end_date } = req.query;
+    const normalizedStartDate = normalizeQueryText(start_date);
+    const normalizedEndDate = normalizeQueryText(end_date);
+    const normalizedDate = normalizeQueryText(date);
     const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
 
     if (!country || typeof country !== 'string') {
@@ -1287,7 +1334,7 @@ export async function getDashboardCountryOverview(req: Request, res: Response, n
       return;
     }
 
-    if (!start_date || !end_date) {
+    if (!normalizedStartDate || !normalizedEndDate) {
       if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
         res.status(400).json({
           error: 'Invalid window_days parameter',
@@ -1297,14 +1344,20 @@ export async function getDashboardCountryOverview(req: Request, res: Response, n
       }
     }
 
-    const cacheKey = buildDashboardQueryCacheKey('dashboard-country-overview', req.query);
+    const normalizedQuery = {
+      ...req.query,
+      date: normalizedDate,
+      start_date: normalizedStartDate,
+      end_date: normalizedEndDate,
+    };
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-country-overview', normalizedQuery);
     const overview = await getOrSetDashboardQueryCache(cacheKey, () =>
       DashboardSummaryService.getCountryOverview({
         country,
-        centerDateInput: typeof date === 'string' ? date : undefined,
+        centerDateInput: normalizedDate,
         windowDays,
-        startDateInput: typeof start_date === 'string' ? start_date : undefined,
-        endDateInput: typeof end_date === 'string' ? end_date : undefined,
+        startDateInput: normalizedStartDate,
+        endDateInput: normalizedEndDate,
       })
     );
 

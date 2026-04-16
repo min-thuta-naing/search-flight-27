@@ -102,6 +102,15 @@ const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   '365': '1 ปี',
 };
 
+const PRELOADED_PRESET_WINDOW_DAYS: Partial<Record<RangePreset, number>> = {
+  focus: 15,
+  '7': 7,
+  '30': 30,
+  '90': 90,
+  '180': 180,
+  '365': 365,
+};
+
 const CALENDAR_MONTH_OPTIONS = Array.from({ length: 12 }, (_, monthIndex) => ({
   value: monthIndex,
   label: format(new Date(2024, monthIndex, 1), 'LLLL', { locale: th }),
@@ -360,11 +369,19 @@ export function WorldView() {
         try {
           const status = await statisticsApi.getDashboardCacheStatus();
           console.debug('[WorldView] backend preload status', {
+            phase: status.preload.phase,
             inFlightEntries: status.queryCache.inFlightEntries,
             cacheEntries: status.queryCache.cacheEntries,
           });
 
-          if (status.queryCache.inFlightEntries <= 0) {
+          if (status.preload.phase === 'failed') {
+            if (alive) {
+              setPresetPreloadState('failed');
+            }
+            return;
+          }
+
+          if (status.preload.phase === 'completed' || status.queryCache.inFlightEntries <= 0) {
             if (alive) {
               setPresetPreloadState('ready');
             }
@@ -426,9 +443,16 @@ export function WorldView() {
       };
     }
 
+    const activePresetWindowDays = durationMode ? PRELOADED_PRESET_WINDOW_DAYS[durationMode] : undefined;
+    const isPreloadedPresetMode = !!activePresetWindowDays;
     const startDate = formatLocalDateInput(dateRange.from);
     const endDate = formatLocalDateInput(dateRange.to || dateRange.from);
-    const cacheKey = `${startDate}__${endDate}`;
+    const cacheKey = isPreloadedPresetMode
+      ? `preset:${durationMode}`
+      : `${startDate}__${endDate}`;
+    const queryOptions = isPreloadedPresetMode
+      ? { windowDays: activePresetWindowDays }
+      : { startDate, endDate };
     const summaryCacheState = getWorldSummaryCacheState(cacheKey);
     const topRanksCacheState = getWorldTopRanksCacheState(cacheKey);
     const topDestinationsCacheState = getWorldTopDestinationsCacheState(cacheKey);
@@ -444,7 +468,14 @@ export function WorldView() {
     const canBypassPreloadGate = elapsedPreloadGateMs >= PRELOAD_GATE_MAX_WAIT_MS;
     const missingAllSelectedPresetData = shouldRefreshSummary && shouldRefreshTopRanks && shouldRefreshTopDestinations;
 
-    if (presetPreloadState === 'running' && missingAllSelectedPresetData && !canBypassPreloadGate) {
+    const shouldHoldForPreload =
+      presetPreloadState === 'running' &&
+      isPreloadedPresetMode &&
+      missingAllSelectedPresetData &&
+      !canBypassPreloadGate &&
+      rangePreset !== 'all';
+
+    if (shouldHoldForPreload) {
       // Hold briefly for backend warm-up to avoid duplicate heavy queries from browser.
       setLoading(true);
       setTopRanksLoading(true);
@@ -490,11 +521,11 @@ export function WorldView() {
 
     void (async () => {
       if (shouldRefreshSummary) {
-        console.debug('[WorldView] calling dashboard-summary', { startDate, endDate });
+        console.debug('[WorldView] calling dashboard-summary', { cacheKey, queryOptions });
         try {
           const summaryData = await runDrillDownRequest(
             `world:summary:${cacheKey}`,
-            () => statisticsApi.getDashboardSummary({ startDate, endDate }),
+            () => statisticsApi.getDashboardSummary(queryOptions),
           );
           if (!mounted) return;
           setWorldSummaryCache(cacheKey, summaryData);
@@ -521,11 +552,11 @@ export function WorldView() {
       }
 
       if (shouldRefreshTopRanks) {
-        console.debug('[WorldView] calling dashboard-top-ranks', { startDate, endDate });
+        console.debug('[WorldView] calling dashboard-top-ranks', { cacheKey, queryOptions });
         try {
           const topRanksData = await runDrillDownRequest(
             `world:top-ranks:${cacheKey}`,
-            () => statisticsApi.getDashboardTopRanks({ startDate, endDate }),
+            () => statisticsApi.getDashboardTopRanks(queryOptions),
           );
           if (!mounted) return;
           setWorldTopRanksCache(cacheKey, topRanksData);
@@ -545,11 +576,11 @@ export function WorldView() {
             const [countriesData, airportsData] = await Promise.all([
               runDrillDownRequest(
                 `world:top-countries:${cacheKey}`,
-                () => statisticsApi.getDashboardTopCountries({ startDate, endDate }),
+                () => statisticsApi.getDashboardTopCountries(queryOptions),
               ),
               runDrillDownRequest(
                 `world:top-airports:${cacheKey}`,
-                () => statisticsApi.getDashboardTopAirports({ startDate, endDate }),
+                () => statisticsApi.getDashboardTopAirports(queryOptions),
               ),
             ]);
             if (!mounted) return;
@@ -589,11 +620,11 @@ export function WorldView() {
       }
 
       if (shouldRefreshTopDestinations) {
-        console.debug('[WorldView] calling dashboard-top-destinations', { startDate, endDate });
+        console.debug('[WorldView] calling dashboard-top-destinations', { cacheKey, queryOptions });
         try {
           const topDestinationsData = await runDrillDownRequest(
             `world:top-destinations:${cacheKey}`,
-            () => statisticsApi.getDashboardTopDestinations({ startDate, endDate }),
+            () => statisticsApi.getDashboardTopDestinations(queryOptions),
           );
           if (!mounted) return;
           setWorldTopDestinationsCache(cacheKey, topDestinationsData);
@@ -621,7 +652,7 @@ export function WorldView() {
     return () => {
       mounted = false;
     };
-  }, [dateRange, presetPreloadState]);
+  }, [dateRange, presetPreloadState, rangePreset]);
 
   const fallbackTotalFlights = CONTINENTS.reduce((sum, continent) => sum + continent.flights, 0);
   const fallbackBusiestContinent = [...CONTINENTS].sort((a, b) => b.flights - a.flights)[0];

@@ -33,8 +33,7 @@ import {
   parsePercentFromDelta,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
-import { getContinentDetail, getContinentTopAirports, getContinentTopRoutes, getContinentTrends } from '@/lib/dashboard/services/drilldown';
-import { statisticsApi, type DashboardDateBoundsResponse } from '@/lib/api/statistics-api';
+import { getContinentDetail, getContinentTopAirports, getContinentTopRoutes, getContinentTrends, getDashboardDateBounds, type DashboardDateBoundsResponse } from '@/lib/dashboard/services/drilldown';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useDrillDown, KPIRow, BackButton, ChangePill } from './DrillDownDashboard';
@@ -340,7 +339,7 @@ export function ContinentView() {
       try {
         const bounds = await runDrillDownRequest(
           'continent:date-bounds',
-          () => statisticsApi.getDashboardDateBounds(),
+          () => getDashboardDateBounds(),
         );
         if (!alive) return;
         setDashboardDateBounds(bounds);

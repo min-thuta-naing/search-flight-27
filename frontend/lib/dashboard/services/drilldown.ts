@@ -15,6 +15,19 @@ import type {
   CountryAirlineShare,
 } from '@/types/dashboard';
 import { statisticsApi } from '@/lib/api/statistics-api';
+export type {
+  DashboardDateBoundsResponse,
+  DashboardCacheStatusResponse,
+  DashboardSummaryResponse,
+  DashboardTopRanksResponse,
+  DashboardCountryOverviewResponse,
+  DashboardCountryFlowMapResponse,
+  DashboardAirportOverviewResponse,
+  DashboardAirportInsightsResponse,
+  DashboardTopCountriesResponse,
+  DashboardTopAirportsResponse,
+  DashboardTopDestinationsResponse,
+} from '@/lib/api/statistics-api';
 import {
   ROUTES,
   ARRIVALS,
@@ -71,6 +84,57 @@ export async function getCountryOverview(
   options?: Parameters<typeof statisticsApi.getDashboardCountryOverview>[1],
 ) {
   return statisticsApi.getDashboardCountryOverview(countryName, options);
+}
+
+export async function getCountryFlowMap(
+  countryName: string,
+  options?: Parameters<typeof statisticsApi.getDashboardCountryFlowMap>[1],
+) {
+  return statisticsApi.getDashboardCountryFlowMap(countryName, options);
+}
+
+// ── Dashboard/World level (date bounds, cache, summaries, ranks, rankings) ──
+
+export async function getDashboardDateBounds(
+  signal?: AbortSignal,
+) {
+  return statisticsApi.getDashboardDateBounds(signal);
+}
+
+export async function getDashboardCacheStatus(
+  signal?: AbortSignal,
+) {
+  return statisticsApi.getDashboardCacheStatus(signal);
+}
+
+export async function getDashboardSummary(
+  options?: Parameters<typeof statisticsApi.getDashboardSummary>[0],
+) {
+  return statisticsApi.getDashboardSummary(options);
+}
+
+export async function getDashboardTopRanks(
+  options?: Parameters<typeof statisticsApi.getDashboardTopRanks>[0],
+) {
+  return statisticsApi.getDashboardTopRanks(options);
+}
+
+export async function getDashboardTopCountries(
+  options?: Parameters<typeof statisticsApi.getDashboardTopCountries>[0],
+) {
+  return statisticsApi.getDashboardTopCountries(options);
+}
+
+export async function getDashboardTopAirports(
+  options?: Parameters<typeof statisticsApi.getDashboardTopAirports>[0],
+) {
+  return statisticsApi.getDashboardTopAirports(options);
+}
+
+export async function getDashboardTopDestinations(
+  options?: Parameters<typeof statisticsApi.getDashboardTopDestinations>[0],
+) {
+  return statisticsApi.getDashboardTopDestinations(options);
 }
 
 // ── Country level ──

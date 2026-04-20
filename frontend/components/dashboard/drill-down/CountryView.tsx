@@ -22,15 +22,16 @@ import {
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import {
   getCountryOverview,
+  getDashboardDateBounds,
+  getCountryFlowMap,
+  type DashboardDateBoundsResponse,
+  type DashboardCountryFlowMapResponse,
 } from '@/lib/dashboard/services/drilldown';
 import { runDrillDownRequest } from '@/lib/dashboard/drill-down-cache';
-import {
-  statisticsApi,
-  type DashboardDateBoundsResponse,
-  type DashboardCountryInboundBreakdownResponse,
-  type DashboardCountryAirlineBreakdownResponse,
-  type DashboardCountryFlowMapPointResponse,
-  type DashboardCountryFlowMapResponse,
+import type {
+  DashboardCountryInboundBreakdownResponse,
+  DashboardCountryAirlineBreakdownResponse,
+  DashboardCountryFlowMapPointResponse,
 } from '@/lib/api/statistics-api';
 import { Calendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
@@ -554,7 +555,7 @@ export function CountryView() {
 
     const loadBounds = async () => {
       try {
-        const bounds = await runDrillDownRequest('country:date-bounds', () => statisticsApi.getDashboardDateBounds());
+        const bounds = await runDrillDownRequest('country:date-bounds', () => getDashboardDateBounds());
         if (!alive) return;
         setDateBounds(bounds);
       } catch {
@@ -680,7 +681,7 @@ export function CountryView() {
         const payload = await runDrillDownRequest(
           flowMapRequestKey,
           () =>
-            statisticsApi.getDashboardCountryFlowMap(countryQuery, {
+            getCountryFlowMap(countryQuery, {
               startDate,
               endDate,
               timeoutMs: 60000,

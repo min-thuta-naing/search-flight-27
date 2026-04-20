@@ -4,7 +4,7 @@ import { useState, useCallback, createContext, useContext, useEffect } from 'rea
 import { ArrowUp } from 'lucide-react';
 import type { DrillLevel, TimeMode, ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } from '@/lib/dashboard/drill-down-data';
-import { statisticsApi, type DashboardCacheStatusResponse } from '@/lib/api/statistics-api';
+import { getDashboardCacheStatus, type DashboardCacheStatusResponse } from '@/lib/dashboard/services/drilldown';
 import { readSharedRangePreset, writeSharedRangePreset } from '@/lib/dashboard/range-preset-store';
 import { Button } from '@/components/ui/button';
 import { WorldView } from './WorldView';
@@ -93,7 +93,7 @@ export function DrillDownDashboard() {
       let shouldContinue = true;
 
       try {
-        const status = await statisticsApi.getDashboardCacheStatus();
+        const status = await getDashboardCacheStatus();
         if (cancelled) {
           return;
         }

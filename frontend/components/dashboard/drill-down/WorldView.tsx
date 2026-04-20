@@ -21,12 +21,20 @@ import {
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import {
-  statisticsApi,
+  getDashboardDateBounds,
+  getDashboardSummary,
+  getDashboardTopRanks,
+  getDashboardTopCountries,
+  getDashboardTopAirports,
+  getDashboardTopDestinations,
+  getDashboardCacheStatus,
   type DashboardDateBoundsResponse,
   type DashboardSummaryResponse,
-  type DashboardContinentCardResponse,
   type DashboardTopRanksResponse,
   type DashboardTopDestinationsResponse,
+} from '@/lib/dashboard/services/drilldown';
+import type {
+  DashboardContinentCardResponse,
 } from '@/lib/api/statistics-api';
 import {
   getWorldSummaryCacheState,
@@ -304,7 +312,7 @@ export function WorldView() {
       try {
         const bounds = await runDrillDownRequest(
           'world:date-bounds',
-          () => statisticsApi.getDashboardDateBounds(),
+          () => getDashboardDateBounds(),
         );
         if (!alive) return;
         setDashboardDateBounds(bounds);
@@ -367,7 +375,7 @@ export function WorldView() {
       const timeoutAt = Date.now() + 180_000;
       while (alive && Date.now() < timeoutAt) {
         try {
-          const status = await statisticsApi.getDashboardCacheStatus();
+          const status = await getDashboardCacheStatus();
           console.debug('[WorldView] backend preload status', {
             phase: status.preload.phase,
             inFlightEntries: status.queryCache.inFlightEntries,
@@ -525,7 +533,7 @@ export function WorldView() {
         try {
           const summaryData = await runDrillDownRequest(
             `world:summary:${cacheKey}`,
-            () => statisticsApi.getDashboardSummary(queryOptions),
+            () => getDashboardSummary(queryOptions),
           );
           if (!mounted) return;
           setWorldSummaryCache(cacheKey, summaryData);
@@ -556,7 +564,7 @@ export function WorldView() {
         try {
           const topRanksData = await runDrillDownRequest(
             `world:top-ranks:${cacheKey}`,
-            () => statisticsApi.getDashboardTopRanks(queryOptions),
+            () => getDashboardTopRanks(queryOptions),
           );
           if (!mounted) return;
           setWorldTopRanksCache(cacheKey, topRanksData);
@@ -576,11 +584,11 @@ export function WorldView() {
             const [countriesData, airportsData] = await Promise.all([
               runDrillDownRequest(
                 `world:top-countries:${cacheKey}`,
-                () => statisticsApi.getDashboardTopCountries(queryOptions),
+                () => getDashboardTopCountries(queryOptions),
               ),
               runDrillDownRequest(
                 `world:top-airports:${cacheKey}`,
-                () => statisticsApi.getDashboardTopAirports(queryOptions),
+                () => getDashboardTopAirports(queryOptions),
               ),
             ]);
             if (!mounted) return;
@@ -624,7 +632,7 @@ export function WorldView() {
         try {
           const topDestinationsData = await runDrillDownRequest(
             `world:top-destinations:${cacheKey}`,
-            () => statisticsApi.getDashboardTopDestinations(queryOptions),
+            () => getDashboardTopDestinations(queryOptions),
           );
           if (!mounted) return;
           setWorldTopDestinationsCache(cacheKey, topDestinationsData);

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDays, format, subDays } from 'date-fns';
 import { th } from 'date-fns/locale';
+import dynamic from 'next/dynamic';
 import { ChevronDown } from 'lucide-react';
 import { DateRange, type MonthCaptionProps, useDayPicker } from 'react-day-picker';
 
@@ -30,6 +31,8 @@ import {
   type DashboardDateBoundsResponse,
   type DashboardCountryInboundBreakdownResponse,
   type DashboardCountryAirlineBreakdownResponse,
+  type DashboardCountryFlowMapPointResponse,
+  type DashboardCountryFlowMapResponse,
 } from '@/lib/api/statistics-api';
 import { Calendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
@@ -154,6 +157,16 @@ function filterActiveAirports<T extends { flights: number }>(airports: T[]) {
 
 const AIRPORT_TABLE_INITIAL_ROWS = 5;
 const AIRPORT_TABLE_STEP_ROWS = 10;
+type CountryFlowMapMode = 'inbound' | 'outbound' | 'both';
+const COUNTRY_FLOW_MAP_TOP_N = 10;
+const Plot = dynamic(() => import('react-plotly.js'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[430px] items-center justify-center text-sm font-medium text-muted-foreground">
+      กำลังเตรียมแผนที่...
+    </div>
+  ),
+});
 
 function resolveCountryDisplayName(name: string, countryCode?: string | null) {
   const normalizedName = (name || '').trim();
@@ -331,6 +344,109 @@ function handleCountryCustomDateToggle(
   setDateError(false);
 }
 
+function formatCountryFlowMapCount(value: number) {
+  return new Intl.NumberFormat('en-US').format(value);
+}
+
+function clampCountryFlowMapViewportValue(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeCountryFlowMapLongitude(longitude: number) {
+  return ((((longitude + 180) % 360) + 360) % 360) - 180;
+}
+
+function getClosestCountryFlowMapLongitude(longitude: number, referenceLongitude: number) {
+  const normalizedLongitude = normalizeCountryFlowMapLongitude(longitude);
+  let closestLongitude = normalizedLongitude;
+  let closestDistance = Math.abs(normalizedLongitude - referenceLongitude);
+
+  const shiftedPositive = normalizedLongitude + 360;
+  const shiftedPositiveDistance = Math.abs(shiftedPositive - referenceLongitude);
+  if (shiftedPositiveDistance < closestDistance) {
+    closestLongitude = shiftedPositive;
+    closestDistance = shiftedPositiveDistance;
+  }
+
+  const shiftedNegative = normalizedLongitude - 360;
+  const shiftedNegativeDistance = Math.abs(shiftedNegative - referenceLongitude);
+  if (shiftedNegativeDistance < closestDistance) {
+    closestLongitude = shiftedNegative;
+  }
+
+  return closestLongitude;
+}
+
+type CountryFlowMapPlotPoint = DashboardCountryFlowMapPointResponse & {
+  plotLongitude: number;
+};
+
+function mapCountryFlowMapPlotPoints(
+  points: DashboardCountryFlowMapPointResponse[],
+  referenceLongitude: number,
+): CountryFlowMapPlotPoint[] {
+  return points
+    .filter((point) => point.latitude != null && point.longitude != null)
+    .map((point) => ({
+      ...point,
+      plotLongitude: getClosestCountryFlowMapLongitude(point.longitude as number, referenceLongitude),
+    }));
+}
+
+function buildCountryFlowMapViewport(
+  points: CountryFlowMapPlotPoint[],
+  selectedLatitude: number,
+  selectedLongitude: number,
+) {
+  const latitudes = [selectedLatitude, ...points.map((point) => point.latitude as number)];
+  const longitudes = [selectedLongitude, ...points.map((point) => point.plotLongitude)];
+
+  const minLatitude = Math.min(...latitudes);
+  const maxLatitude = Math.max(...latitudes);
+  const minLongitude = Math.min(...longitudes);
+  const maxLongitude = Math.max(...longitudes);
+
+  const latitudeSpan = Math.max(10, maxLatitude - minLatitude);
+  const longitudeSpan = Math.max(16, maxLongitude - minLongitude);
+
+  const latitudePadding = Math.min(18, Math.max(6, latitudeSpan * 0.28));
+  const longitudePadding = Math.min(26, Math.max(8, longitudeSpan * 0.24));
+  const rightSideBoost = Math.min(22, Math.max(6, longitudeSpan * 0.2));
+  const centerWestBias = Math.min(14, Math.max(2.5, longitudeSpan * 0.12));
+
+  const latRangeMin = clampCountryFlowMapViewportValue(minLatitude - latitudePadding, -82, 84);
+  const latRangeMax = clampCountryFlowMapViewportValue(maxLatitude + latitudePadding, -82, 84);
+  const lonRangeMin = minLongitude - longitudePadding;
+  const lonRangeMax = maxLongitude + longitudePadding + rightSideBoost;
+
+  const centerLatitude = clampCountryFlowMapViewportValue((latRangeMin + latRangeMax) / 2, -82, 84);
+  const centerLongitude = normalizeCountryFlowMapLongitude(((lonRangeMin + lonRangeMax) / 2) - centerWestBias);
+  const spanForScale = Math.max(18, latRangeMax - latRangeMin, lonRangeMax - lonRangeMin);
+  const projectionScale = clampCountryFlowMapViewportValue(205 / spanForScale, 0.85, 4.8);
+
+  return {
+    centerLatitude,
+    centerLongitude,
+    projectionScale,
+  };
+}
+
+function getCountryFlowMapVisiblePoints(
+  points: DashboardCountryFlowMapPointResponse[],
+  direction: 'inbound' | 'outbound',
+  mode: CountryFlowMapMode,
+) {
+  if (mode !== 'both' && mode !== direction) {
+    return [];
+  }
+
+  return points
+    .filter((point) => point.latitude != null && point.longitude != null)
+    .slice()
+    .sort((a, b) => b.flights - a.flights)
+    .slice(0, COUNTRY_FLOW_MAP_TOP_N);
+}
+
 export function CountryView() {
   const { drillTo, selections, timeMode, rangePreset, setRangePreset } = useDrillDown();
   const country = selections.country || COUNTRIES.find(c => c.name === 'N. Macedonia') || COUNTRIES[0];
@@ -347,6 +463,10 @@ export function CountryView() {
   const [countryFlights, setCountryFlights] = useState(country.flights);
   const [countryDeltaText, setCountryDeltaText] = useState(`${country.deltaN >= 0 ? '▲' : '▼'} ${country.deltaN >= 0 ? '+' : ''}${country.deltaN} เที่ยวบิน (${country.delta})`);
   const [countryDeltaPercent, setCountryDeltaPercent] = useState(0);
+  const [countryFlowMapData, setCountryFlowMapData] = useState<DashboardCountryFlowMapResponse | null>(null);
+  const [countryFlowMapLoading, setCountryFlowMapLoading] = useState(true);
+  const [countryFlowMapError, setCountryFlowMapError] = useState<string | null>(null);
+  const [countryFlowMapMode, setCountryFlowMapMode] = useState<CountryFlowMapMode>('both');
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
@@ -358,6 +478,7 @@ export function CountryView() {
   const [isExtendedRangeOpen, setIsExtendedRangeOpen] = useState(false);
   const [dateError, setDateError] = useState(false);
   const hasLoadedOnceRef = useRef(false);
+  const lastFlowMapRequestKeyRef = useRef('');
 
   const startDate = dateRange?.from ? formatLocalDateInput(dateRange.from) : undefined;
   const endDate = dateRange?.to ? formatLocalDateInput(dateRange.to) : undefined;
@@ -481,6 +602,62 @@ export function CountryView() {
       alive = false;
     };
   }, [country.name, country.countryCode, countryQuery, startDate, endDate, retryToken, showCustomDateRange, dateBounds, dateRange]);
+
+  useEffect(() => {
+    if (!dateRange?.from || !dateRange?.to) {
+      if (showCustomDateRange) {
+        setDateError(true);
+        return;
+      }
+
+      if (dateBounds) {
+        setCountryFlowMapLoading(false);
+      }
+      return;
+    }
+
+    let alive = true;
+    const flowMapRequestKey = `country:flow-map:${countryQuery}:${startDate}__${endDate}`;
+
+    if (lastFlowMapRequestKeyRef.current !== flowMapRequestKey) {
+      lastFlowMapRequestKeyRef.current = flowMapRequestKey;
+      setCountryFlowMapData(null);
+      setCountryFlowMapLoading(true);
+    }
+
+    const loadCountryFlowMap = async () => {
+      setCountryFlowMapLoading(true);
+      setCountryFlowMapError(null);
+
+      try {
+        const payload = await runDrillDownRequest(
+          flowMapRequestKey,
+          () =>
+            statisticsApi.getDashboardCountryFlowMap(countryQuery, {
+              startDate,
+              endDate,
+              timeoutMs: 60000,
+            }),
+        );
+
+        if (!alive) return;
+
+        setCountryFlowMapData(payload);
+        setCountryFlowMapLoading(false);
+      } catch {
+        if (!alive) return;
+        setCountryFlowMapData(null);
+        setCountryFlowMapError('ไม่สามารถโหลดแผนที่การบินได้');
+        setCountryFlowMapLoading(false);
+      }
+    };
+
+    void loadCountryFlowMap();
+
+    return () => {
+      alive = false;
+    };
+  }, [countryQuery, startDate, endDate, retryToken, showCustomDateRange, dateBounds, dateRange]);
 
   const totalRoutes = displayAirports.reduce((s, a) => s + a.routes, 0);
 
@@ -663,6 +840,15 @@ export function CountryView() {
       </div>
 
       <KPIRow items={kpis} />
+
+      <CountryFlowMapPanel
+        countryName={displayCountryName}
+        data={countryFlowMapData}
+        loading={countryFlowMapLoading}
+        error={countryFlowMapError}
+        mode={countryFlowMapMode}
+        onModeChange={setCountryFlowMapMode}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-3.5">
         <AirportPieChart displayAirports={displayAirports} />
@@ -909,6 +1095,8 @@ function CountryViewSkeleton({ countryName }: { countryName: string }) {
         ))}
       </div>
 
+      <div className="h-[530px] rounded-[10px] border border-border bg-card" />
+
       <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[1fr_1.4fr]">
         <div className="h-[320px] rounded-[10px] border border-border bg-card" />
         <div className="h-[320px] rounded-[10px] border border-border bg-card" />
@@ -941,13 +1129,12 @@ function InboundCountriesPanel({
 }) {
   const sorted = [...rows].sort((a, b) => b.flights - a.flights);
   const totalFlights = sorted.reduce((sum, row) => sum + row.flights, 0) || 1;
-  const maxFlights = sorted[0]?.flights || 1;
 
   return (
     <div className="bg-card border border-border rounded-[10px] p-5 lg:h-[400px] lg:flex lg:flex-col">
       <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-[16px] font-bold break-words">
-          {'🛬'} ประเทศที่บินเข้ามามากสุด — {countryName}
+          {'🛬'} Top city inbound — {countryName}
         </div>
         <div className="text-xs text-muted-foreground">อ้างอิง 5 อันดับล่าสุด</div>
       </div>
@@ -960,19 +1147,19 @@ function InboundCountriesPanel({
                 <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
                 <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ประเทศ</th>
                 <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
+                <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ส่วนแบ่ง</th>
               </tr>
             </thead>
             <tbody>
               {sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     ไม่พบข้อมูลประเทศขาเข้า
                   </td>
                 </tr>
               ) : (
                 sorted.map((c: DashboardCountryInboundBreakdownResponse, i: number) => {
                   const share = (c.flights / totalFlights) * 100;
-                  const barWidth = (c.flights / maxFlights) * 100;
 
                   return (
                     <tr key={c.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
@@ -983,16 +1170,11 @@ function InboundCountriesPanel({
                           <span className="font-medium text-foreground">{c.name}</span>
                         </div>
                       </td>
-                      <td className="px-3 py-2.5">
-                        <div className="flex flex-col items-end gap-1">
-                          <div className="tabular-nums font-bold text-primary">{c.flights.toLocaleString()}</div>
-                          <div className="flex w-full items-center gap-2">
-                            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-                              <div className="h-full rounded-full bg-primary" style={{ width: `${barWidth}%` }} />
-                            </div>
-                            <div className="tabular-nums text-[11px] font-semibold text-muted-foreground">{share.toFixed(1)}%</div>
-                          </div>
-                        </div>
+                      <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">
+                        {c.flights.toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-muted-foreground">
+                        {share.toFixed(1)}%
                       </td>
                     </tr>
                   );
@@ -1087,6 +1269,340 @@ function AirlineMarketSharePanel({
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CountryFlowMapPanel({
+  countryName,
+  data,
+  loading,
+  error,
+  mode,
+  onModeChange,
+}: {
+  countryName: string;
+  data: DashboardCountryFlowMapResponse | null;
+  loading: boolean;
+  error: string | null;
+  mode: CountryFlowMapMode;
+  onModeChange: (mode: CountryFlowMapMode) => void;
+}) {
+  const inboundPoints = data ? getCountryFlowMapVisiblePoints(data.inbound.points, 'inbound', mode) : [];
+  const outboundPoints = data ? getCountryFlowMapVisiblePoints(data.outbound.points, 'outbound', mode) : [];
+  const inboundTop = inboundPoints[0];
+  const outboundTop = outboundPoints[0];
+
+  return (
+    <div className="bg-card border border-border rounded-[10px] p-5">
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="text-[16px] font-bold break-words">Inbound / Outbound Flow Map — {countryName}</div>
+          <div className="text-xs text-muted-foreground">
+            Top country flow patterns based on the selected date range.
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={mode === 'inbound' ? 'default' : 'outline'}
+            className="h-8 px-3 text-xs"
+            onClick={() => onModeChange('inbound')}
+          >
+            Inbound
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={mode === 'outbound' ? 'default' : 'outline'}
+            className="h-8 px-3 text-xs"
+            onClick={() => onModeChange('outbound')}
+          >
+            Outbound
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={mode === 'both' ? 'default' : 'outline'}
+            className="h-8 px-3 text-xs"
+            onClick={() => onModeChange('both')}
+          >
+            Both
+          </Button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-border/70 bg-muted/20">
+          <div className="flex flex-col items-center gap-3">
+            <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <div className="text-sm font-medium text-muted-foreground">Loading flow map...</div>
+          </div>
+        </div>
+      ) : error ? (
+        <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center">
+          <div className="space-y-2">
+            <div className="text-sm font-semibold text-foreground">Flow map is unavailable</div>
+            <div className="text-sm text-muted-foreground">{error}</div>
+          </div>
+        </div>
+      ) : data ? (
+        <>
+          <div className="mb-3 flex flex-wrap gap-2 text-xs">
+            <span className="inline-flex items-center rounded-full border border-border bg-muted/30 px-2.5 py-1 font-semibold text-foreground">
+              Inbound {formatCountryFlowMapCount(data.inbound.totalFlights)}
+            </span>
+            <span className="inline-flex items-center rounded-full border border-border bg-muted/30 px-2.5 py-1 font-semibold text-foreground">
+              Outbound {formatCountryFlowMapCount(data.outbound.totalFlights)}
+            </span>
+            <span className="inline-flex items-center rounded-full border border-border bg-muted/30 px-2.5 py-1 font-semibold text-foreground">
+              Selected {data.country.code || countryName}
+            </span>
+          </div>
+
+          <div className="overflow-hidden rounded-[14px] border border-border/70 bg-slate-950/95">
+            <CountryFlowMapSvg data={data} mode={mode} />
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2 text-[12px] text-muted-foreground">
+            {inboundTop ? (
+              <span className="rounded-full border border-teal-500/20 bg-teal-500/10 px-3 py-1">
+                Top inbound: {inboundTop.countryName} ({inboundTop.pct.toFixed(1)}%)
+              </span>
+            ) : null}
+            {outboundTop ? (
+              <span className="rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1">
+                Top outbound: {outboundTop.countryName} ({outboundTop.pct.toFixed(1)}%)
+              </span>
+            ) : null}
+            {inboundPoints.length === 0 && outboundPoints.length === 0 ? (
+              <span className="rounded-full border border-border bg-muted/30 px-3 py-1">
+                No flow points available in this range
+              </span>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center">
+          <div className="space-y-2">
+            <div className="text-sm font-semibold text-foreground">No flow map data</div>
+            <div className="text-sm text-muted-foreground">Try a different date range or refresh the view.</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CountryFlowMapSvg({
+  data,
+  mode,
+}: {
+  data: DashboardCountryFlowMapResponse;
+  mode: CountryFlowMapMode;
+}) {
+  const inboundPoints = mapCountryFlowMapPlotPoints(
+    getCountryFlowMapVisiblePoints(data.inbound.points, 'inbound', mode),
+    data.country.longitude ?? 0,
+  );
+  const outboundPoints = mapCountryFlowMapPlotPoints(
+    getCountryFlowMapVisiblePoints(data.outbound.points, 'outbound', mode),
+    data.country.longitude ?? 0,
+  );
+  const selectedLatitude = data.country.latitude ?? 15;
+  const selectedLongitude = data.country.longitude ?? 0;
+
+  const allFlights = [
+    ...inboundPoints.map((point) => point.flights),
+    ...outboundPoints.map((point) => point.flights),
+  ];
+  const maxFlights = Math.max(1, ...allFlights);
+
+  const toLineCoords = (
+    points: CountryFlowMapPlotPoint[],
+    direction: 'inbound' | 'outbound',
+  ) => {
+    const latitudes: Array<number | null> = [];
+    const longitudes: Array<number | null> = [];
+
+    points.forEach((point) => {
+      if (direction === 'inbound') {
+        latitudes.push(point.latitude as number, selectedLatitude, null);
+        longitudes.push(point.plotLongitude, selectedLongitude, null);
+      } else {
+        latitudes.push(selectedLatitude, point.latitude as number, null);
+        longitudes.push(selectedLongitude, point.plotLongitude, null);
+      }
+    });
+
+    return { latitudes, longitudes };
+  };
+
+  const inboundLine = toLineCoords(inboundPoints, 'inbound');
+  const outboundLine = toLineCoords(outboundPoints, 'outbound');
+
+  const inboundSizes = inboundPoints.map((point) => Math.max(8, Math.min(20, 8 + (point.flights / maxFlights) * 12)));
+  const outboundSizes = outboundPoints.map((point) => Math.max(8, Math.min(20, 8 + (point.flights / maxFlights) * 12)));
+  const viewport = buildCountryFlowMapViewport(
+    [...inboundPoints, ...outboundPoints],
+    selectedLatitude,
+    selectedLongitude,
+  );
+
+  const traces = useMemo(() => ([
+    {
+      type: 'scattergeo',
+      mode: 'lines',
+      lon: inboundLine.longitudes,
+      lat: inboundLine.latitudes,
+      line: {
+        width: 2.5,
+        color: 'rgba(20, 184, 166, 0.55)',
+      },
+      hoverinfo: 'skip',
+      showlegend: false,
+    },
+    {
+      type: 'scattergeo',
+      mode: 'lines',
+      lon: outboundLine.longitudes,
+      lat: outboundLine.latitudes,
+      line: {
+        width: 2.5,
+        color: 'rgba(59, 130, 246, 0.55)',
+      },
+      hoverinfo: 'skip',
+      showlegend: false,
+    },
+    {
+      type: 'scattergeo',
+      mode: 'markers',
+      lon: inboundPoints.map((point) => point.plotLongitude),
+      lat: inboundPoints.map((point) => point.latitude),
+      text: inboundPoints.map((point) => `${point.countryName}: ${formatCountryFlowMapCount(point.flights)} flights (${point.pct.toFixed(1)}%)`),
+      hovertemplate: '%{text}<extra>Inbound</extra>',
+      marker: {
+        size: inboundSizes,
+        color: '#14b8a6',
+        opacity: 0.92,
+        line: {
+          width: 1.2,
+          color: '#ffffff',
+        },
+      },
+      showlegend: false,
+    },
+    {
+      type: 'scattergeo',
+      mode: 'markers',
+      lon: outboundPoints.map((point) => point.plotLongitude),
+      lat: outboundPoints.map((point) => point.latitude),
+      text: outboundPoints.map((point) => `${point.countryName}: ${formatCountryFlowMapCount(point.flights)} flights (${point.pct.toFixed(1)}%)`),
+      hovertemplate: '%{text}<extra>Outbound</extra>',
+      marker: {
+        size: outboundSizes,
+        color: '#3b82f6',
+        opacity: 0.92,
+        line: {
+          width: 1.2,
+          color: '#ffffff',
+        },
+      },
+      showlegend: false,
+    },
+    {
+      type: 'scattergeo',
+      mode: 'markers+text',
+      lon: [selectedLongitude],
+      lat: [selectedLatitude],
+      text: [data.country.name],
+      textposition: 'top right',
+      textfont: {
+        size: 12,
+        color: '#e2e8f0',
+      },
+      hovertemplate: `${data.country.name}<extra>Selected country</extra>`,
+      marker: {
+        size: 16,
+        color: '#f59e0b',
+        line: {
+          width: 2,
+          color: '#ffffff',
+        },
+      },
+      showlegend: false,
+    },
+  ]), [
+    data.country.name,
+    inboundLine.latitudes,
+    inboundLine.longitudes,
+    inboundPoints,
+    inboundSizes,
+    outboundLine.latitudes,
+    outboundLine.longitudes,
+    outboundPoints,
+    outboundSizes,
+    selectedLatitude,
+    selectedLongitude,
+  ]);
+
+  const plotLayout = useMemo(() => ({
+    margin: { t: 0, r: 0, b: 0, l: 0 },
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    uirevision: 'country-flow-map',
+    geo: {
+      projection: {
+        type: 'natural earth',
+        scale: viewport.projectionScale,
+      },
+      center: {
+        lat: viewport.centerLatitude,
+        lon: viewport.centerLongitude,
+      },
+      showland: true,
+      landcolor: '#1e293b',
+      showocean: true,
+      oceancolor: '#0f172a',
+      showlakes: true,
+      lakecolor: '#0f172a',
+      showcountries: true,
+      countrycolor: 'rgba(148, 163, 184, 0.45)',
+      showcoastlines: true,
+      coastlinecolor: 'rgba(148, 163, 184, 0.45)',
+      bgcolor: 'rgba(0,0,0,0)',
+      lataxis: {
+        showgrid: true,
+        gridcolor: 'rgba(148, 163, 184, 0.18)',
+      },
+      lonaxis: {
+        showgrid: true,
+        gridcolor: 'rgba(148, 163, 184, 0.18)',
+      },
+    },
+  }), [
+    viewport.centerLatitude,
+    viewport.centerLongitude,
+    viewport.projectionScale,
+  ]);
+
+  const plotConfig = useMemo(() => ({
+    displayModeBar: false,
+    responsive: true,
+    scrollZoom: false,
+    doubleClick: false,
+    showTips: false,
+  }), []);
+
+  return (
+    <div className="h-[430px] w-full">
+      <Plot
+        data={traces as any}
+        layout={plotLayout as any}
+        config={plotConfig as any}
+        style={{ width: '100%', height: '100%' }}
+      />
     </div>
   );
 }

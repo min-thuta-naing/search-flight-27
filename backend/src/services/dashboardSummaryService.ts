@@ -281,6 +281,44 @@ export interface DashboardCountryOverviewResponse {
     sharePercent: number | null;
   };
 }
+
+export interface DashboardCountryFlowMapPoint {
+  countryCode: string | null;
+  countryName: string;
+  flag: string;
+  latitude: number | null;
+  longitude: number | null;
+  airportCount: number;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+  pct: number;
+}
+
+export interface DashboardCountryFlowMapDirection {
+  totalFlights: number;
+  previousFlights: number;
+  points: DashboardCountryFlowMapPoint[];
+}
+
+export interface DashboardCountryFlowMapResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  country: {
+    name: string;
+    code: string | null;
+    airportCount: number;
+    latitude: number | null;
+    longitude: number | null;
+  };
+  inbound: DashboardCountryFlowMapDirection;
+  outbound: DashboardCountryFlowMapDirection;
+}
 export interface DashboardDataBoundsResponse {
   minDate: string | null;
   maxDate: string | null;
@@ -766,6 +804,104 @@ function countryFlagFromCode(countryCode: string | null) {
   }
 
   return String.fromCodePoint(0x1f1e6 + first - 65, 0x1f1e6 + second - 65);
+}
+
+function buildCountryFlowMapDirectionQuery(direction: 'inbound' | 'outbound') {
+  const counterpartAirportColumn = direction === 'inbound' ? 'dep_airport' : 'arr_airport';
+  const selectedAirportColumn = direction === 'inbound' ? 'arr_airport' : 'dep_airport';
+
+  return `
+    WITH country_airports AS (
+      SELECT DISTINCT UPPER(TRIM(code)) AS code
+      FROM airports
+      WHERE code IS NOT NULL
+        AND TRIM(code) <> ''
+        AND (
+          UPPER(TRIM(country_code)) = $1
+          OR UPPER(TRIM(country)) = $1
+          OR TRIM(country_name) ILIKE $2
+        )
+    ),
+    country_centroids AS (
+      SELECT
+        COALESCE(country_code, country_name, country, 'Other') AS country_key,
+        COALESCE(country_code, country, NULL) AS country_code,
+        COALESCE(country_name, country, 'Other') AS country_name,
+        AVG(latitude)::float AS latitude,
+        AVG(longitude)::float AS longitude,
+        COUNT(*)::int AS airport_count
+      FROM airports
+      WHERE latitude IS NOT NULL
+        AND longitude IS NOT NULL
+      GROUP BY
+        COALESCE(country_code, country_name, country, 'Other'),
+        COALESCE(country_code, country, NULL),
+        COALESCE(country_name, country, 'Other')
+    ),
+    current_rows AS (
+      SELECT ${counterpartAirportColumn} AS counterpart_airport
+      FROM departure_flight_paths
+      WHERE departure_date >= $3 AND departure_date <= $4
+        AND ${selectedAirportColumn} IN (SELECT code FROM country_airports)
+        AND ${counterpartAirportColumn} NOT IN (SELECT code FROM country_airports)
+      UNION ALL
+      SELECT ${counterpartAirportColumn} AS counterpart_airport
+      FROM arrival_flight_paths
+      WHERE departure_date >= $3 AND departure_date <= $4
+        AND ${selectedAirportColumn} IN (SELECT code FROM country_airports)
+        AND ${counterpartAirportColumn} NOT IN (SELECT code FROM country_airports)
+    ),
+    previous_rows AS (
+      SELECT ${counterpartAirportColumn} AS counterpart_airport
+      FROM departure_flight_paths
+      WHERE departure_date >= $5 AND departure_date <= $6
+        AND ${selectedAirportColumn} IN (SELECT code FROM country_airports)
+        AND ${counterpartAirportColumn} NOT IN (SELECT code FROM country_airports)
+      UNION ALL
+      SELECT ${counterpartAirportColumn} AS counterpart_airport
+      FROM arrival_flight_paths
+      WHERE departure_date >= $5 AND departure_date <= $6
+        AND ${selectedAirportColumn} IN (SELECT code FROM country_airports)
+        AND ${counterpartAirportColumn} NOT IN (SELECT code FROM country_airports)
+    ),
+    current_agg AS (
+      SELECT
+        COALESCE(a.country_code, a.country_name, a.country, 'Other') AS country_key,
+        COALESCE(a.country_code, a.country, NULL) AS country_code,
+        COALESCE(a.country_name, a.country, 'Other') AS country_name,
+        COUNT(*)::int AS flights
+      FROM current_rows cr
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(cr.counterpart_airport))
+      WHERE cr.counterpart_airport IS NOT NULL AND TRIM(cr.counterpart_airport) <> ''
+      GROUP BY
+        COALESCE(a.country_code, a.country_name, a.country, 'Other'),
+        COALESCE(a.country_code, a.country, NULL),
+        COALESCE(a.country_name, a.country, 'Other')
+    ),
+    previous_agg AS (
+      SELECT
+        COALESCE(a.country_code, a.country_name, a.country, 'Other') AS country_key,
+        COUNT(*)::int AS flights
+      FROM previous_rows cr
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(cr.counterpart_airport))
+      WHERE cr.counterpart_airport IS NOT NULL AND TRIM(cr.counterpart_airport) <> ''
+      GROUP BY COALESCE(a.country_code, a.country_name, a.country, 'Other')
+    )
+    SELECT
+      c.country_code,
+      c.country_name,
+      cc.latitude,
+      cc.longitude,
+      cc.airport_count,
+      c.flights,
+      COALESCE(p.flights, 0)::int AS previous_flights
+    FROM current_agg c
+    LEFT JOIN previous_agg p ON p.country_key = c.country_key
+    LEFT JOIN country_centroids cc ON cc.country_key = c.country_key
+    WHERE c.country_name <> 'Other'
+    ORDER BY c.flights DESC, c.country_name ASC
+    LIMIT 20
+  `;
 }
 
 async function getContinentAirportCodes(continentKey: ContinentMeta['key']): Promise<string[]> {
@@ -2895,6 +3031,139 @@ export class DashboardSummaryService {
       inbound,
       airlineMarket,
       topAirline,
+    };
+  }
+
+  static async getCountryFlowMap(
+    input: CountryOverviewInput,
+  ): Promise<DashboardCountryFlowMapResponse> {
+    const countryInput = (input.country || '').trim();
+    if (!countryInput) {
+      throw new Error('country is required');
+    }
+
+    const { startDate, endDate, comparisonStartDate, comparisonEndDate, windowDays } = resolveWorldRange(input);
+    const centerDate = resolveCenterDate(input, startDate, endDate);
+    const periodStart = formatDateForQuery(startDate);
+    const periodEnd = formatDateForQuery(endDate);
+    const comparisonStart = formatDateForQuery(comparisonStartDate);
+    const comparisonEnd = formatDateForQuery(comparisonEndDate);
+    const normalizedCode = countryInput.toUpperCase();
+    const namePattern = `%${countryInput}%`;
+
+    const countryMetaQuery = `
+      WITH country_airports AS (
+        SELECT DISTINCT UPPER(TRIM(code)) AS code
+        FROM airports
+        WHERE code IS NOT NULL
+          AND TRIM(code) <> ''
+          AND (
+            UPPER(TRIM(country_code)) = $1
+            OR UPPER(TRIM(country)) = $1
+            OR TRIM(country_name) ILIKE $2
+          )
+      )
+      SELECT
+        COUNT(*)::int AS airport_count,
+        ROUND(AVG(latitude)::numeric, 6)::float AS latitude,
+        ROUND(AVG(longitude)::numeric, 6)::float AS longitude,
+        COALESCE(MAX(country_code), MAX(country), NULL) AS country_code,
+        COALESCE(MAX(country_name), MAX(country), 'Other') AS country_name
+      FROM airports
+      WHERE code IN (SELECT code FROM country_airports)
+    `;
+
+    const inboundQuery = buildCountryFlowMapDirectionQuery('inbound');
+    const outboundQuery = buildCountryFlowMapDirectionQuery('outbound');
+
+    const [countryMetaResult, inboundResult, outboundResult] = await Promise.all([
+      pool.query(countryMetaQuery, [normalizedCode, namePattern]),
+      pool.query(inboundQuery, [normalizedCode, namePattern, periodStart, periodEnd, comparisonStart, comparisonEnd]),
+      pool.query(outboundQuery, [normalizedCode, namePattern, periodStart, periodEnd, comparisonStart, comparisonEnd]),
+    ]);
+
+    const countryMetaRow = (countryMetaResult.rows[0] || {}) as {
+      airport_count?: number;
+      latitude?: number | null;
+      longitude?: number | null;
+      country_code?: string | null;
+      country_name?: string | null;
+    };
+
+    const mapRows = (rows: Array<{
+      country_code: string | null;
+      country_name: string | null;
+      latitude: number | null;
+      longitude: number | null;
+      airport_count: number | null;
+      flights: number;
+      previous_flights: number;
+    }>) => {
+      const totalFlights = rows.reduce((sum, row) => sum + (Number(row.flights) || 0), 0);
+      const previousTotalFlights = rows.reduce((sum, row) => sum + (Number(row.previous_flights) || 0), 0);
+
+      return {
+        totalFlights,
+        previousFlights: previousTotalFlights,
+        points: rows.map((row) => {
+          const flights = Number(row.flights) || 0;
+          const previousFlights = Number(row.previous_flights) || 0;
+          const deltaFlights = flights - previousFlights;
+          const deltaPercent = previousFlights > 0
+            ? (deltaFlights / previousFlights) * 100
+            : flights > 0
+              ? 100
+              : 0;
+
+          return {
+            countryCode: row.country_code || null,
+            countryName: row.country_name || 'Other',
+            flag: countryFlagFromCode(row.country_code),
+            latitude: row.latitude ?? null,
+            longitude: row.longitude ?? null,
+            airportCount: Number(row.airport_count) || 0,
+            flights,
+            previousFlights,
+            deltaFlights,
+            deltaPercent,
+            pct: totalFlights > 0 ? (flights / totalFlights) * 100 : 0,
+          } satisfies DashboardCountryFlowMapPoint;
+        }),
+      } satisfies DashboardCountryFlowMapDirection;
+    };
+
+    return {
+      centerDate: formatDateForQuery(centerDate),
+      windowDays,
+      periodStart,
+      periodEnd,
+      comparisonStart,
+      comparisonEnd,
+      country: {
+        name: countryMetaRow.country_name || countryInput,
+        code: countryMetaRow.country_code || (normalizedCode.length <= 3 ? normalizedCode : null),
+        airportCount: Number(countryMetaRow.airport_count) || 0,
+        latitude: countryMetaRow.latitude ?? null,
+        longitude: countryMetaRow.longitude ?? null,
+      },
+      inbound: mapRows(inboundResult.rows as Array<{
+        country_code: string | null;
+        country_name: string | null;
+        latitude: number | null;
+        longitude: number | null;
+        airport_count: number | null;
+        flights: number;
+        previous_flights: number;
+      }>),
+      outbound: mapRows(outboundResult.rows as Array<{
+        country_code: string | null;
+        country_name: string | null;
+        latitude: number | null;
+        longitude: number | null;
+        airport_count: number | null;
+        flights: number;
+        previous_flights: number;
+      }>),
     };
   }
 

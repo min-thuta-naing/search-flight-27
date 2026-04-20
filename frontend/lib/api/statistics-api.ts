@@ -242,6 +242,44 @@ export interface DashboardCountryOverviewResponse {
   };
 }
 
+export interface DashboardCountryFlowMapPointResponse {
+  countryCode: string | null;
+  countryName: string;
+  flag: string;
+  latitude: number | null;
+  longitude: number | null;
+  airportCount: number;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+  pct: number;
+}
+
+export interface DashboardCountryFlowMapDirectionResponse {
+  totalFlights: number;
+  previousFlights: number;
+  points: DashboardCountryFlowMapPointResponse[];
+}
+
+export interface DashboardCountryFlowMapResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  country: {
+    name: string;
+    code: string | null;
+    airportCount: number;
+    latitude: number | null;
+    longitude: number | null;
+  };
+  inbound: DashboardCountryFlowMapDirectionResponse;
+  outbound: DashboardCountryFlowMapDirectionResponse;
+}
+
 export interface DashboardAirportOverviewResponse {
   centerDate: string;
   windowDays: number;
@@ -713,6 +751,31 @@ export class StatisticsApi {
     } = options;
 
     return apiClient.get<DashboardCountryOverviewResponse>('/statistics/dashboard-country-overview', {
+      country,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get country inbound/outbound flow map payload for drill-down dashboard.
+   */
+  async getDashboardCountryFlowMap(
+    country: string,
+    options: DashboardQueryOptions = {},
+  ): Promise<DashboardCountryFlowMapResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardCountryFlowMapResponse>('/statistics/dashboard-country-flow-map', {
       country,
       date,
       window_days: windowDays,

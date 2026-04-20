@@ -1,10 +1,12 @@
 'use client';
 
 import { useState, useCallback, createContext, useContext, useEffect } from 'react';
+import { ArrowUp } from 'lucide-react';
 import type { DrillLevel, TimeMode, ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } from '@/lib/dashboard/drill-down-data';
 import { statisticsApi, type DashboardCacheStatusResponse } from '@/lib/api/statistics-api';
 import { readSharedRangePreset, writeSharedRangePreset } from '@/lib/dashboard/range-preset-store';
+import { Button } from '@/components/ui/button';
 import { WorldView } from './WorldView';
 import { ContinentView } from './ContinentView';
 import { CountryView } from './CountryView';
@@ -201,10 +203,46 @@ export function DrillDownDashboard() {
             {level === 'continent' && <ContinentView />}
             {level === 'country' && <CountryView />}
             {level === 'airport' && <AirportView />}
+
+            <DrillScrollToTopButton />
           </>
         )}
       </div>
     </DrillDownContext.Provider>
+  );
+}
+
+function DrillScrollToTopButton() {
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const threshold = window.innerHeight * 0.45;
+      setIsVisible(window.scrollY >= threshold);
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll();
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  if (!isVisible) return null;
+
+  return (
+    <div className="fixed bottom-8 right-8 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
+      <Button
+        type="button"
+        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        size="icon"
+        className="h-12 w-12 rounded-full shadow-lg hover:shadow-xl"
+        aria-label="เลื่อนขึ้นบนสุด"
+      >
+        <ArrowUp className="h-5 w-5" />
+      </Button>
+    </div>
   );
 }
 

@@ -1,14 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { addDays, format, subDays } from 'date-fns';
 import { th } from 'date-fns/locale';
-import dynamic from 'next/dynamic';
 import { ChevronDown } from 'lucide-react';
 import { DateRange, type MonthCaptionProps, useDayPicker } from 'react-day-picker';
 
 import {
-  ResponsiveContainer,
   BarChart,
   Bar,
   Cell,
@@ -155,18 +153,68 @@ function filterActiveAirports<T extends { flights: number }>(airports: T[]) {
   return airports.filter((airport) => airport.flights > 0);
 }
 
+function usePositiveElementSize<T extends HTMLElement>() {
+  const elementRef = useRef<T | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element) return;
+
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect();
+      const nextWidth = Math.max(0, Math.round(rect.width));
+      const nextHeight = Math.max(0, Math.round(rect.height));
+
+      setSize((previous) => {
+        if ((nextWidth <= 0 || nextHeight <= 0) && previous.width > 0 && previous.height > 0) {
+          // Keep the last valid size to avoid chart teardown during transient layout collapses.
+          return previous;
+        }
+
+        if (previous.width === nextWidth && previous.height === nextHeight) {
+          return previous;
+        }
+
+        return {
+          width: nextWidth,
+          height: nextHeight,
+        };
+      });
+    };
+
+    updateSize();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateSize);
+      return () => {
+        window.removeEventListener('resize', updateSize);
+      };
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateSize();
+    });
+
+    observer.observe(element);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  return {
+    elementRef,
+    width: size.width,
+    height: size.height,
+    isReady: size.width > 0 && size.height > 0,
+  };
+}
+
 const AIRPORT_TABLE_INITIAL_ROWS = 5;
 const AIRPORT_TABLE_STEP_ROWS = 10;
 type CountryFlowMapMode = 'inbound' | 'outbound' | 'both';
 const COUNTRY_FLOW_MAP_TOP_N = 10;
-const Plot = dynamic(() => import('react-plotly.js'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex h-[430px] items-center justify-center text-sm font-medium text-muted-foreground">
-      กำลังเตรียมแผนที่...
-    </div>
-  ),
-});
 
 function resolveCountryDisplayName(name: string, countryCode?: string | null) {
   const normalizedName = (name || '').trim();
@@ -621,7 +669,6 @@ export function CountryView() {
 
     if (lastFlowMapRequestKeyRef.current !== flowMapRequestKey) {
       lastFlowMapRequestKeyRef.current = flowMapRequestKey;
-      setCountryFlowMapData(null);
       setCountryFlowMapLoading(true);
     }
 
@@ -868,6 +915,12 @@ export function CountryView() {
 }
 
 function AirportPieChart({ displayAirports }: { displayAirports: AirportInfo[] }) {
+  const {
+    elementRef: barChartContainerRef,
+    width: barChartWidth,
+    isReady: isBarChartContainerReady,
+  } = usePositiveElementSize<HTMLDivElement>();
+
   const topAirports = [...displayAirports]
     .sort((a, b) => b.flights - a.flights)
     .slice(0, 5);
@@ -898,9 +951,15 @@ function AirportPieChart({ displayAirports }: { displayAirports: AirportInfo[] }
           </span>
         ))}
       </div>
-      <div className="h-[270px] -ml-2">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={barData} layout="vertical" margin={{ top: 6, right: 10, left: 8, bottom: 6 }}>
+      <div ref={barChartContainerRef} className="h-[270px] min-h-[270px] min-w-0 -ml-2">
+        {isBarChartContainerReady ? (
+          <BarChart
+            width={Math.max(300, barChartWidth)}
+            height={270}
+            data={barData}
+            layout="vertical"
+            margin={{ top: 6, right: 10, left: 8, bottom: 6 }}
+          >
             <CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-border" />
             <XAxis
               type="number"
@@ -926,7 +985,11 @@ function AirportPieChart({ displayAirports }: { displayAirports: AirportInfo[] }
               ))}
             </Bar>
           </BarChart>
-        </ResponsiveContainer>
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm font-medium text-muted-foreground">
+            กำลังเตรียมกราฟ...
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1333,22 +1396,17 @@ function CountryFlowMapPanel({
         </div>
       </div>
 
-      {loading ? (
-        <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-border/70 bg-muted/20">
-          <div className="flex flex-col items-center gap-3">
-            <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            <div className="text-sm font-medium text-muted-foreground">Loading flow map...</div>
-          </div>
-        </div>
-      ) : error ? (
-        <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center">
-          <div className="space-y-2">
-            <div className="text-sm font-semibold text-foreground">Flow map is unavailable</div>
-            <div className="text-sm text-muted-foreground">{error}</div>
-          </div>
-        </div>
-      ) : data ? (
-        <>
+      {data ? (
+        <div className="relative">
+          {loading ? (
+            <div className="absolute inset-0 z-20 flex items-center justify-center rounded-[14px] border border-border/70 bg-background/80 backdrop-blur-[1px]">
+              <div className="flex flex-col items-center gap-3">
+                <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                <div className="text-sm font-medium text-muted-foreground">Loading flow map...</div>
+              </div>
+            </div>
+          ) : null}
+
           <div className="mb-3 flex flex-wrap gap-2 text-xs">
             <span className="inline-flex items-center rounded-full border border-border bg-muted/30 px-2.5 py-1 font-semibold text-foreground">
               Inbound {formatCountryFlowMapCount(data.inbound.totalFlights)}
@@ -1382,7 +1440,14 @@ function CountryFlowMapPanel({
               </span>
             ) : null}
           </div>
-        </>
+        </div>
+      ) : error ? (
+        <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center">
+          <div className="space-y-2">
+            <div className="text-sm font-semibold text-foreground">Flow map is unavailable</div>
+            <div className="text-sm text-muted-foreground">{error}</div>
+          </div>
+        </div>
       ) : (
         <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center">
           <div className="space-y-2">
@@ -1395,21 +1460,30 @@ function CountryFlowMapPanel({
   );
 }
 
-function CountryFlowMapSvg({
+const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
   data,
   mode,
 }: {
   data: DashboardCountryFlowMapResponse;
   mode: CountryFlowMapMode;
 }) {
-  const inboundPoints = mapCountryFlowMapPlotPoints(
+  const graphDivRef = useRef<HTMLDivElement | null>(null);
+  const plotlyRef = useRef<any>(null);
+  const {
+    elementRef: mapContainerRef,
+    width: mapWidth,
+    height: mapHeight,
+    isReady: isMapContainerReady,
+  } = usePositiveElementSize<HTMLDivElement>();
+
+  const inboundPoints = useMemo(() => mapCountryFlowMapPlotPoints(
     getCountryFlowMapVisiblePoints(data.inbound.points, 'inbound', mode),
     data.country.longitude ?? 0,
-  );
-  const outboundPoints = mapCountryFlowMapPlotPoints(
+  ), [data.country.longitude, data.inbound.points, mode]);
+  const outboundPoints = useMemo(() => mapCountryFlowMapPlotPoints(
     getCountryFlowMapVisiblePoints(data.outbound.points, 'outbound', mode),
     data.country.longitude ?? 0,
-  );
+  ), [data.country.longitude, data.outbound.points, mode]);
   const selectedLatitude = data.country.latitude ?? 15;
   const selectedLongitude = data.country.longitude ?? 0;
 
@@ -1548,6 +1622,9 @@ function CountryFlowMapSvg({
   ]);
 
   const plotLayout = useMemo(() => ({
+    autosize: false,
+    width: mapWidth,
+    height: mapHeight,
     margin: { t: 0, r: 0, b: 0, l: 0 },
     paper_bgcolor: 'rgba(0,0,0,0)',
     plot_bgcolor: 'rgba(0,0,0,0)',
@@ -1582,6 +1659,8 @@ function CountryFlowMapSvg({
       },
     },
   }), [
+    mapHeight,
+    mapWidth,
     viewport.centerLatitude,
     viewport.centerLongitude,
     viewport.projectionScale,
@@ -1589,20 +1668,71 @@ function CountryFlowMapSvg({
 
   const plotConfig = useMemo(() => ({
     displayModeBar: false,
-    responsive: true,
+    responsive: false,
     scrollZoom: false,
     doubleClick: false,
     showTips: false,
   }), []);
 
+  useEffect(() => {
+    if (!isMapContainerReady || !graphDivRef.current) return;
+
+    let cancelled = false;
+    const target = graphDivRef.current;
+
+    const renderPlot = async () => {
+      try {
+        if (!plotlyRef.current) {
+          const mod = await import('plotly.js-dist-min');
+          plotlyRef.current = (mod as any).default ?? mod;
+        }
+
+        if (cancelled || !target) return;
+
+        await Promise.resolve(
+          plotlyRef.current.react(target, traces as any, plotLayout as any, plotConfig as any),
+        ).catch(() => {
+          // Ignore transient Plotly lifecycle races during rapid state updates.
+        });
+      } catch {
+        // Ignore dynamic import/render failures to avoid uncaught promise noise.
+      }
+    };
+
+    void renderPlot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isMapContainerReady,
+    plotConfig,
+    plotLayout,
+    traces,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      const target = graphDivRef.current;
+      if (!target || !plotlyRef.current) return;
+
+      try {
+        plotlyRef.current.purge(target);
+      } catch {
+        // Ignore purge failures on teardown.
+      }
+    };
+  }, []);
+
   return (
-    <div className="h-[430px] w-full">
-      <Plot
-        data={traces as any}
-        layout={plotLayout as any}
-        config={plotConfig as any}
-        style={{ width: '100%', height: '100%' }}
-      />
+    <div ref={mapContainerRef} className="h-[430px] w-full min-w-0">
+      {isMapContainerReady ? (
+        <div ref={graphDivRef} className="h-full w-full" />
+      ) : (
+        <div className="flex h-full items-center justify-center text-sm font-medium text-muted-foreground">
+          กำลังเตรียมแผนที่...
+        </div>
+      )}
     </div>
   );
-}
+});

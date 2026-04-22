@@ -49,6 +49,7 @@ export interface FlightPathRecord {
   airline_code?: string;
   aircraft?: string;
   source?: string;
+  status?: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -760,6 +761,7 @@ export class FlightModel {
       airline_code?: string | null;
       aircraft?: string | null;
       source?: string | null;
+      status?: string | null;
     }>,
     isDeparture: boolean = true
   ): Promise<void> {
@@ -800,6 +802,7 @@ export class FlightModel {
         placeholdersRow.push(`$${paramIndex++}`); // airline_code
         placeholdersRow.push(`$${paramIndex++}`); // aircraft
         placeholdersRow.push(`$${paramIndex++}`); // source
+        placeholdersRow.push(`$${paramIndex++}`); // status
         placeholdersRow.push(`NOW()`); // created_at
         placeholdersRow.push(`NOW()`); // updated_at
 
@@ -823,7 +826,8 @@ export class FlightModel {
           fp.airline_name || null,
           fp.airline_code || null,
           fp.aircraft || null,
-          fp.source || null
+          fp.source || null,
+          fp.status || 'planned'
         );
       });
 
@@ -834,7 +838,7 @@ export class FlightModel {
           route_id, airline_id, departure_date, arrival_date, departure_time, arrival_time,
           duration, flight_number, trip_type, travel_class, stops,
           dep_airport, arr_airport, destination, airline_name, airline_code,
-          aircraft, source, created_at, updated_at
+          aircraft, source, status, created_at, updated_at
         )
         VALUES ${placeholders.join(', ')}
         ON CONFLICT (route_id, airline_id, ${dateColumn}, trip_type, flight_number, departure_time)
@@ -850,6 +854,7 @@ export class FlightModel {
           airline_code = EXCLUDED.airline_code,
           aircraft = EXCLUDED.aircraft,
           source = EXCLUDED.source,
+          status = EXCLUDED.status,
           updated_at = NOW()
       `;
 
@@ -1027,6 +1032,7 @@ export class FlightModel {
         AND r.destination = $2
         AND DATE(ifi.${isDeparture ? 'departure_date' : 'arrival_date'}) >= DATE($3)
         AND DATE(ifi.${isDeparture ? 'departure_date' : 'arrival_date'}) <= DATE($4)
+        AND ifi.status != 'cancelled'
           `;
 
     const params: any[] = [originCodes, destination, startDateStr, endDateStr];
@@ -1117,6 +1123,7 @@ export class FlightModel {
       WHERE ${isDeparture ? 'dep_airport' : 'arr_airport'} = $1
         AND ${isDeparture ? 'departure_date' : 'arrival_date'} >= $2
         AND ${isDeparture ? 'departure_date' : 'arrival_date'} <= $3
+        AND status != 'cancelled'
       GROUP BY ${isDeparture ? 'departure_date' : 'arrival_date'}
       ORDER BY date
           `;
@@ -1167,6 +1174,7 @@ export class FlightModel {
         ? `AND ${isDeparture ? 'departure_date' : 'arrival_date'} = $2`
         : `AND ${isDeparture ? 'departure_date' : 'arrival_date'} >= $2 AND ${isDeparture ? 'departure_date' : 'arrival_date'} <= $3`
       }
+        AND status != 'cancelled'
       ORDER BY ${useDistinct ? 'dep_airport, arr_airport, airline_code, flight_number, departure_time' : 'departure_date, departure_time'}
           `;
 
@@ -1189,6 +1197,7 @@ export class FlightModel {
         ? `AND ${isDeparture ? 'departure_date' : 'arrival_date'} = $2`
         : `AND ${isDeparture ? 'departure_date' : 'arrival_date'} >= $2 AND ${isDeparture ? 'departure_date' : 'arrival_date'} <= $3`
       }
+        AND status != 'cancelled'
         GROUP BY airline_code, dep_hour
           ),
           month_stats AS(
@@ -1199,6 +1208,7 @@ export class FlightModel {
         WHERE ${isDeparture ? 'dep_airport' : 'arr_airport'} = $1
           AND ${isDeparture ? 'departure_date' : 'arrival_date'} >= ${selectedDateStr ? '$3' : '$2'}
           AND ${isDeparture ? 'departure_date' : 'arrival_date'} <= ${selectedDateStr ? '$4' : '$3'}
+          AND status != 'cancelled'
           ),
             peak_hour AS(
               SELECT dep_hour
@@ -1220,6 +1230,7 @@ export class FlightModel {
         ? `AND ${isDeparture ? 'departure_date' : 'arrival_date'} = $2`
         : `AND ${isDeparture ? 'departure_date' : 'arrival_date'} >= $2 AND ${isDeparture ? 'departure_date' : 'arrival_date'} <= $3`
       }
+            AND status != 'cancelled'
           ):: INTEGER as total_flights_day,
             ms.total_flights_month,
             ms.active_days_month,
@@ -1393,6 +1404,7 @@ export class FlightModel {
       WHERE ${whereClause}
         AND departure_date >= $2
         AND departure_date <= $3
+        AND status != 'cancelled'
       GROUP BY departure_date
       ORDER BY date
     `;
@@ -1447,6 +1459,7 @@ export class FlightModel {
       LEFT JOIN airports arr_airport_ref ON UPPER(TRIM(arr_airport_ref.code)) = UPPER(TRIM(fp.arr_airport))
       WHERE ${whereClause}
         ${selectedDateStr ? 'AND departure_date = $2' : 'AND departure_date >= $2 AND departure_date <= $3'}
+        AND status != 'cancelled'
       ORDER BY ${useDistinct ? 'dep_airport, arr_airport, airline_code, flight_number, departure_time' : 'departure_date, departure_time'}
       LIMIT ${selectedDateStr ? '$3' : '$4'}
     `;
@@ -1478,6 +1491,7 @@ export class FlightModel {
         JOIN airports a ON fp.${joinColumn} = a.code
         WHERE ${whereClause}
           ${selectedDateStr ? 'AND departure_date = $2' : 'AND departure_date >= $2 AND departure_date <= $3'}
+          AND status != 'cancelled'
         GROUP BY airline_code, dep_hour
       ),
       month_stats AS(
@@ -1489,6 +1503,7 @@ export class FlightModel {
         WHERE ${whereClause}
           AND departure_date >= ${selectedDateStr ? '$3' : '$2'}
           AND departure_date <= ${selectedDateStr ? '$4' : '$3'}
+          AND status != 'cancelled'
       ),
       peak_hour AS(
         SELECT dep_hour FROM day_stats GROUP BY dep_hour ORDER BY SUM(flight_count) DESC LIMIT 1
@@ -1501,6 +1516,7 @@ export class FlightModel {
           ${selectedDateStr
         ? 'AND departure_date = $2'
         : 'AND departure_date >= $2 AND departure_date <= $3'}
+            AND status != 'cancelled'
         ):: INTEGER as total_flights_day,
         ms.total_flights_month,
         ms.active_days_month,

@@ -71,6 +71,16 @@ if [ "$AUTO_IMPORT_FLIGHTS" = "true" ]; then
   echo ""
 fi
 
+# Sync airport cross-check status (Newly added)
+if [ "$AUTO_SYNC_AIRPORTS" = "true" ]; then
+  echo "🔄 Syncing airport cross-check status..."
+  npx tsx src/scripts/sync-cross-check-airports.ts || {
+    echo "⚠️  Airport sync failed, but continuing..."
+  }
+  echo "✅ Airport sync completed"
+  echo ""
+fi
+
 # Start the server
 echo "🌐 Starting server..."
 exec node dist/server.js

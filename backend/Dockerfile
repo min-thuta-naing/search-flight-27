@@ -24,8 +24,30 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Install postgresql-client for pg_isready
-RUN apk add --no-cache postgresql-client
+# Install system dependencies for the flight scraper
+RUN apk add --no-cache \
+    postgresql-client \
+    python3 \
+    py3-pip \
+    chromium \
+    chromium-chromedriver \
+    xvfb \
+    xvfb-run \
+    dbus \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont
+
+# Create and activate a virtual environment for Python to avoid PEP 668 issues
+ENV VIRTUAL_ENV=/app/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Install Python dependencies
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Create a non-root user
 RUN addgroup --system --gid 1001 nodejs

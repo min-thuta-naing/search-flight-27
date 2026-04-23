@@ -1,5 +1,8 @@
 'use client';
 
+// --- Airline Overview Panel ---
+import AirlineOverviewPanel from './AirlineOverviewPanel';
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDays, differenceInCalendarDays, format, subDays } from 'date-fns';
 import { th } from 'date-fns/locale';
@@ -1190,6 +1193,8 @@ export function WorldView() {
             </div>
           </section>
 
+          {/* Airline Overview Panel */}
+          <AirlineOverviewPanel />
           <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
             <TopCountriesTable rows={topCountryRows} loading={topRanksLoading} onSelectCountry={handleDrillToCountry} />
             <TopAirportsTable rows={topAirportRows} loading={topRanksLoading} onSelectAirport={handleDrillToAirport} />

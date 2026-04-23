@@ -17,6 +17,7 @@ interface SelectionState {
   continent?: ContinentData;
   country?: CountryData;
   airport?: AirportInfo;
+  airline?: { id: number; name: string } | null;
 }
 
 export type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';

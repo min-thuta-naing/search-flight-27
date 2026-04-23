@@ -11,6 +11,7 @@ import { WorldView } from './WorldView';
 import { ContinentView } from './ContinentView';
 import { CountryView } from './CountryView';
 import { AirportView } from './AirportView';
+import { AirlineView } from './AirlineView';
 
 // ── Context for drill-down state ──
 interface SelectionState {
@@ -56,20 +57,10 @@ export function DrillDownDashboard() {
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [dismissedFailure, setDismissedFailure] = useState(false);
 
-  const LEVEL_ORDER: DrillLevel[] = ['world', 'continent', 'country', 'airport'];
-
+  // Non-destructive: preserve all prior selections, merge in the new payload
   const drillTo = useCallback((newLevel: DrillLevel, selection?: SelectionState) => {
     setLevel(newLevel);
-    setSelections((prev) => {
-      const newIdx = LEVEL_ORDER.indexOf(newLevel);
-      // When drilling backwards, clear forward selections
-      const cleaned: SelectionState = {};
-      if (newIdx >= 1 && prev.continent) cleaned.continent = prev.continent;
-      if (newIdx >= 2 && prev.country) cleaned.country = prev.country;
-      if (newIdx >= 3 && prev.airport) cleaned.airport = prev.airport;
-      // Merge in any new selection
-      return { ...cleaned, ...selection };
-    });
+    setSelections((prev) => ({ ...prev, ...selection }));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
@@ -204,6 +195,7 @@ export function DrillDownDashboard() {
             {level === 'continent' && <ContinentView />}
             {level === 'country' && <CountryView />}
             {level === 'airport' && <AirportView />}
+            {level === 'airline' && <AirlineView />}
 
             <DrillScrollToTopButton />
           </>
@@ -284,32 +276,47 @@ function StatusLine() {
   const steps = [
     {
       id: 'world' as DrillLevel,
-      display: '\u0e42\u0e25\u0e01',
+      display: 'โลก',
       icon: '\u{1F30E}',
       step: 1,
     },
     {
       id: 'continent' as DrillLevel,
-      display: selections.continent?.name || '\u0e17\u0e27\u0e35\u0e1b',
+      display: selections.continent?.name || 'ทวีป',
       icon: selections.continent?.icon || '\u{1F310}',
       step: 2,
     },
     {
       id: 'country' as DrillLevel,
-      display: selections.country?.name || '\u0e1b\u0e23\u0e30\u0e40\u0e17\u0e28',
-      icon: selections.country?.flag || '\u{1F3F3}\uFE0F',
+      display: selections.country?.name || 'ประเทศ',
+      icon: selections.country?.flag || '\u{1F3F3}️',
       step: 3,
     },
     {
       id: 'airport' as DrillLevel,
-      display: selections.airport?.iata || '\u0e2a\u0e19\u0e32\u0e21\u0e1a\u0e34\u0e19',
+      display: selections.airport?.iata || 'สนามบิน',
       icon: '\u{1F6EB}',
       step: 4,
     },
+    {
+      id: 'airline' as DrillLevel,
+      display: selections.airline?.name || 'สายการบิน',
+      icon: '✈️',
+      step: 5,
+    },
   ];
 
-  const LEVELS: DrillLevel[] = ['world', 'continent', 'country', 'airport'];
+  const LEVELS: DrillLevel[] = ['world', 'continent', 'country', 'airport', 'airline'];
   const currentIdx = LEVELS.indexOf(level);
+
+  const hasSelectionForLevel = (stepId: DrillLevel): boolean => {
+    if (stepId === 'world') return true;
+    if (stepId === 'continent') return !!selections.continent;
+    if (stepId === 'country') return !!selections.country;
+    if (stepId === 'airport') return !!selections.airport;
+    if (stepId === 'airline') return !!selections.airline;
+    return false;
+  };
 
   return (
     <div className="w-full px-2 sm:px-4">
@@ -318,8 +325,7 @@ function StatusLine() {
           <div className="flex min-w-max items-center gap-2">
             {steps.map((step, i) => {
               const isActive = i === currentIdx;
-              const isPast = i < currentIdx;
-              const isClickable = isPast;
+              const isClickable = i < currentIdx || hasSelectionForLevel(step.id);
 
               return (
                 <button
@@ -330,10 +336,10 @@ function StatusLine() {
                   className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-all ${
                     isActive
                       ? 'border-primary bg-primary/10 text-primary shadow-sm'
-                      : isPast
-                        ? 'border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:bg-primary/5 hover:text-primary'
-                        : 'border-slate-200 bg-slate-50 text-slate-400'
-                  } ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
+                      : isClickable
+                        ? 'border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:bg-primary/5 hover:text-primary cursor-pointer'
+                        : 'border-slate-200 bg-slate-50 text-slate-400 cursor-default'
+                  }`}
                   aria-pressed={isActive}
                 >
                   <span className="text-base leading-none" role="img" aria-hidden="true">
@@ -427,7 +433,7 @@ export function BackButton({ label, onClick }: { label: string; onClick: () => v
       onClick={onClick}
       className="inline-flex max-w-full items-center justify-center gap-1.5 whitespace-normal break-words bg-muted border border-border rounded-lg px-3.5 py-2 text-center text-sm font-medium text-foreground hover:border-primary hover:text-primary transition-all cursor-pointer mb-4"
     >
-      {'\u2190'} {label}
+      {'←'} {label}
     </button>
   );
 }
@@ -447,7 +453,7 @@ export function ChangePill({
   const kind = growthDeltaTypeFromPct(pct, timeMode);
   const cls = growthPillSurfaceClasses(kind);
   const sign = num >= 0 ? '+' : '';
-  const arrow = num >= 0 ? '\u25B2' : '\u25BC';
+  const arrow = num >= 0 ? '▲' : '▼';
 
   return (
     <span
@@ -459,4 +465,3 @@ export function ChangePill({
     </span>
   );
 }
-

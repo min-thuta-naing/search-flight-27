@@ -584,6 +584,11 @@ export function getDashboardMemoryCacheStats() {
   };
 }
 
+export async function getAirportCodesForContinent(continentInput: string): Promise<string[]> {
+  const meta = resolveContinentMetaFromInput(continentInput);
+  return getContinentAirportCodes(meta.key);
+}
+
 export function clearDashboardMemoryCache() {
   const cleared = {
     continentDetail: continentDetailCache.size,

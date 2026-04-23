@@ -19,6 +19,8 @@ import {
   getDashboardTopCountries,
   getDashboardTopAirports,
   getDashboardTopDestinations,
+  getDashboardAirlines,
+  getDashboardAirlineDetail,
   clearDashboardCache,
   getDashboardDateBounds,
   getDashboardCacheStatus,
@@ -82,6 +84,12 @@ router.get('/dashboard-top-airports', getDashboardTopAirports);
 
 // Get top destinations for the world dashboard
 router.get('/dashboard-top-destinations', getDashboardTopDestinations);
+
+// Get paginated airline overview for the dashboard airlines panel
+router.get('/dashboard-airlines', getDashboardAirlines);
+
+// Get full detail for a single airline drill-down
+router.get('/dashboard-airline-detail', getDashboardAirlineDetail);
 
 // Get real min/max data bounds for dashboard preset calculations
 router.get('/dashboard-date-bounds', getDashboardDateBounds);

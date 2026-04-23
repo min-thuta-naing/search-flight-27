@@ -480,6 +480,53 @@ export interface DashboardContinentTrendsResponse {
   };
 }
 
+export interface DashboardAirlineDetailTopAirport {
+  iata: string;
+  name: string;
+  city: string;
+  country: string;
+  countryCode: string;
+  flag: string;
+  flights: number;
+}
+
+export interface DashboardAirlineDetailTopCountry {
+  countryCode: string;
+  countryName: string;
+  flag: string;
+  flights: number;
+  pct: number;
+}
+
+export interface DashboardAirlineDetailResponse {
+  airlineId: number;
+  airlineName: string;
+  totalFlights: number;
+  airportCount: number;
+  countryCount: number;
+  domesticFlights: number;
+  internationalFlights: number;
+  topAirports: DashboardAirlineDetailTopAirport[];
+  topCountries: DashboardAirlineDetailTopCountry[];
+}
+
+export interface DashboardAirlinesRowResponse {
+  id: number;
+  name: string;
+  country: string;
+  countryCount: number;
+  airportCount: number;
+  flightCount: number;
+}
+
+export interface DashboardAirlinesResponse {
+  rows: DashboardAirlinesRowResponse[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
 export interface DashboardDateBoundsResponse {
   minDate: string | null;
   maxDate: string | null;
@@ -556,6 +603,44 @@ export class StatisticsApi {
       origin,
       destination,
     }, { signal });
+  }
+
+  /**
+   * Get paginated airline overview for the dashboard airlines panel.
+   */
+  async getDashboardAirlines(options: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    level?: string;
+    filterValue?: string;
+    signal?: AbortSignal;
+  } = {}): Promise<DashboardAirlinesResponse> {
+    const { page = 0, pageSize = 15, search = '', level = 'world', filterValue = '', signal } = options;
+    return apiClient.get<DashboardAirlinesResponse>('/statistics/dashboard-airlines', {
+      page,
+      pageSize,
+      search,
+      level,
+      filterValue,
+    }, { signal });
+  }
+
+  /**
+   * Get full airline detail for the airline drill-down view.
+   */
+  async getDashboardAirlineDetail(options: {
+    airlineId: number;
+    level?: string;
+    filterValue?: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAirlineDetailResponse> {
+    const { airlineId, level = 'world', filterValue = '', signal } = options;
+    return apiClient.get<DashboardAirlineDetailResponse>(
+      '/statistics/dashboard-airline-detail',
+      { airlineId, level, filterValue },
+      { signal },
+    );
   }
 
   /**

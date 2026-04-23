@@ -1219,13 +1219,19 @@ function TopDestinationsPanel({ departures, arrivals, subtitle }: { departures: 
   );
 }
 function AirlineSharePanel({ airlines }: { airlines: AirportInsightAirline[] }) {
+  const { drillTo } = useDrillDown();
   const max = airlines[0]?.flights || 1;
   return (
     <div className="bg-card border border-border rounded-[10px] p-4">
-      <div className="text-[15px] font-bold mb-3.5">ส่วนแบ่งตลาดสายการบิน</div>
+      <div className="text-[15px] font-bold mb-3.5">ส่วนแบ่งตลาดสายการบิน · คลิกเพื่อดูรายละเอียด</div>
       {airlines.map((a) => (
-        <div key={a.name} className="flex items-center gap-3 mb-2.5 min-w-0">
-          <div className="text-[15px] font-medium text-muted-foreground w-28 sm:w-36 shrink-0 truncate" title={a.name}>
+        <div
+          key={a.name}
+          className="flex items-center gap-3 mb-2.5 min-w-0 rounded-lg px-2 py-1 -mx-2 cursor-pointer hover:bg-primary/5 transition-colors"
+          title={`คลิกเพื่อดู ${a.name}`}
+          onClick={() => drillTo('airline', { airline: { id: a.id, name: a.name } })}
+        >
+          <div className="text-[15px] font-medium text-muted-foreground w-28 sm:w-36 shrink-0 truncate">
             {a.name}
           </div>
           <div className="flex-1 min-w-0 h-3 bg-muted rounded-full overflow-hidden">

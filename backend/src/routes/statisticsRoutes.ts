@@ -21,6 +21,11 @@ import {
   getDashboardTopDestinations,
   getDashboardAirlines,
   getDashboardAirlineDetail,
+  getDashboardAirlineTrend,
+  getDashboardAirlineOriginAirports,
+  getDashboardAirlineDestAirports,
+  getDashboardAirlineDestCountries,
+  getDashboardAirlineHomeBase,
   clearDashboardCache,
   getDashboardDateBounds,
   getDashboardCacheStatus,
@@ -90,6 +95,21 @@ router.get('/dashboard-airlines', getDashboardAirlines);
 
 // Get full detail for a single airline drill-down
 router.get('/dashboard-airline-detail', getDashboardAirlineDetail);
+
+// Get daily flight frequency trend for an airline
+router.get('/dashboard-airline-trend', getDashboardAirlineTrend);
+
+// Get paginated origin airports for an airline
+router.get('/dashboard-airline-origin-airports', getDashboardAirlineOriginAirports);
+
+// Get paginated destination airports for an airline
+router.get('/dashboard-airline-dest-airports', getDashboardAirlineDestAirports);
+
+// Get paginated destination countries for an airline
+router.get('/dashboard-airline-dest-countries', getDashboardAirlineDestCountries);
+
+// Get airline home base (top origin airport + country + continent) for StatusLine pre-population
+router.get('/dashboard-airline-home-base', getDashboardAirlineHomeBase);
 
 // Get real min/max data bounds for dashboard preset calculations
 router.get('/dashboard-date-bounds', getDashboardDateBounds);

@@ -6,6 +6,7 @@ import { SearchStatisticsModel, PriceStatisticsModel } from '../models/SearchSta
 import { AirportModel } from '../models/Airport';
 import { convertToAirportCode } from '../utils/airportCodeConverter';
 import { DashboardSummaryService, clearDashboardMemoryCache, getDashboardMemoryCacheStats, getAirportCodesForContinent } from '../services/dashboardSummaryService';
+import { getContinentMeta } from '../utils/continentMapper';
 import { pool } from '../config/database';
 
 const DASHBOARD_QUERY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -1701,7 +1702,7 @@ function airlineFlagEmoji(countryCode: string): string {
   return String.fromCodePoint(0x1f1e6 + a - 65, 0x1f1e6 + b - 65);
 }
 
-type AirlineDetailRouteRow = {
+type AirlineFullDataRouteRow = {
   dep_iata: string;
   arr_iata: string;
   flights: number;
@@ -1709,11 +1710,30 @@ type AirlineDetailRouteRow = {
   arr_city: string;
   arr_cc: string;
   arr_country: string;
+  dep_name: string;
   dep_cc: string;
+  dep_country: string;
   airline_name: string;
 };
 
-type AirlineDetailCached = {
+type AirlineAirportItem = {
+  iata: string;
+  name: string;
+  country: string;
+  countryCode: string;
+  flag: string;
+  flights: number;
+};
+
+type AirlineCountryItem = {
+  countryCode: string;
+  countryName: string;
+  flag: string;
+  flights: number;
+  pct: number;
+};
+
+type AirlineFullDataCached = {
   airlineId: number;
   airlineName: string;
   totalFlights: number;
@@ -1721,9 +1741,148 @@ type AirlineDetailCached = {
   countryCount: number;
   domesticFlights: number;
   internationalFlights: number;
-  topAirports: Array<{ iata: string; name: string; city: string; country: string; countryCode: string; flag: string; flights: number }>;
-  topCountries: Array<{ countryCode: string; countryName: string; flag: string; flights: number; pct: number }>;
+  allOriginAirports: AirlineAirportItem[];
+  allDestAirports: AirlineAirportItem[];
+  allDestCountries: AirlineCountryItem[];
 };
+
+type AirlineTrendPoint = {
+  date: string;
+  flights: number;
+};
+
+async function getOrSetAirlineFullData(
+  airlineId: number,
+  level: string,
+  filterValue: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<AirlineFullDataCached> {
+  const cacheKey = `dashboard-airline-full|id=${airlineId}|level=${level}|filter=${filterValue.toUpperCase().trim()}|start=${startDate || ''}|end=${endDate || ''}`;
+  return getOrSetDashboardQueryCache<AirlineFullDataCached>(cacheKey, async () => {
+    let geoWhere = '';
+    const queryParams: (number | string | string[])[] = [airlineId];
+
+    if (filterValue && level !== 'world') {
+      if (level === 'airport') {
+        geoWhere = `AND UPPER(TRIM(dfp.arr_airport)) = $2`;
+        queryParams.push(filterValue.toUpperCase().trim());
+      } else if (level === 'country') {
+        geoWhere = `AND (
+          UPPER(TRIM(ap_arr.country_code)) = $2
+          OR UPPER(TRIM(ap_arr.country)) = $2
+          OR UPPER(TRIM(ap_arr.country_name)) = $2
+        )`;
+        queryParams.push(filterValue.toUpperCase().trim());
+      } else if (level === 'continent') {
+        const codes = await getAirportCodesForContinent(filterValue);
+        if (codes.length > 0) {
+          geoWhere = `AND UPPER(TRIM(dfp.arr_airport)) = ANY($2::text[])`;
+          queryParams.push(codes);
+        }
+      }
+    }
+
+    let dateWhere = '';
+    if (startDate) {
+      dateWhere += ` AND dfp.departure_date >= $${queryParams.length + 1}::date`;
+      queryParams.push(startDate);
+    }
+    if (endDate) {
+      dateWhere += ` AND dfp.departure_date <= $${queryParams.length + 1}::date`;
+      queryParams.push(endDate);
+    }
+
+    const sql = `
+      SELECT
+        UPPER(TRIM(dfp.dep_airport))                                                                  AS dep_iata,
+        UPPER(TRIM(dfp.arr_airport))                                                                  AS arr_iata,
+        COUNT(*)::int                                                                                 AS flights,
+        MAX(COALESCE(NULLIF(TRIM(ap_arr.name), ''), dfp.arr_airport))                               AS arr_name,
+        MAX(COALESCE(NULLIF(TRIM(ap_arr.city), ''), NULLIF(TRIM(ap_arr.name), ''), dfp.arr_airport)) AS arr_city,
+        MAX(COALESCE(NULLIF(TRIM(ap_arr.country_code), ''), NULLIF(TRIM(ap_arr.country), ''), ''))  AS arr_cc,
+        MAX(COALESCE(NULLIF(TRIM(ap_arr.country_name), ''), NULLIF(TRIM(ap_arr.country), ''), 'Unknown')) AS arr_country,
+        MAX(COALESCE(NULLIF(TRIM(ap_dep.name), ''), dfp.dep_airport))                               AS dep_name,
+        MAX(COALESCE(NULLIF(TRIM(ap_dep.country_code), ''), NULLIF(TRIM(ap_dep.country), ''), ''))  AS dep_cc,
+        MAX(COALESCE(NULLIF(TRIM(ap_dep.country_name), ''), NULLIF(TRIM(ap_dep.country), ''), 'Unknown')) AS dep_country,
+        MAX(al.name)                                                                                  AS airline_name
+      FROM departure_flight_paths dfp
+      JOIN airlines al ON al.id = dfp.airline_id
+      LEFT JOIN airports ap_arr ON UPPER(TRIM(ap_arr.code)) = UPPER(TRIM(dfp.arr_airport))
+      LEFT JOIN airports ap_dep ON UPPER(TRIM(ap_dep.code)) = UPPER(TRIM(dfp.dep_airport))
+      WHERE dfp.airline_id = $1
+      ${geoWhere}
+      ${dateWhere}
+      GROUP BY UPPER(TRIM(dfp.dep_airport)), UPPER(TRIM(dfp.arr_airport))
+      ORDER BY COUNT(*) DESC
+    `;
+
+    const { rows } = await pool.query<AirlineFullDataRouteRow>(sql, queryParams);
+
+    const airlineName = rows[0]?.airline_name || `Airline #${airlineId}`;
+    let totalFlights = 0;
+    let domesticFlights = 0;
+
+    const originAgg = new Map<string, AirlineAirportItem>();
+    const destAgg = new Map<string, AirlineAirportItem>();
+    const countryAgg = new Map<string, { countryCode: string; countryName: string; flights: number }>();
+
+    for (const r of rows) {
+      const f = Number(r.flights) || 0;
+      totalFlights += f;
+
+      if (r.dep_cc && r.arr_cc && r.dep_cc.toUpperCase() === r.arr_cc.toUpperCase()) {
+        domesticFlights += f;
+      }
+
+      if (r.dep_iata) {
+        const a = originAgg.get(r.dep_iata);
+        if (a) { a.flights += f; }
+        else originAgg.set(r.dep_iata, { iata: r.dep_iata, name: r.dep_name || r.dep_iata, country: r.dep_country || 'Unknown', countryCode: r.dep_cc || '', flag: '', flights: f });
+      }
+
+      if (r.arr_iata) {
+        const a = destAgg.get(r.arr_iata);
+        if (a) { a.flights += f; }
+        else destAgg.set(r.arr_iata, { iata: r.arr_iata, name: r.arr_name || r.arr_iata, country: r.arr_country || 'Unknown', countryCode: r.arr_cc || '', flag: '', flights: f });
+      }
+
+      const ck = r.arr_cc || r.arr_country || 'Unknown';
+      const c = countryAgg.get(ck);
+      if (c) { c.flights += f; }
+      else countryAgg.set(ck, { countryCode: r.arr_cc || '', countryName: r.arr_country || 'Unknown', flights: f });
+    }
+
+    const allOriginAirports = Array.from(originAgg.values())
+      .sort((a, b) => b.flights - a.flights)
+      .map((a) => ({ ...a, flag: airlineFlagEmoji(a.countryCode) }));
+
+    const allDestAirports = Array.from(destAgg.values())
+      .sort((a, b) => b.flights - a.flights)
+      .map((a) => ({ ...a, flag: airlineFlagEmoji(a.countryCode) }));
+
+    const allDestCountries = Array.from(countryAgg.values())
+      .sort((a, b) => b.flights - a.flights)
+      .map((c) => ({
+        ...c,
+        flag: airlineFlagEmoji(c.countryCode),
+        pct: totalFlights > 0 ? (c.flights / totalFlights) * 100 : 0,
+      }));
+
+    return {
+      airlineId,
+      airlineName,
+      totalFlights,
+      airportCount: destAgg.size,
+      countryCount: countryAgg.size,
+      domesticFlights,
+      internationalFlights: totalFlights - domesticFlights,
+      allOriginAirports,
+      allDestAirports,
+      allDestCountries,
+    };
+  });
+}
 
 /**
  * Get paginated airline overview for the dashboard airlines panel.
@@ -1856,7 +2015,7 @@ export async function getDashboardAirlines(req: Request, res: Response, next: Ne
 
 /**
  * Get full detail for a single airline drill-down view.
- * Cached per (airlineId, level, filterValue); pagination/search not needed here.
+ * Delegates to getOrSetAirlineFullData so the same cache is shared with paginated endpoints.
  * GET /api/statistics/dashboard-airline-detail?airlineId=1&level=world&filterValue=
  */
 export async function getDashboardAirlineDetail(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -1864,6 +2023,43 @@ export async function getDashboardAirlineDetail(req: Request, res: Response, nex
     const airlineIdRaw = typeof req.query.airlineId === 'string' ? Number.parseInt(req.query.airlineId, 10) : NaN;
     const level = typeof req.query.level === 'string' ? req.query.level.trim() : 'world';
     const filterValue = typeof req.query.filterValue === 'string' ? req.query.filterValue.trim() : '';
+    const startDate = typeof req.query.start_date === 'string' && req.query.start_date.trim() ? req.query.start_date.trim() : undefined;
+    const endDate = typeof req.query.end_date === 'string' && req.query.end_date.trim() ? req.query.end_date.trim() : undefined;
+
+    if (Number.isNaN(airlineIdRaw) || airlineIdRaw < 1) {
+      res.status(400).json({ error: 'airlineId must be a positive integer' });
+      return;
+    }
+
+    const full = await getOrSetAirlineFullData(airlineIdRaw, level, filterValue, startDate, endDate);
+
+    res.json({
+      airlineId: full.airlineId,
+      airlineName: full.airlineName,
+      totalFlights: full.totalFlights,
+      airportCount: full.airportCount,
+      countryCount: full.countryCount,
+      domesticFlights: full.domesticFlights,
+      internationalFlights: full.internationalFlights,
+      topAirports: full.allDestAirports.slice(0, 10),
+      topCountries: full.allDestCountries.slice(0, 10),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get daily flight frequency trend for an airline.
+ * GET /api/statistics/dashboard-airline-trend?airlineId=1&level=world&filterValue=
+ */
+export async function getDashboardAirlineTrend(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const airlineIdRaw = typeof req.query.airlineId === 'string' ? Number.parseInt(req.query.airlineId, 10) : NaN;
+    const level = typeof req.query.level === 'string' ? req.query.level.trim() : 'world';
+    const filterValue = typeof req.query.filterValue === 'string' ? req.query.filterValue.trim() : '';
+    const startDate = typeof req.query.start_date === 'string' && req.query.start_date.trim() ? req.query.start_date.trim() : undefined;
+    const endDate = typeof req.query.end_date === 'string' && req.query.end_date.trim() ? req.query.end_date.trim() : undefined;
 
     if (Number.isNaN(airlineIdRaw) || airlineIdRaw < 1) {
       res.status(400).json({ error: 'airlineId must be a positive integer' });
@@ -1871,11 +2067,12 @@ export async function getDashboardAirlineDetail(req: Request, res: Response, nex
     }
 
     const airlineId = airlineIdRaw;
-    const cacheKey = `dashboard-airline-detail|id=${airlineId}|level=${level}|filter=${filterValue.toUpperCase().trim()}`;
+    const cacheKey = `dashboard-airline-trend|id=${airlineId}|level=${level}|filter=${filterValue.toUpperCase().trim()}|start=${startDate || ''}|end=${endDate || ''}`;
 
-    const detail = await getOrSetDashboardQueryCache<AirlineDetailCached>(cacheKey, async () => {
+    const trend = await getOrSetDashboardQueryCache<AirlineTrendPoint[]>(cacheKey, async () => {
       let geoWhere = '';
       const queryParams: (number | string | string[])[] = [airlineId];
+      const needsAirportJoin = level === 'country' && filterValue !== '';
 
       if (filterValue && level !== 'world') {
         if (level === 'airport') {
@@ -1883,9 +2080,9 @@ export async function getDashboardAirlineDetail(req: Request, res: Response, nex
           queryParams.push(filterValue.toUpperCase().trim());
         } else if (level === 'country') {
           geoWhere = `AND (
-            UPPER(TRIM(ap_arr.country_code)) = $2
-            OR UPPER(TRIM(ap_arr.country)) = $2
-            OR UPPER(TRIM(ap_arr.country_name)) = $2
+            UPPER(TRIM(ap.country_code)) = $2
+            OR UPPER(TRIM(ap.country)) = $2
+            OR UPPER(TRIM(ap.country_name)) = $2
           )`;
           queryParams.push(filterValue.toUpperCase().trim());
         } else if (level === 'continent') {
@@ -1897,84 +2094,171 @@ export async function getDashboardAirlineDetail(req: Request, res: Response, nex
         }
       }
 
-      const sql = `
-        SELECT
-          UPPER(TRIM(dfp.dep_airport))                                                                AS dep_iata,
-          UPPER(TRIM(dfp.arr_airport))                                                                AS arr_iata,
-          COUNT(*)::int                                                                               AS flights,
-          MAX(COALESCE(NULLIF(TRIM(ap_arr.name), ''), dfp.arr_airport))                             AS arr_name,
-          MAX(COALESCE(NULLIF(TRIM(ap_arr.city), ''), NULLIF(TRIM(ap_arr.name), ''), dfp.arr_airport)) AS arr_city,
-          MAX(COALESCE(NULLIF(TRIM(ap_arr.country_code), ''), NULLIF(TRIM(ap_arr.country), ''), '')) AS arr_cc,
-          MAX(COALESCE(NULLIF(TRIM(ap_arr.country_name), ''), NULLIF(TRIM(ap_arr.country), ''), 'Unknown')) AS arr_country,
-          MAX(COALESCE(NULLIF(TRIM(ap_dep.country_code), ''), NULLIF(TRIM(ap_dep.country), ''), '')) AS dep_cc,
-          MAX(al.name)                                                                                AS airline_name
-        FROM departure_flight_paths dfp
-        JOIN airlines al ON al.id = dfp.airline_id
-        LEFT JOIN airports ap_arr ON UPPER(TRIM(ap_arr.code)) = UPPER(TRIM(dfp.arr_airport))
-        LEFT JOIN airports ap_dep ON UPPER(TRIM(ap_dep.code)) = UPPER(TRIM(dfp.dep_airport))
-        WHERE dfp.airline_id = $1
-        ${geoWhere}
-        GROUP BY UPPER(TRIM(dfp.dep_airport)), UPPER(TRIM(dfp.arr_airport))
-        ORDER BY COUNT(*) DESC
-      `;
-
-      const { rows } = await pool.query<AirlineDetailRouteRow>(sql, queryParams);
-
-      const airlineName = rows[0]?.airline_name || `Airline #${airlineId}`;
-      let totalFlights = 0;
-      let domesticFlights = 0;
-
-      const airportAgg = new Map<string, { iata: string; name: string; city: string; country: string; countryCode: string; flights: number }>();
-      const countryAgg = new Map<string, { countryCode: string; countryName: string; flights: number }>();
-
-      for (const r of rows) {
-        const f = Number(r.flights) || 0;
-        totalFlights += f;
-
-        if (r.dep_cc && r.arr_cc && r.dep_cc.toUpperCase() === r.arr_cc.toUpperCase()) {
-          domesticFlights += f;
-        }
-
-        if (r.arr_iata) {
-          const a = airportAgg.get(r.arr_iata);
-          if (a) { a.flights += f; }
-          else airportAgg.set(r.arr_iata, { iata: r.arr_iata, name: r.arr_name || r.arr_iata, city: r.arr_city || r.arr_iata, country: r.arr_country || 'Unknown', countryCode: r.arr_cc || '', flights: f });
-        }
-
-        const ck = r.arr_cc || r.arr_country || 'Unknown';
-        const c = countryAgg.get(ck);
-        if (c) { c.flights += f; }
-        else countryAgg.set(ck, { countryCode: r.arr_cc || '', countryName: r.arr_country || 'Unknown', flights: f });
+      let dateWhere = '';
+      if (startDate) {
+        dateWhere += ` AND dfp.departure_date >= $${queryParams.length + 1}::date`;
+        queryParams.push(startDate);
+      }
+      if (endDate) {
+        dateWhere += ` AND dfp.departure_date <= $${queryParams.length + 1}::date`;
+        queryParams.push(endDate);
       }
 
-      const topAirports = Array.from(airportAgg.values())
-        .sort((a, b) => b.flights - a.flights)
-        .slice(0, 10)
-        .map((a) => ({ ...a, flag: airlineFlagEmoji(a.countryCode) }));
+      const joinClause = needsAirportJoin
+        ? `LEFT JOIN airports ap ON UPPER(TRIM(ap.code)) = UPPER(TRIM(dfp.arr_airport))`
+        : '';
 
-      const topCountries = Array.from(countryAgg.values())
-        .sort((a, b) => b.flights - a.flights)
-        .slice(0, 10)
-        .map((c) => ({
-          ...c,
-          flag: airlineFlagEmoji(c.countryCode),
-          pct: totalFlights > 0 ? (c.flights / totalFlights) * 100 : 0,
-        }));
+      const sql = `
+        SELECT
+          DATE(dfp.departure_date)::text AS date,
+          COUNT(*)::int  AS flights
+        FROM departure_flight_paths dfp
+        ${joinClause}
+        WHERE dfp.airline_id = $1
+        ${geoWhere}
+        ${dateWhere}
+        GROUP BY DATE(dfp.departure_date)
+        ORDER BY DATE(dfp.departure_date) ASC
+      `;
 
-      return {
-        airlineId,
-        airlineName,
-        totalFlights,
-        airportCount: airportAgg.size,
-        countryCount: countryAgg.size,
-        domesticFlights,
-        internationalFlights: totalFlights - domesticFlights,
-        topAirports,
-        topCountries,
-      };
+      const { rows } = await pool.query<{ date: string; flights: number }>(sql, queryParams);
+      return rows.map((r) => ({ date: String(r.date), flights: Number(r.flights) || 0 }));
     });
 
-    res.json(detail);
+    res.json({ rows: trend });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get paginated origin airports for an airline (cache-then-slice).
+ * GET /api/statistics/dashboard-airline-origin-airports?airlineId=1&level=world&filterValue=&offset=0&pageSize=9
+ */
+export async function getDashboardAirlineOriginAirports(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const airlineIdRaw = typeof req.query.airlineId === 'string' ? Number.parseInt(req.query.airlineId, 10) : NaN;
+    const level = typeof req.query.level === 'string' ? req.query.level.trim() : 'world';
+    const filterValue = typeof req.query.filterValue === 'string' ? req.query.filterValue.trim() : '';
+    const offsetRaw = typeof req.query.offset === 'string' ? Number.parseInt(req.query.offset, 10) : 0;
+    const pageSizeRaw = typeof req.query.pageSize === 'string' ? Number.parseInt(req.query.pageSize, 10) : 10;
+    const startDate = typeof req.query.start_date === 'string' && req.query.start_date.trim() ? req.query.start_date.trim() : undefined;
+    const endDate = typeof req.query.end_date === 'string' && req.query.end_date.trim() ? req.query.end_date.trim() : undefined;
+
+    if (Number.isNaN(airlineIdRaw) || airlineIdRaw < 1) {
+      res.status(400).json({ error: 'airlineId must be a positive integer' });
+      return;
+    }
+
+    const offset = Number.isNaN(offsetRaw) || offsetRaw < 0 ? 0 : offsetRaw;
+    const pageSize = Number.isNaN(pageSizeRaw) || pageSizeRaw < 1 ? 10 : Math.min(pageSizeRaw, 100);
+
+    const full = await getOrSetAirlineFullData(airlineIdRaw, level, filterValue, startDate, endDate);
+    const all = full.allOriginAirports;
+    const rows = all.slice(offset, offset + pageSize);
+
+    res.json({ rows, total: all.length, offset, pageSize, hasMore: offset + rows.length < all.length });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get paginated destination airports for an airline (cache-then-slice).
+ * GET /api/statistics/dashboard-airline-dest-airports?airlineId=1&level=world&filterValue=&offset=0&pageSize=9
+ */
+export async function getDashboardAirlineDestAirports(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const airlineIdRaw = typeof req.query.airlineId === 'string' ? Number.parseInt(req.query.airlineId, 10) : NaN;
+    const level = typeof req.query.level === 'string' ? req.query.level.trim() : 'world';
+    const filterValue = typeof req.query.filterValue === 'string' ? req.query.filterValue.trim() : '';
+    const offsetRaw = typeof req.query.offset === 'string' ? Number.parseInt(req.query.offset, 10) : 0;
+    const pageSizeRaw = typeof req.query.pageSize === 'string' ? Number.parseInt(req.query.pageSize, 10) : 10;
+    const startDate = typeof req.query.start_date === 'string' && req.query.start_date.trim() ? req.query.start_date.trim() : undefined;
+    const endDate = typeof req.query.end_date === 'string' && req.query.end_date.trim() ? req.query.end_date.trim() : undefined;
+
+    if (Number.isNaN(airlineIdRaw) || airlineIdRaw < 1) {
+      res.status(400).json({ error: 'airlineId must be a positive integer' });
+      return;
+    }
+
+    const offset = Number.isNaN(offsetRaw) || offsetRaw < 0 ? 0 : offsetRaw;
+    const pageSize = Number.isNaN(pageSizeRaw) || pageSizeRaw < 1 ? 10 : Math.min(pageSizeRaw, 100);
+
+    const full = await getOrSetAirlineFullData(airlineIdRaw, level, filterValue, startDate, endDate);
+    const all = full.allDestAirports;
+    const rows = all.slice(offset, offset + pageSize);
+
+    res.json({ rows, total: all.length, offset, pageSize, hasMore: offset + rows.length < all.length });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get paginated destination countries for an airline (cache-then-slice).
+ * GET /api/statistics/dashboard-airline-dest-countries?airlineId=1&level=world&filterValue=&offset=0&pageSize=9
+ */
+export async function getDashboardAirlineDestCountries(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const airlineIdRaw = typeof req.query.airlineId === 'string' ? Number.parseInt(req.query.airlineId, 10) : NaN;
+    const level = typeof req.query.level === 'string' ? req.query.level.trim() : 'world';
+    const filterValue = typeof req.query.filterValue === 'string' ? req.query.filterValue.trim() : '';
+    const offsetRaw = typeof req.query.offset === 'string' ? Number.parseInt(req.query.offset, 10) : 0;
+    const pageSizeRaw = typeof req.query.pageSize === 'string' ? Number.parseInt(req.query.pageSize, 10) : 10;
+    const startDate = typeof req.query.start_date === 'string' && req.query.start_date.trim() ? req.query.start_date.trim() : undefined;
+    const endDate = typeof req.query.end_date === 'string' && req.query.end_date.trim() ? req.query.end_date.trim() : undefined;
+
+    if (Number.isNaN(airlineIdRaw) || airlineIdRaw < 1) {
+      res.status(400).json({ error: 'airlineId must be a positive integer' });
+      return;
+    }
+
+    const offset = Number.isNaN(offsetRaw) || offsetRaw < 0 ? 0 : offsetRaw;
+    const pageSize = Number.isNaN(pageSizeRaw) || pageSizeRaw < 1 ? 10 : Math.min(pageSizeRaw, 100);
+
+    const full = await getOrSetAirlineFullData(airlineIdRaw, level, filterValue, startDate, endDate);
+    const all = full.allDestCountries;
+    const rows = all.slice(offset, offset + pageSize);
+
+    res.json({ rows, total: all.length, offset, pageSize, hasMore: offset + rows.length < all.length });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get an airline's home base (top origin airport, country, continent).
+ * Used by the UI to pre-populate StatusLine hierarchy when drilling directly to an airline.
+ * GET /api/statistics/dashboard-airline-home-base?airlineId=1
+ */
+export async function getDashboardAirlineHomeBase(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const airlineIdRaw = typeof req.query.airlineId === 'string' ? Number.parseInt(req.query.airlineId, 10) : NaN;
+    if (Number.isNaN(airlineIdRaw) || airlineIdRaw < 1) {
+      res.status(400).json({ error: 'airlineId must be a positive integer' });
+      return;
+    }
+
+    const full = await getOrSetAirlineFullData(airlineIdRaw, 'world', '');
+    const topOrigin = full.allOriginAirports[0];
+
+    if (!topOrigin) {
+      res.json({ iata: null, airportName: null, countryCode: null, countryName: null, flag: null, continentName: null, continentIcon: null });
+      return;
+    }
+
+    const continentMeta = getContinentMeta(topOrigin.countryCode || null, topOrigin.country || null);
+
+    res.json({
+      iata: topOrigin.iata,
+      airportName: topOrigin.name,
+      countryCode: topOrigin.countryCode,
+      countryName: topOrigin.country,
+      flag: topOrigin.flag,
+      continentName: continentMeta.label,
+      continentIcon: continentMeta.icon,
+    });
   } catch (error) {
     next(error);
   }

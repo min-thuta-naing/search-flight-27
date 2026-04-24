@@ -9,8 +9,59 @@ import { Bar } from 'react-chartjs-2';
 import { statisticsApi } from '@/lib/api/statistics-api';
 import type { DashboardAirlinesRowResponse } from '@/lib/api/statistics-api';
 import { useDrillDown } from './DrillDownDashboard';
+import type { ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 
 export type AirlineRow = DashboardAirlinesRowResponse;
+
+async function resolveAndDrillToAirline(
+  airlineId: number,
+  airlineName: string,
+  drillTo: ReturnType<typeof useDrillDown>['drillTo'],
+) {
+  try {
+    const home = await statisticsApi.getDashboardAirlineHomeBase({ airlineId });
+    const continent: ContinentData | undefined = home.continentName
+      ? {
+          name: home.continentName,
+          icon: home.continentIcon ?? '\u{1F310}',
+          airports: '',
+          flights: 0,
+          delta: '',
+          yoy: 0, yoyN: 0, mom: 0, momN: 0, wow: 0, wowN: 0,
+        }
+      : undefined;
+    const country: CountryData | undefined = home.countryName
+      ? {
+          name: home.countryName,
+          flag: home.flag ?? '',
+          countryCode: home.countryCode ?? '',
+          airports: 0,
+          flights: 0,
+          delta: '',
+          deltaN: 0,
+          bar: 0,
+        }
+      : undefined;
+    const airport: AirportInfo | undefined = home.iata
+      ? {
+          iata: home.iata,
+          name: home.airportName ?? home.iata,
+          flights: 0,
+          routes: 0,
+          airlines: 0,
+          color: '',
+        }
+      : undefined;
+    drillTo('airline', {
+      airline: { id: airlineId, name: airlineName },
+      ...(continent && { continent }),
+      ...(country && { country }),
+      ...(airport && { airport }),
+    });
+  } catch {
+    drillTo('airline', { airline: { id: airlineId, name: airlineName } });
+  }
+}
 
 export default function AirlineOverviewPanel() {
   const { drillTo, level, selections } = useDrillDown();
@@ -124,7 +175,7 @@ export default function AirlineOverviewPanel() {
     onClick: (_event: any, elements: any[]) => {
       if (elements.length > 0) {
         const clicked = top5[elements[0].index];
-        if (clicked) drillTo('airline', { airline: { id: clicked.id, name: clicked.name } });
+        if (clicked) void resolveAndDrillToAirline(clicked.id, clicked.name, drillTo);
       }
     },
     onHover: (event: any, elements: any[]) => {
@@ -210,7 +261,7 @@ export default function AirlineOverviewPanel() {
                       key={`${a.id}-${idx}`}
                       className="border-b border-border/60 last:border-b-0 cursor-pointer hover:bg-primary/5 transition-colors"
                       title={`คลิกเพื่อดูรายละเอียด ${a.name}`}
-                      onClick={() => drillTo('airline', { airline: { id: a.id, name: a.name } })}
+                      onClick={() => void resolveAndDrillToAirline(a.id, a.name, drillTo)}
                     >
                       <td className="px-3 py-2.5 align-top font-medium">{a.name}</td>
                       <td className="px-3 py-2.5 align-top text-muted-foreground">{a.country}</td>

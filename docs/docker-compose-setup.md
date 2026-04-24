@@ -5,6 +5,7 @@
 ```bash 
 cd frontend 
 npm install --legacy-peer-deps
+npm install plotly.js
 ```
 
 ### in the backend folder 
@@ -13,6 +14,8 @@ npm install --legacy-peer-deps
 cd backend 
 npm install
 npm install googleapis
+npm install tz-lookup
+python3 -m pip install pandas selenium undetected-chromedriver
 
 ```
 
@@ -79,7 +82,6 @@ From the root directory:
 Run the following command: 
 ```bash 
 docker compose -f docker-compose.yml up --build
-
 ``` 
 
 But if you want it to be down 
@@ -120,13 +122,24 @@ docker exec -it flight_search_backend sh
 /app $ npm run import-airports
 /app $ npm run import-airpaz-flights  
 /app $ npm run import-intl-flights
+npx tsx src/scripts/sync-cross-check-airports.ts 
+npm run import-intl-flights:local
 npm run import-intl-flights -- --dir=/app/data/intl_flight_data/asia/americansamoa 
 npm run import-intl-flights -- --drive
 npm run import-intl-flights -- --drive --folder-id=YOUR_FOLDER_ID
+npm run import-intl-flights -- --drive --folder-id=106HAtMWKQkyWYPKvojmL0DUTl6Ov0bmf
+npm run import-intl-flights -- --drive --folder-id=1rEfw831Sr8DjRGnEluGjJTkle4bltUBe
+npm run import-intl-flights -- --drive --folder-id=1UFNLsuf0dh1fbN5s-DbugfGiNcoUJAvq
+npm run import-intl-flights -- --drive --folder-id=1aMkWDzhAS0zcguIZKD9EqDELG9I1DTlA
+1JRowqzZEA8TO38U65Z7a2ksDizUD3FBC
+select * from airports where is_cross_check_enabled='t';
+select * from arrival_flight_paths; 
 ```
 for running migration 
 ```bash
 npm run migrate
+npm run migrate:up
+docker exec flight_search_backend npm run migrate:up
 ```
 
 in the backend folder 
@@ -138,6 +151,11 @@ after every changes, run this
 ```bash 
 docker-compose build backend && docker-compose up -d backend
 docker compose build --no-cache backend && docker compose up -d backend
+```
+
+to view the logs of the backend (to check if cross-check happen or not)
+```bash
+docker-compose logs -f backend
 ```
 ...
 

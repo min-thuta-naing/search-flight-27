@@ -3,6 +3,7 @@
  * 
  * Usage:
  *   npm run import-intl-flights
+ *   npm run import-intl-flights -- --local
  *   npm run import-intl-flights -- --dir="./data/intl_flight_data"
  *   npm run import-intl-flights -- --file="./backend/data/intl_flight_data/flightsfrom_BKK_2026-01-31.csv"
  */
@@ -409,6 +410,7 @@ async function importIntlCSVFile(
                 airline_name: airline.name,
                 airline_code: airlineCode,
                 aircraft: row.aircraft || null,
+                status: 'planned',
                 stops: 0
             };
 
@@ -560,17 +562,34 @@ async function processFilesParallel(
  */
 async function main() {
     const args = process.argv.slice(2);
-    // Default directory logic: check both ./data/intl_flight_data and ./backend/data/intl_flight_data
-    let defaultDir = './data/intl_flight_data';
-    if (!fs.existsSync(path.join(process.cwd(), defaultDir)) && fs.existsSync(path.join(process.cwd(), './backend/data/intl_flight_data'))) {
-        defaultDir = './backend/data/intl_flight_data';
-    }
-
-    const csvDir = args.find(arg => arg.startsWith('--dir='))?.split('=')[1] || defaultDir;
+    const csvDirArg = args.find(arg => arg.startsWith('--dir='))?.split('=')[1];
     const csvFile = args.find(arg => arg.startsWith('--file='))?.split('=')[1];
     const useDrive = args.includes('--drive');
+    const useLocal = args.includes('--local') || (!useDrive && !csvFile && !csvDirArg);
     const folderId = args.find(arg => arg.startsWith('--folder-id='))?.split('=')[1] || '1GOFxWqbZQABNylMAL7xORETo85XJw8vv';
     const limit = parseInt(args.find(arg => arg.startsWith('--limit='))?.split('=')[1] || '0');
+
+    // Default directory logic: prioritize backend/data/intl_flight_data
+    let csvDir = csvDirArg;
+    if (!csvDir && !csvFile && !useDrive) {
+        const possibleDirs = [
+            path.join(process.cwd(), 'backend/data/intl_flight_data'),
+            path.join(process.cwd(), 'data/intl_flight_data'),
+            './backend/data/intl_flight_data',
+            './data/intl_flight_data'
+        ];
+        
+        for (const d of possibleDirs) {
+            if (fs.existsSync(d)) {
+                csvDir = d;
+                break;
+            }
+        }
+        
+        if (!csvDir) {
+            csvDir = './backend/data/intl_flight_data'; // Fallback
+        }
+    }
 
     // Check for force import
     const forceImport = process.env.FORCE_IMPORT === 'true' || args.includes('--force');
@@ -579,10 +598,12 @@ async function main() {
     console.log('✈️  International Flight Data CSV Importer (FlightsFrom.com)');
     if (useDrive) {
         console.log(`📂 Source: Google Drive (Folder ID: ${folderId})`);
+    } else if (useLocal) {
+        console.log(`📂 Source: Local Manual Folder (${csvDir})`);
     } else {
-        console.log(`📂 Source: Local Directory (${csvFile || csvDir})`);
+        console.log(`📂 Source: Local Target (${csvFile || csvDir})`);
     }
-    console.log(`DEBUG: Script Version - Recursive Drive Support Active`);
+    console.log(`DEBUG: Script Version - Local & Drive Support Active`);
     console.log('='.repeat(80));
 
     let csvFiles: string[] = [];
@@ -607,13 +628,16 @@ async function main() {
         return results;
     }
 
-    if (csvFile) {
-        const fullPath = path.isAbsolute(csvFile) ? csvFile : path.join(process.cwd(), csvFile);
-        csvFiles = [fullPath];
-    } else {
-        const fullDir = path.isAbsolute(csvDir) ? csvDir : path.join(process.cwd(), csvDir);
-        if (fs.existsSync(fullDir)) {
-            csvFiles = getFilesRecursively(fullDir);
+    let localFiles: string[] = [];
+    if (!useDrive) {
+        if (csvFile) {
+            const fullPath = path.isAbsolute(csvFile) ? csvFile : path.join(process.cwd(), csvFile);
+            localFiles = [fullPath];
+        } else if (csvDir) {
+            const fullDir = path.isAbsolute(csvDir) ? csvDir : path.join(process.cwd(), csvDir);
+            if (fs.existsSync(fullDir)) {
+                localFiles = getFilesRecursively(fullDir);
+            }
         }
     }
 
@@ -624,7 +648,7 @@ async function main() {
 
     const routeCache = new Map<string, any>();
     const airlineCache = new Map<string, any>();
-    const CONCURRENCY = 5;
+    const CONCURRENCY = 1;
 
     try {
         if (useDrive) {
@@ -651,18 +675,6 @@ async function main() {
             errorCount = result.errorCount;
 
         } else {
-            let localFiles: string[] = [];
-
-            if (csvFile) {
-                const fullPath = path.isAbsolute(csvFile) ? csvFile : path.join(process.cwd(), csvFile);
-                localFiles = [fullPath];
-            } else {
-                const fullDir = path.isAbsolute(csvDir) ? csvDir : path.join(process.cwd(), csvDir);
-                if (fs.existsSync(fullDir)) {
-                    localFiles = getFilesRecursively(fullDir);
-                }
-            }
-
             if (localFiles.length === 0) {
                 console.error(`❌ No CSV files found locally.`);
                 process.exit(1);

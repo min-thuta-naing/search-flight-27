@@ -1,5 +1,11 @@
-import { Pool, PoolConfig } from 'pg';
+import { Pool, PoolConfig, types } from 'pg';
 import dotenv from 'dotenv';
+
+// Force pg driver to parse 'timestamp without time zone' (OID 1114) as UTC
+// Instead of the default behavior which parses it based on the process's local timezone.
+types.setTypeParser(1114, (stringValue: string) => {
+  return new Date(stringValue + 'Z');
+});
 
 dotenv.config();
 

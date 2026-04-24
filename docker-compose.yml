@@ -27,6 +27,8 @@ services:
       dockerfile: Dockerfile
     container_name: flight_search_backend
     restart: unless-stopped
+    mem_limit: 2048M
+    mem_reservation: 512M
     env_file:
       - ./backend/.env
     environment:
@@ -46,13 +48,14 @@ services:
       AUTO_IMPORT_FLIGHTS: "true"
       AUTO_IMPORT_INTL_FLIGHTS: "false"
       FORCE_IMPORT: "false"
+      AUTO_SYNC_AIRPORTS: "true"
     ports:
       - "3001:3001"
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
-      - ./backend/data:/app/data:ro
+      - ./backend/data:/app/data
     networks:
       - flight_search_network
     healthcheck:

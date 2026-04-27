@@ -22,9 +22,9 @@ export interface AirportCountrySummary {
   country: string
   country_code: string | null
   airport_count: number
-  continent_key: string
-  continent_label: string
-  continent_icon: string
+  continent_key?: string
+  continent_label?: string
+  continent_icon?: string
 }
 
 export interface AirportCountriesResponse {

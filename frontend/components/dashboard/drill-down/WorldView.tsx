@@ -1,6 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+// --- Airline Overview Panel ---
+import AirlineOverviewPanel from './AirlineOverviewPanel';
+
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDays, differenceInCalendarDays, format, subDays } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { ChevronDown } from 'lucide-react';
@@ -21,11 +24,20 @@ import {
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
 import {
-  statisticsApi,
+  getDashboardDateBounds,
+  getDashboardSummary,
+  getDashboardTopRanks,
+  getDashboardTopCountries,
+  getDashboardTopAirports,
+  getDashboardTopDestinations,
+  getDashboardCacheStatus,
+  type DashboardDateBoundsResponse,
   type DashboardSummaryResponse,
-  type DashboardContinentCardResponse,
   type DashboardTopRanksResponse,
   type DashboardTopDestinationsResponse,
+} from '@/lib/dashboard/services/drilldown';
+import type {
+  DashboardContinentCardResponse,
 } from '@/lib/api/statistics-api';
 import {
   getWorldSummaryCacheState,
@@ -44,12 +56,23 @@ import type { RangePreset } from './DrillDownDashboard';
 import type { AirportInfo, CountryData } from '@/types/dashboard';
 import { cn } from '@/lib/utils';
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+
 const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'xl:h-[540px]';
+const COUNTRY_DISPLAY_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
+  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  : null;
+const COUNTRY_DISPLAY_ALIASES: Record<string, string> = {
+  CD: 'Kinshasa',
+};
 
 type TopCountryViewRow = {
   countryCode: string | null;
   name: string;
   flag?: string;
+  continentKey: string;
+  continentLabel: string;
+  continentIcon: string;
   airportCount: number;
   flights: number;
   previousFlights: number;
@@ -57,16 +80,28 @@ type TopCountryViewRow = {
   deltaPercent: number;
 };
 
+type CountryLookupRow = AirportCountrySummary & {
+  displayName: string;
+  code: string;
+  key: string;
+};
+
 type TopAirportViewRow = {
   iata: string;
   airportName: string;
   city: string;
   country: string;
+  continentKey: string;
+  continentLabel: string;
+  continentIcon: string;
   flights: number;
   previousFlights: number;
   deltaFlights: number;
   deltaPercent: number;
 };
+
+type PreloadState = 'idle' | 'running' | 'ready' | 'failed';
+const PRELOAD_GATE_MAX_WAIT_MS = 15_000;
 
 const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   focus: '± 15 วัน',
@@ -76,6 +111,15 @@ const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   '90': 'ไตรมาสนี้',
   '180': '6 เดือน',
   '365': '1 ปี',
+};
+
+const PRELOADED_PRESET_WINDOW_DAYS: Partial<Record<RangePreset, number>> = {
+  focus: 15,
+  '7': 7,
+  '30': 30,
+  '90': 90,
+  '180': 180,
+  '365': 365,
 };
 
 const CALENDAR_MONTH_OPTIONS = Array.from({ length: 12 }, (_, monthIndex) => ({
@@ -141,7 +185,17 @@ function WorldCalendarCaption({
   );
 }
 
-function buildPresetRange(mode: RangePreset, baseDate = new Date()): DateRange {
+function parseIsoDateInput(dateInput?: string | null) {
+  if (!dateInput) return null;
+  const parsed = new Date(`${dateInput.split('T')[0]}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function buildPresetRange(
+  mode: RangePreset,
+  baseDate = new Date(),
+  bounds?: Pick<DashboardDateBoundsResponse, 'minDate' | 'recommendedEndDate'> | null,
+): DateRange | undefined {
   if (mode === 'focus') {
     return { from: subDays(baseDate, 15), to: addDays(baseDate, 15) };
   }
@@ -166,7 +220,17 @@ function buildPresetRange(mode: RangePreset, baseDate = new Date()): DateRange {
     return { from: baseDate, to: addDays(baseDate, 364) };
   }
 
-  return { from: subDays(baseDate, 3650), to: baseDate };
+  const minDate = parseIsoDateInput(bounds?.minDate || null);
+  const recommendedEndDate = parseIsoDateInput(bounds?.recommendedEndDate || null);
+
+  if (!minDate || !recommendedEndDate) {
+    return undefined;
+  }
+
+  return {
+    from: minDate,
+    to: recommendedEndDate,
+  };
 }
 
 function formatRangeLabel(range?: DateRange) {
@@ -191,30 +255,178 @@ function parseContinentCountryCount(value: string) {
 
 export function WorldView() {
   const { drillTo, timeMode, rangePreset, setRangePreset } = useDrillDown();
-  const initialPresetRange = useMemo(() => buildPresetRange(rangePreset), [rangePreset]);
+  const presetPreloadDoneRef = useRef(false);
+  const preloadGateStartRef = useRef<number | null>(null);
+  const [dashboardDateBounds, setDashboardDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
+  const [presetPreloadState, setPresetPreloadState] = useState<PreloadState>('idle');
+  const [hydratedNow, setHydratedNow] = useState<Date | null>(null);
+  const initialPresetRange = useMemo<DateRange | undefined>(
+    () => (hydratedNow ? buildPresetRange(rangePreset, hydratedNow, dashboardDateBounds) : undefined),
+    [rangePreset, dashboardDateBounds, hydratedNow],
+  );
+  const initialCacheKey = useMemo(() => {
+    if (!initialPresetRange?.from) {
+      return null;
+    }
+
+    const startDate = formatLocalDateInput(initialPresetRange.from);
+    const endDate = formatLocalDateInput(initialPresetRange.to || initialPresetRange.from);
+    return `${startDate}__${endDate}`;
+  }, [initialPresetRange]);
+  const initialSummaryCacheState = useMemo(
+    () => (initialCacheKey ? getWorldSummaryCacheState(initialCacheKey) : { value: null, stale: false }),
+    [initialCacheKey],
+  );
+  const initialTopRanksCacheState = useMemo(
+    () => (initialCacheKey ? getWorldTopRanksCacheState(initialCacheKey) : { value: null, stale: false }),
+    [initialCacheKey],
+  );
+  const initialTopDestinationsCacheState = useMemo(
+    () => (initialCacheKey ? getWorldTopDestinationsCacheState(initialCacheKey) : { value: null, stale: false }),
+    [initialCacheKey],
+  );
   const [isMounted, setIsMounted] = useState(false);
-  const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState<DashboardSummaryResponse | null>(() => initialSummaryCacheState.value);
+  const [loading, setLoading] = useState(() => !initialSummaryCacheState.value);
   const [dateRange, setDateRange] = useState<DateRange | undefined>(() => initialPresetRange);
   const [durationMode, setDurationMode] = useState<RangePreset | null>(rangePreset);
   const [showCustomDateRange, setShowCustomDateRange] = useState(false);
   const [isExtendedRangeOpen, setIsExtendedRangeOpen] = useState(false);
-  const [fromCalendarMonth, setFromCalendarMonth] = useState(() => initialPresetRange.from || new Date());
-  const [toCalendarMonth, setToCalendarMonth] = useState(() => initialPresetRange.to || initialPresetRange.from || new Date());
+  const [fromCalendarMonth, setFromCalendarMonth] = useState(() => initialPresetRange?.from || new Date());
+  const [toCalendarMonth, setToCalendarMonth] = useState(() => initialPresetRange?.to || initialPresetRange?.from || new Date());
   const [dateError, setDateError] = useState(false);
-  const [topRanks, setTopRanks] = useState<DashboardTopRanksResponse | null>(null);
-  const [topRanksLoading, setTopRanksLoading] = useState(true);
-  const [topDestinations, setTopDestinations] = useState<DashboardTopDestinationsResponse | null>(null);
-  const [topDestinationsLoading, setTopDestinationsLoading] = useState(true);
+  const [topRanks, setTopRanks] = useState<DashboardTopRanksResponse | null>(() => initialTopRanksCacheState.value);
+  const [topRanksLoading, setTopRanksLoading] = useState(() => !initialTopRanksCacheState.value);
+  const [topDestinations, setTopDestinations] = useState<DashboardTopDestinationsResponse | null>(() => initialTopDestinationsCacheState.value);
+  const [topDestinationsLoading, setTopDestinationsLoading] = useState(() => !initialTopDestinationsCacheState.value);
   const selectPreset = (mode: RangePreset) => {
     setRangePreset(mode);
   };
 
   useEffect(() => {
+    setHydratedNow(new Date());
     setIsMounted(true);
   }, []);
 
   useEffect(() => {
+    let alive = true;
+
+    const loadDashboardDateBounds = async () => {
+      try {
+        const bounds = await runDrillDownRequest(
+          'world:date-bounds',
+          () => getDashboardDateBounds(),
+        );
+        if (!alive) return;
+        setDashboardDateBounds(bounds);
+      } catch {
+        if (!alive) return;
+        setDashboardDateBounds(null);
+      }
+    };
+
+    void loadDashboardDateBounds();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedNow) {
+      return;
+    }
+
+    if (presetPreloadDoneRef.current) {
+      return;
+    }
+
+    let alive = true;
+    presetPreloadDoneRef.current = true;
+    preloadGateStartRef.current = Date.now();
+    setPresetPreloadState('running');
+
+    const pingBackendHealth = async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/health`, {
+          method: 'GET',
+          signal: controller.signal,
+        });
+        console.debug('[WorldView] backend health status', {
+          status: response.status,
+          ok: response.ok,
+        });
+      } catch (error) {
+        console.warn('[WorldView] backend health ping failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+
+    const wait = (ms: number) => new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+
+    const waitForBackendPreloadReady = async () => {
+      await pingBackendHealth();
+
+      const timeoutAt = Date.now() + 180_000;
+      while (alive && Date.now() < timeoutAt) {
+        try {
+          const status = await getDashboardCacheStatus();
+          console.debug('[WorldView] backend preload status', {
+            phase: status.preload.phase,
+            inFlightEntries: status.queryCache.inFlightEntries,
+            cacheEntries: status.queryCache.cacheEntries,
+          });
+
+          if (status.preload.phase === 'failed') {
+            if (alive) {
+              setPresetPreloadState('failed');
+            }
+            return;
+          }
+
+          if (status.preload.phase === 'completed' || status.queryCache.inFlightEntries <= 0) {
+            if (alive) {
+              setPresetPreloadState('ready');
+            }
+            return;
+          }
+        } catch (error) {
+          console.warn('[WorldView] preload status polling failed', {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        await wait(3000);
+      }
+
+      if (alive) {
+        setPresetPreloadState('failed');
+      }
+    };
+
+    void waitForBackendPreloadReady();
+
+    return () => {
+      alive = false;
+    };
+  }, [hydratedNow]);
+
+  useEffect(() => {
+    if (rangePreset === 'all' && !dashboardDateBounds?.minDate) {
+      setLoading(true);
+      setTopRanksLoading(true);
+      setTopDestinationsLoading(true);
+      return;
+    }
+
     applyPresetRange(
       rangePreset,
       setDateRange,
@@ -224,8 +436,9 @@ export function WorldView() {
       setShowCustomDateRange,
       setIsExtendedRangeOpen,
       setDateError,
+      dashboardDateBounds,
     );
-  }, [rangePreset]);
+  }, [rangePreset, dashboardDateBounds]);
 
   useEffect(() => {
     let mounted = true;
@@ -241,18 +454,47 @@ export function WorldView() {
       };
     }
 
+    const activePresetWindowDays = durationMode ? PRELOADED_PRESET_WINDOW_DAYS[durationMode] : undefined;
+    const isPreloadedPresetMode = !!activePresetWindowDays;
     const startDate = formatLocalDateInput(dateRange.from);
     const endDate = formatLocalDateInput(dateRange.to || dateRange.from);
-    const cacheKey = `${startDate}__${endDate}`;
+    const cacheKey = isPreloadedPresetMode
+      ? `preset:${durationMode}`
+      : `${startDate}__${endDate}`;
+    const queryOptions = isPreloadedPresetMode
+      ? { windowDays: activePresetWindowDays }
+      : { startDate, endDate };
     const summaryCacheState = getWorldSummaryCacheState(cacheKey);
     const topRanksCacheState = getWorldTopRanksCacheState(cacheKey);
     const topDestinationsCacheState = getWorldTopDestinationsCacheState(cacheKey);
     const cachedSummary = summaryCacheState.value;
     const cachedTopRanks = topRanksCacheState.value;
     const cachedTopDestinations = topDestinationsCacheState.value;
-    const shouldRefreshSummary = !cachedSummary || summaryCacheState.stale;
-    const shouldRefreshTopRanks = !cachedTopRanks || topRanksCacheState.stale;
-    const shouldRefreshTopDestinations = !cachedTopDestinations || topDestinationsCacheState.stale;
+    const shouldRefreshSummary = !cachedSummary;
+    const shouldRefreshTopRanks = !cachedTopRanks;
+    const shouldRefreshTopDestinations = !cachedTopDestinations;
+    const elapsedPreloadGateMs = preloadGateStartRef.current
+      ? Date.now() - preloadGateStartRef.current
+      : Number.POSITIVE_INFINITY;
+    const canBypassPreloadGate = elapsedPreloadGateMs >= PRELOAD_GATE_MAX_WAIT_MS;
+    const missingAllSelectedPresetData = shouldRefreshSummary && shouldRefreshTopRanks && shouldRefreshTopDestinations;
+
+    const shouldHoldForPreload =
+      presetPreloadState === 'running' &&
+      isPreloadedPresetMode &&
+      missingAllSelectedPresetData &&
+      !canBypassPreloadGate &&
+      rangePreset !== 'all';
+
+    if (shouldHoldForPreload) {
+      // Hold briefly for backend warm-up to avoid duplicate heavy queries from browser.
+      setLoading(true);
+      setTopRanksLoading(true);
+      setTopDestinationsLoading(true);
+      return () => {
+        mounted = false;
+      };
+    }
 
     if (cachedSummary) {
       console.debug('[WorldView] summary cache hit', { cacheKey });
@@ -290,11 +532,11 @@ export function WorldView() {
 
     void (async () => {
       if (shouldRefreshSummary) {
-        console.debug('[WorldView] calling dashboard-summary', { startDate, endDate });
+        console.debug('[WorldView] calling dashboard-summary', { cacheKey, queryOptions });
         try {
           const summaryData = await runDrillDownRequest(
             `world:summary:${cacheKey}`,
-            () => statisticsApi.getDashboardSummary({ startDate, endDate }),
+            () => getDashboardSummary(queryOptions),
           );
           if (!mounted) return;
           setWorldSummaryCache(cacheKey, summaryData);
@@ -321,11 +563,11 @@ export function WorldView() {
       }
 
       if (shouldRefreshTopRanks) {
-        console.debug('[WorldView] calling dashboard-top-ranks', { startDate, endDate });
+        console.debug('[WorldView] calling dashboard-top-ranks', { cacheKey, queryOptions });
         try {
           const topRanksData = await runDrillDownRequest(
             `world:top-ranks:${cacheKey}`,
-            () => statisticsApi.getDashboardTopRanks({ startDate, endDate }),
+            () => getDashboardTopRanks(queryOptions),
           );
           if (!mounted) return;
           setWorldTopRanksCache(cacheKey, topRanksData);
@@ -345,11 +587,11 @@ export function WorldView() {
             const [countriesData, airportsData] = await Promise.all([
               runDrillDownRequest(
                 `world:top-countries:${cacheKey}`,
-                () => statisticsApi.getDashboardTopCountries({ startDate, endDate }),
+                () => getDashboardTopCountries(queryOptions),
               ),
               runDrillDownRequest(
                 `world:top-airports:${cacheKey}`,
-                () => statisticsApi.getDashboardTopAirports({ startDate, endDate }),
+                () => getDashboardTopAirports(queryOptions),
               ),
             ]);
             if (!mounted) return;
@@ -389,11 +631,11 @@ export function WorldView() {
       }
 
       if (shouldRefreshTopDestinations) {
-        console.debug('[WorldView] calling dashboard-top-destinations', { startDate, endDate });
+        console.debug('[WorldView] calling dashboard-top-destinations', { cacheKey, queryOptions });
         try {
           const topDestinationsData = await runDrillDownRequest(
             `world:top-destinations:${cacheKey}`,
-            () => statisticsApi.getDashboardTopDestinations({ startDate, endDate }),
+            () => getDashboardTopDestinations(queryOptions),
           );
           if (!mounted) return;
           setWorldTopDestinationsCache(cacheKey, topDestinationsData);
@@ -421,7 +663,7 @@ export function WorldView() {
     return () => {
       mounted = false;
     };
-  }, [dateRange]);
+  }, [dateRange, presetPreloadState, rangePreset]);
 
   const fallbackTotalFlights = CONTINENTS.reduce((sum, continent) => sum + continent.flights, 0);
   const fallbackBusiestContinent = [...CONTINENTS].sort((a, b) => b.flights - a.flights)[0];
@@ -562,25 +804,32 @@ export function WorldView() {
         },
       ];
 
+  const mockFallbackStatusText = presetPreloadState === 'running'
+    ? 'ยังใช้ mock สำรองอยู่ · กำลังเตรียม preload ทุก preset'
+    : presetPreloadState === 'failed'
+      ? 'ยังใช้ mock สำรองอยู่ · preload ไม่สำเร็จบางส่วน'
+      : 'ยังใช้ mock สำรองอยู่';
   const summaryStatusText = loading
     ? 'กำลังโหลดข้อมูลจากฐานข้อมูล'
     : summary
       ? 'ดึงจากฐานข้อมูล'
-      : 'ยังใช้ mock สำรองอยู่';
+      : mockFallbackStatusText;
   const summaryRangeText = isMounted ? formatRangeLabel(dateRange) : 'กำลังเลือกช่วงวันที่';
   const activePresetLabel = durationMode ? RANGE_PRESET_LABELS[durationMode] : 'กำหนดเอง';
   const handleDrillToCountry = (row: TopCountryViewRow) => {
-    const continentLabel = resolveContinentLabelByCountry(row.name, row.countryCode);
+    const continentLabel = row.continentLabel || 'Other';
+    const continentIcon = row.continentIcon || '🌐';
     drillTo('country', {
-      continent: toContinentSelection(continentLabel) as any,
+      continent: toContinentSelection(continentLabel, continentIcon) as any,
       country: toCountrySelection(row),
     });
   };
   const handleDrillToAirport = (row: TopAirportViewRow) => {
     const countryName = row.country?.trim() || 'Unknown';
-    const continentLabel = resolveContinentLabelByCountry(countryName, null);
+    const continentLabel = row.continentLabel || 'Other';
+    const continentIcon = row.continentIcon || '🌐';
     drillTo('airport', {
-      continent: toContinentSelection(continentLabel) as any,
+      continent: toContinentSelection(continentLabel, continentIcon) as any,
       country: {
         flag: '🌐',
         name: countryName,
@@ -689,7 +938,7 @@ export function WorldView() {
             <button
               type="button"
               className={cn(
-                'inline-flex h-9 items-center gap-1 rounded-md border px-3.5 text-xs sm:text-sm font-medium leading-none transition-colors',
+                'inline-flex h-9 items-center gap-1 rounded-md border px-3.5 text-xs sm:text-sm font-medium leading-none transition-colors sm:ml-auto',
                 showCustomDateRange
                   ? 'border-primary/20 bg-muted/30 text-foreground'
                   : 'border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground'
@@ -944,6 +1193,8 @@ export function WorldView() {
             </div>
           </section>
 
+          {/* Airline Overview Panel */}
+          <AirlineOverviewPanel />
           <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
             <TopCountriesTable rows={topCountryRows} loading={topRanksLoading} onSelectCountry={handleDrillToCountry} />
             <TopAirportsTable rows={topAirportRows} loading={topRanksLoading} onSelectAirport={handleDrillToAirport} />
@@ -999,16 +1250,63 @@ function flagFromCountryCode(code?: string | null) {
   return String.fromCodePoint(0x1f1e6 + first - 65, 0x1f1e6 + second - 65);
 }
 
+function resolveCountryDisplayName(name: string, countryCode?: string | null) {
+  const normalizedName = (name || '').trim();
+  const normalizedCode = (countryCode || '').trim().toUpperCase();
+  const alias = normalizedCode ? COUNTRY_DISPLAY_ALIASES[normalizedCode] : undefined;
+
+  if (alias) {
+    return alias;
+  }
+
+  const lookupCode = normalizedCode || (/^[A-Z0-9]{2,3}$/.test(normalizedName.toUpperCase()) ? normalizedName.toUpperCase() : '');
+  if (lookupCode && COUNTRY_DISPLAY_NAMES) {
+    const displayName = COUNTRY_DISPLAY_NAMES.of(lookupCode);
+    if (displayName && displayName !== lookupCode) {
+      return displayName;
+    }
+  }
+
+  return normalizedName || normalizedCode || 'Unknown';
+}
+
 function toCountrySelection(row: TopCountryViewRow): CountryData {
-  const fallback = COUNTRIES.find((country) => country.name.toLowerCase() === row.name.toLowerCase());
+  const displayName = resolveCountryDisplayName(row.name, row.countryCode);
+  const fallback = COUNTRIES.find((country) => country.name.toLowerCase() === displayName.toLowerCase());
   return {
     flag: fallback?.flag || flagFromCountryCode(row.countryCode),
-    name: row.name,
+    name: displayName,
+    countryCode: row.countryCode,
     airports: row.airportCount,
     flights: row.flights,
     delta: `${row.deltaPercent >= 0 ? '+' : ''}${row.deltaPercent.toFixed(1)}%`,
     deltaN: row.deltaFlights,
     bar: 100,
+  };
+}
+
+function buildCountryDrillTarget(
+  countryCode: string,
+  countryName: string,
+  continentLabel?: string,
+  continentIcon?: string,
+) {
+  const displayName = resolveCountryDisplayName(countryName, countryCode);
+  const resolvedContinentLabel = continentLabel || 'Other';
+  const resolvedContinentIcon = continentIcon || '🌐';
+
+  return {
+    continent: toContinentSelection(resolvedContinentLabel, resolvedContinentIcon) as any,
+    country: {
+      flag: flagFromCountryCode(countryCode),
+      name: displayName,
+      countryCode,
+      airports: 0,
+      flights: 0,
+      delta: '0.0%',
+      deltaN: 0,
+      bar: 0,
+    },
   };
 }
 
@@ -1025,33 +1323,10 @@ function toAirportSelection(row: TopAirportViewRow): AirportInfo {
   };
 }
 
-function resolveContinentLabelByCountry(countryName?: string, countryCode?: string | null): string {
-  const code = (countryCode || '').trim().toUpperCase();
-  const name = (countryName || '').trim().toLowerCase();
-
-  const asiaCodes = new Set(['TH', 'CN', 'JP', 'KR', 'SG', 'MY', 'VN', 'ID', 'PH', 'IN', 'HK', 'TW']);
-  const europeCodes = new Set(['GB', 'FR', 'DE', 'IT', 'ES', 'NL', 'CH', 'AT', 'PL', 'SE', 'NO', 'FI', 'BE', 'PT']);
-  const naCodes = new Set(['US', 'CA', 'MX']);
-  const saCodes = new Set(['BR', 'AR', 'CL', 'CO', 'PE']);
-  const meCodes = new Set(['AE', 'SA', 'QA', 'KW', 'OM', 'BH', 'IL', 'JO']);
-  const africaCodes = new Set(['ZA', 'EG', 'MA', 'KE', 'ET', 'NG', 'TZ']);
-  const oceaniaCodes = new Set(['AU', 'NZ', 'FJ']);
-
-  if (asiaCodes.has(code) || /thailand|china|japan|korea|singapore|malaysia|vietnam|indonesia|india|philippines/.test(name)) return 'Asia-Pacific';
-  if (europeCodes.has(code) || /united kingdom|france|germany|italy|spain|netherlands|switzerland|austria|poland|sweden|norway|finland|belgium|portugal/.test(name)) return 'Europe';
-  if (naCodes.has(code) || /united states|canada|mexico/.test(name)) return 'North America';
-  if (saCodes.has(code) || /brazil|argentina|chile|colombia|peru/.test(name)) return 'South America';
-  if (meCodes.has(code) || /united arab emirates|saudi|qatar|kuwait|oman|bahrain|israel|jordan/.test(name)) return 'Middle East';
-  if (africaCodes.has(code) || /south africa|egypt|morocco|kenya|ethiopia|nigeria|tanzania/.test(name)) return 'Africa';
-  if (oceaniaCodes.has(code) || /australia|new zealand|fiji/.test(name)) return 'Oceania';
-
-  return 'Asia-Pacific';
-}
-
-function toContinentSelection(label: string) {
+function toContinentSelection(label: string, icon = '🌐') {
   return {
     name: label,
-    icon: label === 'Europe' ? '🏰' : label === 'North America' || label === 'South America' ? '🌎' : label === 'Middle East' ? '🕌' : label === 'Africa' ? '🦁' : '🌏',
+    icon,
     airports: '0 สนามบิน · 0 ประเทศ',
     flights: 0,
     delta: '▲ +0 (0.0%)',
@@ -1088,8 +1363,17 @@ function applyPresetRange(
   setShowCustomDateRange: (show: boolean | ((prev: boolean) => boolean)) => void,
   setIsExtendedRangeOpen: (open: boolean) => void,
   setDateError: (error: boolean) => void,
+  bounds?: Pick<DashboardDateBoundsResponse, 'minDate' | 'recommendedEndDate'> | null,
 ) {
-  const range = buildPresetRange(mode);
+  const range = buildPresetRange(mode, new Date(), bounds);
+
+  if (!range) {
+    setDateRange(undefined);
+    setDurationMode(mode);
+    setDateError(false);
+    return;
+  }
+
   const from = range.from || new Date();
   const to = range.to || from;
 
@@ -1184,6 +1468,7 @@ function TopCountriesTable({
                 </tr>
               ) : (
                 rows.map((country, index) => {
+                  const displayName = resolveCountryDisplayName(country.name, country.countryCode);
                   return (
                     <tr key={`${country.name}-${country.countryCode ?? index}`} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
                       <td className="py-2.5 px-2.5 font-bold text-muted-foreground w-8 text-[14px] transition-colors">{index + 1}</td>
@@ -1193,14 +1478,14 @@ function TopCountriesTable({
                             type="button"
                             onClick={() => onSelectCountry(country)}
                             className="w-full cursor-pointer text-left"
-                            aria-label={`ไปยังประเทศ ${country.name}`}
+                            aria-label={`ไปยังประเทศ ${displayName}`}
                             title="คลิกเพื่อไปยังหน้า Country"
                           >
                             <div className="text-[14px] font-extrabold tracking-wide text-primary hover:underline">
                               {country.countryCode?.toUpperCase() || '--'}
                             </div>
                             <div className="text-[14px] font-semibold text-foreground truncate hover:text-primary">
-                              {country.name}
+                              {displayName}
                             </div>
                           </button>
                         </div>
@@ -1430,7 +1715,7 @@ function TopDestinations({
 
 function CountryLookupPanel() {
   const { drillTo } = useDrillDown();
-  const [countries, setCountries] = useState<AirportCountrySummary[]>(() => getCachedAirportCountries() ?? []);
+  const [airportCountries, setAirportCountries] = useState<AirportCountrySummary[]>(() => getCachedAirportCountries() ?? []);
   const [loading, setLoading] = useState(() => getCachedAirportCountries() === null);
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -1441,7 +1726,7 @@ function CountryLookupPanel() {
     const cachedCountries = getCachedAirportCountries();
 
     if (cachedCountries) {
-      setCountries(cachedCountries);
+      setAirportCountries(cachedCountries);
       setLoading(false);
       return () => {
         alive = false;
@@ -1454,13 +1739,13 @@ function CountryLookupPanel() {
         setError(null);
         const response = await airportApi.getAirportCountries();
         if (!alive) return;
-        setCachedAirportCountries(response.countries ?? []);
-        setCountries(response.countries ?? []);
+        setCachedAirportCountries(response.airportCountries ?? []);
+        setAirportCountries(response.airportCountries ?? []);
       } catch (err) {
         if (!alive) return;
         const message = err instanceof Error ? err.message : 'ไม่สามารถโหลดรายชื่อประเทศได้';
         setError(message);
-        setCountries([]);
+        setAirportCountries([]);
       } finally {
         if (alive) {
           setLoading(false);
@@ -1477,7 +1762,7 @@ function CountryLookupPanel() {
 
   const visibleCountries = useMemo(() => {
     const normalizedQuery = query.trim();
-    const rows = [...countries].sort((a, b) => a.country.localeCompare(b.country, 'en', { sensitivity: 'base' }));
+    const rows = [...airportCountries].sort((a, b) => a.country.localeCompare(b.country, 'en', { sensitivity: 'base' }));
 
     if (!normalizedQuery) {
       return rows;
@@ -1496,13 +1781,14 @@ function CountryLookupPanel() {
 
       return name.includes(normalizedQuery.toLowerCase());
     });
-  }, [countries, query]);
+  }, [airportCountries, query]);
 
-  const mixedRows = useMemo(
+  const mixedRows = useMemo<CountryLookupRow[]>(
     () =>
       visibleCountries.map((country) => ({
+        ...country,
         code: (country.country_code || '--').toUpperCase(),
-        name: country.country,
+        displayName: resolveCountryDisplayName(country.country, country.country_code),
         key: `${country.country_code ?? 'xx'}-${country.country}`,
       })),
     [visibleCountries],
@@ -1571,21 +1857,8 @@ function CountryLookupPanel() {
                       <button
                         type="button"
                         className="w-full cursor-pointer text-left"
-                        onClick={() =>
-                          drillTo('country', {
-                            continent: toContinentSelection(resolveContinentLabelByCountry(row.name, row.code)) as any,
-                            country: {
-                              flag: flagFromCountryCode(row.code),
-                              name: row.name,
-                              airports: 0,
-                              flights: 0,
-                              delta: '0.0%',
-                              deltaN: 0,
-                              bar: 0,
-                            },
-                          })
-                        }
-                        aria-label={`ไปยังประเทศ ${row.name}`}
+                        onClick={() => drillTo('country', buildCountryDrillTarget(row.code, row.displayName, row.continent_label, row.continent_icon))}
+                        aria-label={`ไปยังประเทศ ${row.displayName}`}
                         title="คลิกเพื่อไปยังหน้า Country"
                       >
                         <div className="text-[14px] font-extrabold tracking-wide text-primary hover:underline">{row.code}</div>
@@ -1595,24 +1868,11 @@ function CountryLookupPanel() {
                       <button
                         type="button"
                         className="w-full cursor-pointer text-left"
-                        onClick={() =>
-                          drillTo('country', {
-                            continent: toContinentSelection(resolveContinentLabelByCountry(row.name, row.code)) as any,
-                            country: {
-                              flag: flagFromCountryCode(row.code),
-                              name: row.name,
-                              airports: 0,
-                              flights: 0,
-                              delta: '0.0%',
-                              deltaN: 0,
-                              bar: 0,
-                            },
-                          })
-                        }
-                        aria-label={`ไปยังประเทศ ${row.name}`}
+                        onClick={() => drillTo('country', buildCountryDrillTarget(row.code, row.displayName, row.continent_label, row.continent_icon))}
+                        aria-label={`ไปยังประเทศ ${row.displayName}`}
                         title="คลิกเพื่อไปยังหน้า Country"
                       >
-                        <div className="text-[14px] font-semibold text-foreground hover:text-primary">{row.name}</div>
+                        <div className="text-[14px] font-semibold text-foreground hover:text-primary">{row.displayName}</div>
                       </button>
                     </td>
                   </tr>

@@ -1,12 +1,8 @@
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+
 export type ContinentKey =
-  | 'Europe'
-  | 'Asia-Pacific'
-  | 'North America'
-  | 'South America'
-  | 'Africa'
-  | 'Middle East'
-  | 'Oceania'
-  | 'Other';
+  | string;
 
 export interface ContinentMeta {
   key: ContinentKey;
@@ -14,325 +10,212 @@ export interface ContinentMeta {
   icon: string;
 }
 
-const CONTINENT_META: Record<ContinentKey, ContinentMeta> = {
-  Europe: { key: 'Europe', label: 'Europe', icon: '🏰' },
-  'Asia-Pacific': { key: 'Asia-Pacific', label: 'Asia-Pacific', icon: '🌏' },
-  'North America': { key: 'North America', label: 'North America', icon: '🌎' },
-  'South America': { key: 'South America', label: 'South America', icon: '🌎' },
-  Africa: { key: 'Africa', label: 'Africa', icon: '🦁' },
-  'Middle East': { key: 'Middle East', label: 'Middle East', icon: '🕌' },
-  Oceania: { key: 'Oceania', label: 'Oceania', icon: '🌏' },
-  Other: { key: 'Other', label: 'Other', icon: '🌐' },
+const CONTINENT_ICON_OVERRIDES: Record<string, string> = {
+  europe: '🏰',
+  asia: '🌏',
+  'asia-pacific': '🌏',
+  'north america': '🌎',
+  'south america': '🌎',
+  africa: '🦁',
+  'middle east': '🕌',
+  oceania: '🌏',
+  caribbean: '🏝️',
+  'central america': '🌎',
+  other: '🌐',
 };
 
-const COUNTRY_CODE_TO_CONTINENT: Record<string, ContinentKey> = {
-  // Asia-Pacific
-  TH: 'Asia-Pacific',
-  JP: 'Asia-Pacific',
-  KR: 'Asia-Pacific',
-  CN: 'Asia-Pacific',
-  TW: 'Asia-Pacific',
-  HK: 'Asia-Pacific',
-  SG: 'Asia-Pacific',
-  VN: 'Asia-Pacific',
-  MY: 'Asia-Pacific',
-  ID: 'Asia-Pacific',
-  PH: 'Asia-Pacific',
-  KH: 'Asia-Pacific',
-  LA: 'Asia-Pacific',
-  MM: 'Asia-Pacific',
-  BN: 'Asia-Pacific',
-  BD: 'Asia-Pacific',
-  IN: 'Asia-Pacific',
-  PK: 'Asia-Pacific',
-  LK: 'Asia-Pacific',
-  NP: 'Asia-Pacific',
-  BT: 'Asia-Pacific',
+const CONTINENT_CSV_PATH = process.env.COUNTRY_CONTINENT_CSV_PATH
+  ? process.env.COUNTRY_CONTINENT_CSV_PATH
+  : join(process.cwd(), 'data', 'mappings', 'country_airports_summary.csv');
 
-  // Europe
-  DE: 'Europe',
-  GB: 'Europe',
-  FR: 'Europe',
-  ES: 'Europe',
-  IT: 'Europe',
-  NL: 'Europe',
-  BE: 'Europe',
-  CH: 'Europe',
-  AT: 'Europe',
-  PL: 'Europe',
-  PT: 'Europe',
-  SE: 'Europe',
-  NO: 'Europe',
-  FI: 'Europe',
-  DK: 'Europe',
-  IE: 'Europe',
-  IS: 'Europe',
-  GR: 'Europe',
-  TR: 'Europe',
-  HU: 'Europe',
-  CZ: 'Europe',
-  SK: 'Europe',
-  SI: 'Europe',
-  HR: 'Europe',
-  RS: 'Europe',
-  BA: 'Europe',
-  BG: 'Europe',
-  RO: 'Europe',
-  UA: 'Europe',
-  ME: 'Europe',
-  MK: 'Europe',
-  AL: 'Europe',
-  LT: 'Europe',
-  LV: 'Europe',
-  EE: 'Europe',
-  LU: 'Europe',
-  MT: 'Europe',
-  CY: 'Europe',
-
-  // North America
-  US: 'North America',
-  CA: 'North America',
-  MX: 'North America',
-  PR: 'North America',
-  PA: 'North America',
-  CR: 'North America',
-  GT: 'North America',
-  HN: 'North America',
-  SV: 'North America',
-  NI: 'North America',
-  JM: 'North America',
-  DO: 'North America',
-  BS: 'North America',
-  BB: 'North America',
-  TT: 'North America',
-
-  // South America
-  BR: 'South America',
-  AR: 'South America',
-  CL: 'South America',
-  CO: 'South America',
-  PE: 'South America',
-  UY: 'South America',
-  PY: 'South America',
-  BO: 'South America',
-  EC: 'South America',
-  VE: 'South America',
-  GY: 'South America',
-  SR: 'South America',
-
-  // Africa
-  ZA: 'Africa',
-  EG: 'Africa',
-  MA: 'Africa',
-  KE: 'Africa',
-  ET: 'Africa',
-  NG: 'Africa',
-  GH: 'Africa',
-  TN: 'Africa',
-  DZ: 'Africa',
-  SN: 'Africa',
-  TZ: 'Africa',
-  UG: 'Africa',
-  RW: 'Africa',
-  ZM: 'Africa',
-  ZW: 'Africa',
-  MW: 'Africa',
-  MU: 'Africa',
-  SC: 'Africa',
-  MZ: 'Africa',
-  AO: 'Africa',
-
-  // Middle East
-  AE: 'Middle East',
-  SA: 'Middle East',
-  QA: 'Middle East',
-  OM: 'Middle East',
-  BH: 'Middle East',
-  KW: 'Middle East',
-  JO: 'Middle East',
-  IL: 'Middle East',
-  LB: 'Middle East',
-  IQ: 'Middle East',
-  IR: 'Middle East',
-  SY: 'Middle East',
-  YE: 'Middle East',
-  PS: 'Middle East',
-  TM: 'Middle East',
-
-  // Oceania
-  FJ: 'Oceania',
-  PG: 'Oceania',
-  NC: 'Oceania',
-  SB: 'Oceania',
-  VU: 'Oceania',
-  TO: 'Oceania',
-  WS: 'Oceania',
-  KI: 'Oceania',
-  NR: 'Oceania',
-  TV: 'Oceania',
-  AU: 'Oceania',
-  NZ: 'Oceania',
+const COUNTRY_NAME_ALIASES: Record<string, string> = {
+  usa: 'united states',
+  uk: 'united kingdom',
+  uae: 'united arab emirates',
+  'antigua and barbuda': 'antigua barbuda',
+  "cote d ivoire": "cote d'ivoire",
+  'saint vincent and grenadines': 'saint vincent grenadines',
+  'sao tome and principe': 'sao tome principe',
 };
 
-const COUNTRY_NAME_TO_CONTINENT: Record<string, ContinentKey> = {
-  // Asia-Pacific
-  thailand: 'Asia-Pacific',
-  japan: 'Asia-Pacific',
-  'south korea': 'Asia-Pacific',
-  korea: 'Asia-Pacific',
-  china: 'Asia-Pacific',
-  taiwan: 'Asia-Pacific',
-  hongkong: 'Asia-Pacific',
-  hong_kong: 'Asia-Pacific',
-  singapore: 'Asia-Pacific',
-  vietnam: 'Asia-Pacific',
-  malaysia: 'Asia-Pacific',
-  indonesia: 'Asia-Pacific',
-  philippines: 'Asia-Pacific',
-  cambodia: 'Asia-Pacific',
-  laos: 'Asia-Pacific',
-  myanmar: 'Asia-Pacific',
-  'brunei': 'Asia-Pacific',
-  bangladesh: 'Asia-Pacific',
-  india: 'Asia-Pacific',
-  pakistan: 'Asia-Pacific',
-  nepal: 'Asia-Pacific',
-  bhutan: 'Asia-Pacific',
-  australia: 'Asia-Pacific',
-  'new zealand': 'Asia-Pacific',
+let countryToContinentMap: Map<string, ContinentKey> | null = null;
+let countryToCsvContinentMap: Map<string, string> | null = null;
+let isoCountryDisplayNames: Intl.DisplayNames | null = null;
+let csvLoadWarningShown = false;
 
-  // Europe
-  germany: 'Europe',
-  'united kingdom': 'Europe',
-  uk: 'Europe',
-  france: 'Europe',
-  spain: 'Europe',
-  italy: 'Europe',
-  netherlands: 'Europe',
-  belgium: 'Europe',
-  switzerland: 'Europe',
-  austria: 'Europe',
-  poland: 'Europe',
-  portugal: 'Europe',
-  sweden: 'Europe',
-  norway: 'Europe',
-  finland: 'Europe',
-  denmark: 'Europe',
-  ireland: 'Europe',
-  iceland: 'Europe',
-  greece: 'Europe',
-  turkey: 'Europe',
-  hungary: 'Europe',
-  czechia: 'Europe',
-  'czech republic': 'Europe',
-  slovakia: 'Europe',
-  slovenia: 'Europe',
-  croatia: 'Europe',
-  serbia: 'Europe',
-  bosnia: 'Europe',
-  bulgaria: 'Europe',
-  romania: 'Europe',
-  ukraine: 'Europe',
-  montenegro: 'Europe',
-  macedonia: 'Europe',
-  albania: 'Europe',
-  lithuania: 'Europe',
-  latvia: 'Europe',
-  estonia: 'Europe',
-  luxembourg: 'Europe',
-  malta: 'Europe',
-  cyprus: 'Europe',
+function normalizeText(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-  // North America
-  'united states': 'North America',
-  usa: 'North America',
-  canada: 'North America',
-  mexico: 'North America',
-  panama: 'North America',
-  'costa rica': 'North America',
-  guatemala: 'North America',
-  honduras: 'North America',
-  'el salvador': 'North America',
-  nicaragua: 'North America',
-  jamaica: 'North America',
-  'dominican republic': 'North America',
+function normalizeCountryName(value: string): string {
+  const normalized = normalizeText(value);
+  return COUNTRY_NAME_ALIASES[normalized] || normalized;
+}
 
-  // South America
-  brazil: 'South America',
-  argentina: 'South America',
-  chile: 'South America',
-  colombia: 'South America',
-  peru: 'South America',
-  uruguay: 'South America',
-  paraguay: 'South America',
-  bolivia: 'South America',
-  ecuador: 'South America',
-  venezuela: 'South America',
+function csvContinentToKey(rawContinent: string): ContinentKey {
+  const label = (rawContinent || '').trim();
+  return label || 'Other';
+}
 
-  // Africa
-  southafrica: 'Africa',
-  'south africa': 'Africa',
-  egypt: 'Africa',
-  morocco: 'Africa',
-  kenya: 'Africa',
-  ethiopia: 'Africa',
-  nigeria: 'Africa',
-  ghana: 'Africa',
-  tunisia: 'Africa',
-  algeria: 'Africa',
-  senegal: 'Africa',
-  tanzania: 'Africa',
-  uganda: 'Africa',
-  rwanda: 'Africa',
-  zambia: 'Africa',
-  zimbabwe: 'Africa',
-  malawi: 'Africa',
-  mozambique: 'Africa',
-  mauritius: 'Africa',
+function buildContinentMeta(continentKey: ContinentKey): ContinentMeta {
+  const label = (continentKey || '').trim() || 'Other';
+  const normalized = normalizeText(label);
+  const icon = CONTINENT_ICON_OVERRIDES[normalized] || CONTINENT_ICON_OVERRIDES.other;
 
-  // Middle East
-  uae: 'Middle East',
-  'united arab emirates': 'Middle East',
-  saudiarabia: 'Middle East',
-  'saudi arabia': 'Middle East',
-  qatar: 'Middle East',
-  oman: 'Middle East',
-  bahrain: 'Middle East',
-  kuwait: 'Middle East',
-  jordan: 'Middle East',
-  israel: 'Middle East',
-  lebanon: 'Middle East',
-  iraq: 'Middle East',
-  iran: 'Middle East',
-  yemen: 'Middle East',
+  return {
+    key: label,
+    label,
+    icon,
+  };
+}
 
-  // Oceania
-  fiji: 'Oceania',
-  'papua new guinea': 'Oceania',
-  samoa: 'Oceania',
-  tonga: 'Oceania',
-  'new caledonia': 'Oceania',
-  vanuatu: 'Oceania',
-  kiribati: 'Oceania',
-  tuvalu: 'Oceania',
-  nauru: 'Oceania',
-};
+function parseCsvRow(line: string): string[] {
+  const values: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (ch === ',' && !inQuotes) {
+      values.push(current);
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  values.push(current);
+  return values;
+}
+
+function resolveContinentCsvPath(): string | null {
+  if (existsSync(CONTINENT_CSV_PATH)) {
+    return CONTINENT_CSV_PATH;
+  }
+  return null;
+}
+
+function loadCountryToContinentMap(): Map<string, ContinentKey> {
+  if (countryToContinentMap) {
+    return countryToContinentMap;
+  }
+
+  const map = new Map<string, ContinentKey>();
+  const rawContinentMap = new Map<string, string>();
+  const csvPath = resolveContinentCsvPath();
+
+  if (!csvPath) {
+    if (!csvLoadWarningShown) {
+      console.warn('[continentMapper] country_airports_summary.csv not found; defaulting unknown countries to Other');
+      csvLoadWarningShown = true;
+    }
+    countryToContinentMap = map;
+    countryToCsvContinentMap = rawContinentMap;
+    return map;
+  }
+
+  try {
+    const content = readFileSync(csvPath, 'utf8');
+    const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+
+    // Skip header row: ทวีป,Country,Airports,AirportsCount
+    for (let i = 1; i < lines.length; i += 1) {
+      const columns = parseCsvRow(lines[i]);
+      if (columns.length < 2) continue;
+
+      const continentKey = csvContinentToKey(columns[0]);
+      const csvContinent = columns[0]?.trim() || '';
+      const countryName = normalizeCountryName(columns[1]);
+
+      if (!countryName) continue;
+      map.set(countryName, continentKey);
+      rawContinentMap.set(countryName, csvContinent);
+    }
+  } catch (error) {
+    if (!csvLoadWarningShown) {
+      console.warn('[continentMapper] failed to load CSV mapping:', error instanceof Error ? error.message : String(error));
+      csvLoadWarningShown = true;
+    }
+  }
+
+  countryToContinentMap = map;
+  countryToCsvContinentMap = rawContinentMap;
+  return map;
+}
+
+function countryNameFromIsoCode(countryCode: string): string | null {
+  if (!isoCountryDisplayNames) {
+    try {
+      isoCountryDisplayNames = new Intl.DisplayNames(['en'], { type: 'region' });
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const label = isoCountryDisplayNames.of(countryCode);
+    if (!label) return null;
+    return normalizeCountryName(label);
+  } catch {
+    return null;
+  }
+}
+
+function lookupContinentByCountryName(countryName?: string | null): ContinentKey | null {
+  const normalized = normalizeCountryName(countryName || '');
+  if (!normalized) return null;
+
+  const mapping = loadCountryToContinentMap();
+  return mapping.get(normalized) || null;
+}
+
+function lookupCsvContinentByCountryName(countryName?: string | null): string | null {
+  const normalized = normalizeCountryName(countryName || '');
+  if (!normalized) return null;
+
+  loadCountryToContinentMap();
+  return countryToCsvContinentMap?.get(normalized) || null;
+}
 
 export function getContinentMeta(countryCode?: string | null, countryName?: string | null): ContinentMeta {
+  const byCountryName = lookupContinentByCountryName(countryName);
+  if (byCountryName) {
+    return buildContinentMeta(byCountryName);
+  }
+
   const normalizedCode = (countryCode || '').trim().toUpperCase();
-  if (normalizedCode && COUNTRY_CODE_TO_CONTINENT[normalizedCode]) {
-    return CONTINENT_META[COUNTRY_CODE_TO_CONTINENT[normalizedCode]];
+  if (normalizedCode) {
+    const derivedCountryName = countryNameFromIsoCode(normalizedCode);
+    if (derivedCountryName) {
+      const byCodeDerivedName = loadCountryToContinentMap().get(derivedCountryName);
+      if (byCodeDerivedName) {
+        return buildContinentMeta(byCodeDerivedName);
+      }
+    }
   }
 
-  const normalizedName = (countryName || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ');
+  return buildContinentMeta('Other');
+}
 
-  if (normalizedName && COUNTRY_NAME_TO_CONTINENT[normalizedName]) {
-    return CONTINENT_META[COUNTRY_NAME_TO_CONTINENT[normalizedName]];
-  }
-
-  return CONTINENT_META.Other;
+export function getContinentMetaFromKey(continentKey: string): ContinentMeta {
+  return buildContinentMeta(continentKey);
 }

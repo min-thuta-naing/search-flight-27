@@ -68,7 +68,7 @@ export interface DashboardSummaryResponse {
   activeAirports: number;
   averageFlightsPerDay: number;
   busiestContinent: {
-    key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+    key: string;
     label: string;
     icon: string;
     airportCount: number;
@@ -80,7 +80,7 @@ export interface DashboardSummaryResponse {
     deltaPercent: number;
   };
   continentBreakdown: Array<{
-    key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+    key: string;
     label: string;
     icon: string;
     airportCount: number;
@@ -94,7 +94,7 @@ export interface DashboardSummaryResponse {
 }
 
 export interface DashboardContinentCardResponse {
-  key: 'Europe' | 'Asia-Pacific' | 'North America' | 'South America' | 'Africa' | 'Middle East' | 'Oceania' | 'Other';
+  key: string;
   label: string;
   icon: string;
   airports: string;
@@ -128,6 +128,9 @@ export interface DashboardContinentsResponse {
 export interface DashboardTopCountryRankResponse {
   countryCode: string | null;
   name: string;
+  continentKey: string;
+  continentLabel: string;
+  continentIcon: string;
   airportCount: number;
   flights: number;
   previousFlights: number;
@@ -140,6 +143,9 @@ export interface DashboardTopAirportRankResponse {
   airportName: string;
   city: string;
   country: string;
+  continentKey: string;
+  continentLabel: string;
+  continentIcon: string;
   flights: number;
   previousFlights: number;
   deltaFlights: number;
@@ -186,6 +192,198 @@ export interface DashboardTopDestinationsResponse {
   comparisonEnd: string;
   departures: DashboardTopAirportRankResponse[];
   arrivals: DashboardTopAirportRankResponse[];
+}
+
+export interface DashboardCountryAirportBreakdownResponse {
+  iata: string;
+  name: string;
+  flights: number;
+  routes: number;
+  airlines: number;
+}
+
+export interface DashboardCountryInboundBreakdownResponse {
+  flag: string;
+  name: string;
+  flights: number;
+  pct: number;
+}
+
+export interface DashboardCountryAirlineBreakdownResponse {
+  name: string;
+  flights: number;
+  share: number;
+  delta: number;
+}
+
+export interface DashboardCountryOverviewResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  country: {
+    name: string;
+    code: string | null;
+  };
+  totals: {
+    flights: number;
+    previousFlights: number;
+    deltaFlights: number;
+    deltaPercent: number;
+  };
+  airports: DashboardCountryAirportBreakdownResponse[];
+  inbound: DashboardCountryInboundBreakdownResponse[];
+  airlineMarket: DashboardCountryAirlineBreakdownResponse[];
+  topAirline: {
+    name: string;
+    sharePercent: number | null;
+  };
+}
+
+export interface DashboardCountryFlowMapPointResponse {
+  countryCode: string | null;
+  countryName: string;
+  flag: string;
+  latitude: number | null;
+  longitude: number | null;
+  airportCount: number;
+  flights: number;
+  previousFlights: number;
+  deltaFlights: number;
+  deltaPercent: number;
+  pct: number;
+}
+
+export interface DashboardCountryFlowMapDirectionResponse {
+  totalFlights: number;
+  previousFlights: number;
+  points: DashboardCountryFlowMapPointResponse[];
+}
+
+export interface DashboardCountryFlowMapResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  country: {
+    name: string;
+    code: string | null;
+    airportCount: number;
+    latitude: number | null;
+    longitude: number | null;
+  };
+  inbound: DashboardCountryFlowMapDirectionResponse;
+  outbound: DashboardCountryFlowMapDirectionResponse;
+}
+
+export interface DashboardAirportOverviewResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  airport: {
+    code: string;
+    name: string;
+    city: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  totals: {
+    flights: number;
+    previousFlights: number;
+    deltaFlights: number;
+    deltaPercent: number;
+    daysInPeriod: number;
+  };
+  topDestination: {
+    iata: string;
+    name: string;
+    city: string;
+    country: string;
+    flag: string;
+    flights: number;
+  } | null;
+  topAirline: {
+    id: number;
+    name: string;
+    flights: number;
+    sharePercent: number;
+  } | null;
+  busiestDepartureHour: {
+    hour: number;
+    flights: number;
+  };
+}
+
+export interface DashboardAirportTrendDailyPointResponse {
+  date: string;
+  departureFlights: number;
+  arrivalFlights: number;
+  flights: number;
+  deltaPercent: number | null;
+}
+
+export interface DashboardAirportTrendsResponse {
+  centerDate: string;
+  airport: {
+    code: string;
+    name: string;
+    city: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  daily: DashboardAirportTrendDailyPointResponse[];
+  monthly: Array<{
+    month: number;
+    departureFlights: number;
+    arrivalFlights: number;
+    flights: number;
+  }>;
+}
+
+export interface DashboardAirportInsightRouteResponse {
+  iata: string;
+  name: string;
+  city: string;
+  country: string;
+  flag: string;
+  flights: number;
+}
+
+export interface DashboardAirportInsightAirlineResponse {
+  id: number;
+  name: string;
+  flights: number;
+  sharePercent: number;
+}
+
+export interface DashboardAirportInsightsResponse {
+  centerDate: string;
+  windowDays: number;
+  periodStart: string;
+  periodEnd: string;
+  comparisonStart: string;
+  comparisonEnd: string;
+  airport: {
+    code: string;
+    name: string;
+    city: string | null;
+    country: string | null;
+    countryCode: string | null;
+  };
+  topDepartureRoutes: DashboardAirportInsightRouteResponse[];
+  topArrivalRoutes: DashboardAirportInsightRouteResponse[];
+  airlineShare: DashboardAirportInsightAirlineResponse[];
+  hourlyDistribution: {
+    departure: number[];
+    arrival: number[];
+  };
 }
 
 export interface DashboardContinentDetailResponse {
@@ -282,6 +480,134 @@ export interface DashboardContinentTrendsResponse {
   };
 }
 
+export interface DashboardAirlineDetailTopAirport {
+  iata: string;
+  name: string;
+  city: string;
+  country: string;
+  countryCode: string;
+  flag: string;
+  flights: number;
+}
+
+export interface DashboardAirlineDetailTopCountry {
+  countryCode: string;
+  countryName: string;
+  flag: string;
+  flights: number;
+  pct: number;
+}
+
+export interface DashboardAirlineAirportRow {
+  iata: string;
+  name: string;
+  country: string;
+  countryCode: string;
+  flag: string;
+  flights: number;
+}
+
+export interface DashboardAirlineCountryRow {
+  countryCode: string;
+  countryName: string;
+  flag: string;
+  flights: number;
+  pct: number;
+}
+
+export interface DashboardAirlinePaginatedAirportsResponse {
+  rows: DashboardAirlineAirportRow[];
+  total: number;
+  offset: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+export interface DashboardAirlinePaginatedCountriesResponse {
+  rows: DashboardAirlineCountryRow[];
+  total: number;
+  offset: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+export interface DashboardAirlineTrendResponse {
+  rows: Array<{ date: string; flights: number; departureFlights: number; arrivalFlights: number }>;
+}
+
+export interface DashboardAirlineDetailResponse {
+  airlineId: number;
+  airlineName: string;
+  totalFlights: number;
+  airportCount: number;
+  countryCount: number;
+  domesticFlights: number;
+  internationalFlights: number;
+  topAirports: DashboardAirlineDetailTopAirport[];
+  topCountries: DashboardAirlineDetailTopCountry[];
+}
+
+export interface DashboardAirlinesRowResponse {
+  id: number;
+  name: string;
+  country: string;
+  countryCount: number;
+  airportCount: number;
+  flightCount: number;
+}
+
+export interface DashboardAirlineHomeBaseResponse {
+  iata: string | null;
+  airportName: string | null;
+  countryCode: string | null;
+  countryName: string | null;
+  flag: string | null;
+  continentName: string | null;
+  continentIcon: string | null;
+}
+
+export interface DashboardAirlinesResponse {
+  rows: DashboardAirlinesRowResponse[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+export interface DashboardDateBoundsResponse {
+  minDate: string | null;
+  maxDate: string | null;
+  recommendedEndDate: string;
+}
+
+export interface DashboardCacheStatusResponse {
+  success: boolean;
+  queryCache: {
+    cacheEntries: number;
+    inFlightEntries: number;
+  };
+  memoryCache: {
+    continentDetail: number;
+    continentTopAirports: number;
+    continentTopRoutes: number;
+    continentTrends: number;
+    continentAirportCodes: number;
+    flightPathColumns: number;
+    flightPathColumnTypes: number;
+  };
+  preload: {
+    phase: 'idle' | 'running' | 'completed' | 'failed';
+    startedAt: string | null;
+    finishedAt: string | null;
+    attempted: number;
+    failed: number;
+    durationMs: number;
+    durationMinutes: number;
+    error: string | null;
+  };
+  totalEntries: number;
+}
+
 export interface DashboardQueryOptions {
   date?: string;
   windowDays?: number;
@@ -324,6 +650,157 @@ export class StatisticsApi {
       origin,
       destination,
     }, { signal });
+  }
+
+  /**
+   * Get paginated airline overview for the dashboard airlines panel.
+   */
+  async getDashboardAirlines(options: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    level?: string;
+    filterValue?: string;
+    signal?: AbortSignal;
+  } = {}): Promise<DashboardAirlinesResponse> {
+    const { page = 0, pageSize = 15, search = '', level = 'world', filterValue = '', signal } = options;
+    return apiClient.get<DashboardAirlinesResponse>('/statistics/dashboard-airlines', {
+      page,
+      pageSize,
+      search,
+      level,
+      filterValue,
+    }, { signal });
+  }
+
+  /**
+   * Get airline home base (top origin airport, country, continent) for StatusLine pre-population.
+   */
+  async getDashboardAirlineHomeBase(options: {
+    airlineId: number;
+    signal?: AbortSignal;
+  }): Promise<DashboardAirlineHomeBaseResponse> {
+    const { airlineId, signal } = options;
+    return apiClient.get<DashboardAirlineHomeBaseResponse>(
+      '/statistics/dashboard-airline-home-base',
+      { airlineId },
+      { signal },
+    );
+  }
+
+  /**
+   * Get full airline detail for the airline drill-down view.
+   */
+  async getDashboardAirlineDetail(options: {
+    airlineId: number;
+    level?: string;
+    filterValue?: string;
+    startDate?: string;
+    endDate?: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAirlineDetailResponse> {
+    const { airlineId, level = 'world', filterValue = '', startDate, endDate, signal } = options;
+    return apiClient.get<DashboardAirlineDetailResponse>(
+      '/statistics/dashboard-airline-detail',
+      { airlineId, level, filterValue, ...(startDate && { start_date: startDate }), ...(endDate && { end_date: endDate }) },
+      { signal },
+    );
+  }
+
+  /**
+   * Get daily flight frequency trend for an airline (for FlightRoutesChart).
+   */
+  async getDashboardAirlineTrend(options: {
+    airlineId: number;
+    level?: string;
+    filterValue?: string;
+    startDate?: string;
+    endDate?: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAirlineTrendResponse> {
+    const { airlineId, level = 'world', filterValue = '', startDate, endDate, signal } = options;
+    return apiClient.get<DashboardAirlineTrendResponse>(
+      '/statistics/dashboard-airline-trend',
+      { airlineId, level, filterValue, ...(startDate && { start_date: startDate }), ...(endDate && { end_date: endDate }) },
+      { signal },
+    );
+  }
+
+  /**
+   * Get paginated origin airports for an airline.
+   */
+  async getDashboardAirlineOriginAirports(options: {
+    airlineId: number;
+    level?: string;
+    filterValue?: string;
+    offset?: number;
+    pageSize?: number;
+    startDate?: string;
+    endDate?: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAirlinePaginatedAirportsResponse> {
+    const { airlineId, level = 'world', filterValue = '', offset = 0, pageSize = 10, startDate, endDate, signal } = options;
+    return apiClient.get<DashboardAirlinePaginatedAirportsResponse>(
+      '/statistics/dashboard-airline-origin-airports',
+      { airlineId, level, filterValue, offset, pageSize, ...(startDate && { start_date: startDate }), ...(endDate && { end_date: endDate }) },
+      { signal },
+    );
+  }
+
+  /**
+   * Get paginated destination airports for an airline.
+   */
+  async getDashboardAirlineDestAirports(options: {
+    airlineId: number;
+    level?: string;
+    filterValue?: string;
+    offset?: number;
+    pageSize?: number;
+    startDate?: string;
+    endDate?: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAirlinePaginatedAirportsResponse> {
+    const { airlineId, level = 'world', filterValue = '', offset = 0, pageSize = 10, startDate, endDate, signal } = options;
+    return apiClient.get<DashboardAirlinePaginatedAirportsResponse>(
+      '/statistics/dashboard-airline-dest-airports',
+      { airlineId, level, filterValue, offset, pageSize, ...(startDate && { start_date: startDate }), ...(endDate && { end_date: endDate }) },
+      { signal },
+    );
+  }
+
+  /**
+   * Get paginated destination countries for an airline.
+   */
+  async getDashboardAirlineDestCountries(options: {
+    airlineId: number;
+    level?: string;
+    filterValue?: string;
+    offset?: number;
+    pageSize?: number;
+    startDate?: string;
+    endDate?: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAirlinePaginatedCountriesResponse> {
+    const { airlineId, level = 'world', filterValue = '', offset = 0, pageSize = 10, startDate, endDate, signal } = options;
+    return apiClient.get<DashboardAirlinePaginatedCountriesResponse>(
+      '/statistics/dashboard-airline-dest-countries',
+      { airlineId, level, filterValue, offset, pageSize, ...(startDate && { start_date: startDate }), ...(endDate && { end_date: endDate }) },
+      { signal },
+    );
+  }
+
+  /**
+   * Get global min/max data bounds for dashboard preset calculations.
+   */
+  async getDashboardDateBounds(signal?: AbortSignal): Promise<DashboardDateBoundsResponse> {
+    return apiClient.get<DashboardDateBoundsResponse>('/statistics/dashboard-date-bounds', {}, { signal });
+  }
+
+  /**
+   * Get current backend dashboard cache status.
+   */
+  async getDashboardCacheStatus(signal?: AbortSignal): Promise<DashboardCacheStatusResponse> {
+    return apiClient.get<DashboardCacheStatusResponse>('/statistics/dashboard-cache/status', {}, { signal, timeoutMs: 5000 });
   }
 
   /**
@@ -486,6 +963,129 @@ export class StatisticsApi {
       start_date: startDate,
       end_date: endDate,
     }, { signal });
+  }
+
+  /**
+   * Get country overview for drill-down dashboard.
+   */
+  async getDashboardCountryOverview(
+    country: string,
+    options: DashboardQueryOptions = {},
+  ): Promise<DashboardCountryOverviewResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardCountryOverviewResponse>('/statistics/dashboard-country-overview', {
+      country,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get country inbound/outbound flow map payload for drill-down dashboard.
+   */
+  async getDashboardCountryFlowMap(
+    country: string,
+    options: DashboardQueryOptions = {},
+  ): Promise<DashboardCountryFlowMapResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardCountryFlowMapResponse>('/statistics/dashboard-country-flow-map', {
+      country,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get airport overview KPI payload for airport drill-down dashboard.
+   */
+  async getDashboardAirportOverview(
+    airport: string,
+    options: DashboardQueryOptions = {},
+  ): Promise<DashboardAirportOverviewResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardAirportOverviewResponse>('/statistics/dashboard-airport-overview', {
+      airport,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get airport insights payload for airport drill-down panels.
+   */
+  async getDashboardAirportInsights(
+    airport: string,
+    options: DashboardQueryOptions & { routeLimit?: number; airlineLimit?: number } = {},
+  ): Promise<DashboardAirportInsightsResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+      routeLimit = 5,
+      airlineLimit = 8,
+    } = options;
+
+    return apiClient.get<DashboardAirportInsightsResponse>('/statistics/dashboard-airport-insights', {
+      airport,
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+      route_limit: routeLimit,
+      airline_limit: airlineLimit,
+    }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get airport trend series for airport drill-down trend charts.
+   */
+  async getDashboardAirportTrends(
+    airport: string,
+    options: Pick<DashboardQueryOptions, 'date' | 'signal' | 'timeoutMs'> = {},
+  ): Promise<DashboardAirportTrendsResponse> {
+    const {
+      date,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<DashboardAirportTrendsResponse>('/statistics/dashboard-airport-trends', {
+      airport,
+      date,
+    }, { signal, timeoutMs });
   }
 
   /**

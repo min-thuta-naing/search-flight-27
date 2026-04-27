@@ -197,7 +197,7 @@ export class AirportModel {
    * Get country summaries for airport directory UIs.
    */
   static async getAirportCountries(): Promise<{
-    countries: AirportCountrySummary[];
+    airportCountries: AirportCountrySummary[];
     totalCountries: number;
     totalAirports: number;
   }> {
@@ -212,12 +212,12 @@ export class AirportModel {
     `;
 
     const result = await pool.query(query);
-    const countries = result.rows;
-    const totalCountries = countries.length;
-    const totalAirports = countries.reduce((acc, curr) => acc + curr.airport_count, 0);
+    const airportCountries = result.rows;
+    const totalCountries = airportCountries.length;
+    const totalAirports = airportCountries.reduce((acc, curr) => acc + curr.airport_count, 0);
 
     return {
-      countries,
+      airportCountries,
       totalCountries,
       totalAirports,
     };

@@ -17,7 +17,7 @@ const dbConfig: PoolConfig = {
   password: process.env.DB_PASSWORD || 'postgres',
   max: 50, // Increased from 20 to 50 for better concurrency
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 10000,
 };
 
 export const pool = new Pool(dbConfig);

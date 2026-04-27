@@ -44,10 +44,10 @@ export async function getAirportCountries(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { countries, totalCountries, totalAirports } = await AirportModel.getAirportCountries();
+    const { airportCountries, totalCountries, totalAirports } = await AirportModel.getAirportCountries();
 
     res.json({
-      countries,
+      airportCountries,
       totalCountries,
       totalAirports,
     });

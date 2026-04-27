@@ -32,6 +32,68 @@ const worldSummaryCache = new Map<string, CacheEntry<DashboardSummaryResponse>>(
 const worldTopRanksCache = new Map<string, CacheEntry<DashboardTopRanksResponse>>();
 const worldTopDestinationsCache = new Map<string, CacheEntry<DashboardTopDestinationsResponse>>();
 
+type WorldCacheSnapshot = {
+  summary: Array<[string, CacheEntry<DashboardSummaryResponse> | DashboardSummaryResponse]>;
+  topRanks: Array<[string, CacheEntry<DashboardTopRanksResponse> | DashboardTopRanksResponse]>;
+  topDestinations: Array<[string, CacheEntry<DashboardTopDestinationsResponse> | DashboardTopDestinationsResponse]>;
+};
+
+const WORLD_CACHE_STORAGE_KEY = 'search-flight.drilldown.world-cache.v1';
+
+function readWorldCacheSnapshot(): WorldCacheSnapshot | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(WORLD_CACHE_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<WorldCacheSnapshot>;
+    return {
+      summary: Array.isArray(parsed.summary) ? parsed.summary : [],
+      topRanks: Array.isArray(parsed.topRanks) ? parsed.topRanks : [],
+      topDestinations: Array.isArray(parsed.topDestinations) ? parsed.topDestinations : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+const persistedWorldCache = readWorldCacheSnapshot();
+
+if (persistedWorldCache) {
+  for (const [key, value] of persistedWorldCache.summary) {
+    worldSummaryCache.set(key, normalizeCacheEntry(value));
+  }
+  for (const [key, value] of persistedWorldCache.topRanks) {
+    worldTopRanksCache.set(key, normalizeCacheEntry(value));
+  }
+  for (const [key, value] of persistedWorldCache.topDestinations) {
+    worldTopDestinationsCache.set(key, normalizeCacheEntry(value));
+  }
+}
+
+function persistWorldCacheSnapshot() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const snapshot: WorldCacheSnapshot = {
+      summary: Array.from(worldSummaryCache.entries()),
+      topRanks: Array.from(worldTopRanksCache.entries()),
+      topDestinations: Array.from(worldTopDestinationsCache.entries()),
+    };
+
+    window.sessionStorage.setItem(WORLD_CACHE_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // Ignore storage write failures and keep in-memory cache usable.
+  }
+}
+
 function normalizeCacheEntry<T>(input: CacheEntry<T> | T): CacheEntry<T> {
   if (
     typeof input === 'object' &&
@@ -91,39 +153,66 @@ function writeTimedCache<T>(cache: Map<string, CacheEntry<T>>, key: string, valu
 }
 
 export function getWorldSummaryCache(key: string) {
-  return readTimedCache(worldSummaryCache, key);
+  const cached = readTimedCache(worldSummaryCache, key);
+  if (!cached) {
+    persistWorldCacheSnapshot();
+  }
+  return cached;
 }
 
 export function getWorldSummaryCacheState(key: string) {
-  return readTimedCacheState(worldSummaryCache, key);
+  const state = readTimedCacheState(worldSummaryCache, key);
+  if (!state.value) {
+    persistWorldCacheSnapshot();
+  }
+  return state;
 }
 
 export function setWorldSummaryCache(key: string, value: DashboardSummaryResponse) {
   writeTimedCache(worldSummaryCache, key, value);
+  persistWorldCacheSnapshot();
 }
 
 export function getWorldTopRanksCache(key: string) {
-  return readTimedCache(worldTopRanksCache, key);
+  const cached = readTimedCache(worldTopRanksCache, key);
+  if (!cached) {
+    persistWorldCacheSnapshot();
+  }
+  return cached;
 }
 
 export function getWorldTopRanksCacheState(key: string) {
-  return readTimedCacheState(worldTopRanksCache, key);
+  const state = readTimedCacheState(worldTopRanksCache, key);
+  if (!state.value) {
+    persistWorldCacheSnapshot();
+  }
+  return state;
 }
 
 export function setWorldTopRanksCache(key: string, value: DashboardTopRanksResponse) {
   writeTimedCache(worldTopRanksCache, key, value);
+  persistWorldCacheSnapshot();
 }
 
 export function getWorldTopDestinationsCache(key: string) {
-  return readTimedCache(worldTopDestinationsCache, key);
+  const cached = readTimedCache(worldTopDestinationsCache, key);
+  if (!cached) {
+    persistWorldCacheSnapshot();
+  }
+  return cached;
 }
 
 export function getWorldTopDestinationsCacheState(key: string) {
-  return readTimedCacheState(worldTopDestinationsCache, key);
+  const state = readTimedCacheState(worldTopDestinationsCache, key);
+  if (!state.value) {
+    persistWorldCacheSnapshot();
+  }
+  return state;
 }
 
 export function setWorldTopDestinationsCache(key: string, value: DashboardTopDestinationsResponse) {
   writeTimedCache(worldTopDestinationsCache, key, value);
+  persistWorldCacheSnapshot();
 }
 
 const inFlightRequests = new Map<string, Promise<unknown>>();

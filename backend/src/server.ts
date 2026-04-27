@@ -7,7 +7,31 @@ import { serverConfig } from './config/server';
 import { initializeTimescaleDB } from './config/database';
 import routes from './routes';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
-import { schedulerService } from './services/schedulerService';
+import { schedulerService } from './services/preloader-preset';
+import {
+  getDashboardQueryCacheFreshness,
+  markDashboardPreloadAsCompleted,
+  warmDashboardCachesOnStartup,
+} from './controllers/statisticsController';
+
+function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
+  if (typeof value !== 'string') return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return defaultValue;
+}
+
+function parsePositiveIntEnv(value: string | undefined, defaultValue: number): number {
+  if (typeof value !== 'string') return defaultValue;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return defaultValue;
+  return Math.floor(parsed);
+}
+
+function parseCacheMode(value: string | undefined): 'append' | 'override' {
+  return value?.trim().toLowerCase() === 'append' ? 'append' : 'override';
+}
 
 const app: Express = express();
 
@@ -74,6 +98,42 @@ async function startServer(): Promise<void> {
 📡 API: http://localhost:${serverConfig.port}/api
 ❤️  Health: http://localhost:${serverConfig.port}/api/health
       `);
+
+      const shouldWarmOnStartup = parseBooleanEnv(
+        process.env.DASHBOARD_PRELOAD_ON_STARTUP,
+        serverConfig.nodeEnv === 'production',
+      );
+
+      if (shouldWarmOnStartup) {
+        void (async () => {
+          const freshness = await getDashboardQueryCacheFreshness();
+
+          if (freshness.hasFreshEntries) {
+            console.log(
+              `[dashboard-preload] startup warmup skipped; fresh cache exists (${freshness.freshEntries}/${freshness.totalEntries} entries still valid, ttl=${freshness.ttlHours}h)`
+            );
+            markDashboardPreloadAsCompleted();
+            return;
+          }
+
+          // Warm dashboard caches in background after server becomes reachable.
+          await warmDashboardCachesOnStartup({
+            preloadPresetData: parseBooleanEnv(process.env.DASHBOARD_CACHE_REFRESH_PRELOAD_PRESET, true),
+            preloadCountryOverview: parseBooleanEnv(process.env.DASHBOARD_CACHE_REFRESH_PRELOAD_COUNTRY_OVERVIEW, true),
+            countryBatchSize: parsePositiveIntEnv(process.env.DASHBOARD_CACHE_REFRESH_COUNTRY_BATCH_SIZE, 15),
+            maxCountryRssMb: parsePositiveIntEnv(process.env.DASHBOARD_CACHE_REFRESH_MAX_RSS_MB, 2048),
+            cacheMode: parseCacheMode(process.env.DASHBOARD_CACHE_REFRESH_MODE),
+          });
+        })()
+          .then(() => {
+            console.log('[dashboard-preload] startup preload check completed');
+          })
+          .catch((error) => {
+            console.warn('[dashboard-preload] failed:', error instanceof Error ? error.message : String(error));
+          });
+      } else {
+        console.log('[dashboard-preload] startup warmup disabled (set DASHBOARD_PRELOAD_ON_STARTUP=true to enable)');
+      }
     });
 
     // ✅ เริ่ม Scheduled Jobs (ถ้าเปิดใช้งาน)

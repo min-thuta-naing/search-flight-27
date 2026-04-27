@@ -240,7 +240,7 @@ export class FlightModel {
       return result.rows;
     } catch (error: any) {
       // Import logDatabaseError dynamically to avoid circular dependencies
-      const { logDatabaseError } = await import('../utils/errorLogger');
+      const { logDatabaseError } = await import('../utils/errorLogger.js');
       logDatabaseError('FlightModel.getAllAirlines', error, {});
 
       // Ensure we throw an Error instance

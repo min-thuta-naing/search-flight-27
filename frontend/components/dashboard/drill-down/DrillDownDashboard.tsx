@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, createContext, useContext, useEffect } from 'react';
+import React, { useState, useCallback, createContext, useContext, useEffect } from 'react';
 import { ArrowUp } from 'lucide-react';
 import type { DrillLevel, TimeMode, ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } from '@/lib/dashboard/drill-down-data';
@@ -318,35 +318,44 @@ function StatusLine() {
     return false;
   };
 
+  const visibleSteps = steps.filter(
+    (s) => s.id === 'world' || s.id === level || hasSelectionForLevel(s.id),
+  );
+
   return (
     <div className="w-full px-2 sm:px-4">
       <div className="rounded-xl bg-slate-100/80 px-2 py-2 shadow-sm ring-1 ring-slate-200/70">
         <div className="flex w-full items-center justify-center overflow-x-auto [scrollbar-width:thin]">
           <div className="flex min-w-max items-center gap-2">
-            {steps.map((step, i) => {
-              const isActive = i === currentIdx;
-              const isClickable = i < currentIdx || hasSelectionForLevel(step.id);
+            {visibleSteps.map((step, i) => {
+              const globalIdx = LEVELS.indexOf(step.id);
+              const isActive = globalIdx === currentIdx;
+              const isClickable = globalIdx < currentIdx || hasSelectionForLevel(step.id);
 
               return (
-                <button
-                  key={step.id}
-                  type="button"
-                  disabled={!isClickable}
-                  onClick={() => isClickable && drillTo(step.id)}
-                  className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-all ${
-                    isActive
-                      ? 'border-primary bg-primary/10 text-primary shadow-sm'
-                      : isClickable
-                        ? 'border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:bg-primary/5 hover:text-primary cursor-pointer'
-                        : 'border-slate-200 bg-slate-50 text-slate-400 cursor-default'
-                  }`}
-                  aria-pressed={isActive}
-                >
-                  <span className="text-base leading-none" role="img" aria-hidden="true">
-                    {step.icon}
-                  </span>
-                  <span className="whitespace-nowrap">{step.display}</span>
-                </button>
+                <React.Fragment key={step.id}>
+                  {i > 0 && (
+                    <span className="text-slate-400 text-sm select-none" aria-hidden="true">›</span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={!isClickable}
+                    onClick={() => isClickable && drillTo(step.id)}
+                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-all ${
+                      isActive
+                        ? 'border-primary bg-primary/10 text-primary shadow-sm'
+                        : isClickable
+                          ? 'border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:bg-primary/5 hover:text-primary cursor-pointer'
+                          : 'border-slate-200 bg-slate-50 text-slate-400 cursor-default'
+                    }`}
+                    aria-pressed={isActive}
+                  >
+                    <span className="text-base leading-none" role="img" aria-hidden="true">
+                      {step.icon}
+                    </span>
+                    <span className="whitespace-nowrap">{step.display}</span>
+                  </button>
+                </React.Fragment>
               );
             })}
           </div>

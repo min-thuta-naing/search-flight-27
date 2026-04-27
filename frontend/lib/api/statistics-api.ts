@@ -532,7 +532,7 @@ export interface DashboardAirlinePaginatedCountriesResponse {
 }
 
 export interface DashboardAirlineTrendResponse {
-  rows: Array<{ date: string; flights: number }>;
+  rows: Array<{ date: string; flights: number; departureFlights: number; arrivalFlights: number }>;
 }
 
 export interface DashboardAirlineDetailResponse {

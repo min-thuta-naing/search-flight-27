@@ -113,10 +113,10 @@ function getPreviousLevel(selections: { continent?: unknown; country?: unknown; 
 
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
-    <div className="rounded-[10px] border border-border bg-card p-5 shadow-sm">
-      <div className="mb-4 space-y-1">
-        <div className="text-[16px] font-bold">{title}</div>
-        {subtitle && <div className="text-sm text-muted-foreground">{subtitle}</div>}
+    <div className="rounded-xl border border-border bg-card p-5 shadow-sm transition-shadow duration-200 hover:shadow-md">
+      <div className="mb-4 space-y-0.5">
+        <div className="text-[15px] font-semibold tracking-tight">{title}</div>
+        {subtitle && <div className="text-[12px] text-muted-foreground">{subtitle}</div>}
       </div>
       {children}
     </div>
@@ -142,36 +142,36 @@ function InfiniteAirportTable({
   }
   const max = rows[0]?.flights || 1;
   return (
-    <div ref={scrollRef} className="overflow-auto rounded-lg border border-border" style={{ maxHeight: 340 }}>
+    <div ref={scrollRef} className="max-h-[340px] overflow-auto rounded-lg border border-border">
       <table className="w-full border-collapse text-sm">
         <thead className="sticky top-0 z-10 bg-card">
-          <tr className="bg-muted/20">
-            <th className="px-3 py-2 text-left text-[13px] font-semibold text-muted-foreground">#</th>
-            <th className="px-3 py-2 text-left text-[13px] font-semibold text-muted-foreground">Airport</th>
-            <th className="px-3 py-2 text-left text-[13px] font-semibold text-muted-foreground">Country</th>
-            <th className="px-3 py-2 text-right text-[13px] font-semibold text-muted-foreground">Flights</th>
+          <tr className="border-b border-border bg-muted/30">
+            <th className="px-3 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">#</th>
+            <th className="px-3 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Airport</th>
+            <th className="px-3 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Country</th>
+            <th className="px-3 py-2.5 text-right text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Flights</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={`${row.iata}-${i}`} className="border-t border-border/60">
-              <td className="px-3 py-2.5 text-xs font-semibold text-muted-foreground">{i + 1}</td>
+            <tr key={`${row.iata}-${i}`} className="border-t border-border/50 transition-colors hover:bg-muted/30">
+              <td className="px-3 py-2.5 text-xs font-semibold text-muted-foreground/70">{i + 1}</td>
               <td className="px-3 py-2.5">
                 <div className="font-medium leading-none">{row.name}</div>
-                <div className="mt-0.5 text-xs text-muted-foreground">{row.iata}</div>
+                <div className="mt-0.5 text-xs font-mono text-muted-foreground">{row.iata}</div>
               </td>
               <td className="px-3 py-2.5">
                 <div className="flex items-center gap-1.5">
                   <span>{row.flag}</span>
-                  <span className="text-sm">{row.country}</span>
+                  <span className="text-sm text-foreground/80">{row.country}</span>
                 </div>
               </td>
               <td className="px-3 py-2.5">
                 <div className="flex items-center justify-end gap-2">
                   <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
-                    <div className="h-full rounded-full bg-primary" style={{ width: `${(row.flights / max) * 100}%` }} />
+                    <div className="h-full rounded-full bg-primary/70 transition-all" style={{ width: `${(row.flights / max) * 100}%` }} />
                   </div>
-                  <span className="w-12 text-right tabular-nums font-semibold text-sm">
+                  <span className="w-14 text-right tabular-nums text-sm font-semibold">
                     {row.flights.toLocaleString()}
                   </span>
                 </div>
@@ -183,7 +183,7 @@ function InfiniteAirportTable({
       <div ref={loaderRef} style={{ height: 1 }} />
       {loading && <div className="py-3 text-center text-sm text-muted-foreground">กำลังโหลด...</div>}
       {!hasMore && !loading && rows.length > 0 && (
-        <div className="py-3 text-center text-sm text-muted-foreground">แสดงข้อมูลครบแล้ว</div>
+        <div className="py-2.5 text-center text-xs text-muted-foreground/60">— แสดงข้อมูลครบแล้ว —</div>
       )}
     </div>
   );
@@ -208,37 +208,37 @@ function InfiniteCountryTable({
   }
   const max = rows[0]?.flights || 1;
   return (
-    <div ref={scrollRef} className="overflow-auto rounded-lg border border-border" style={{ maxHeight: 340 }}>
+    <div ref={scrollRef} className="max-h-[340px] overflow-auto rounded-lg border border-border">
       <table className="w-full border-collapse text-sm">
         <thead className="sticky top-0 z-10 bg-card">
-          <tr className="bg-muted/20">
-            <th className="px-3 py-2 text-left text-[13px] font-semibold text-muted-foreground">#</th>
-            <th className="px-3 py-2 text-left text-[13px] font-semibold text-muted-foreground">Country</th>
-            <th className="px-3 py-2 text-right text-[13px] font-semibold text-muted-foreground">Flights</th>
-            <th className="px-3 py-2 text-right text-[13px] font-semibold text-muted-foreground">Share</th>
+          <tr className="border-b border-border bg-muted/30">
+            <th className="px-3 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">#</th>
+            <th className="px-3 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Country</th>
+            <th className="px-3 py-2.5 text-right text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Flights</th>
+            <th className="px-3 py-2.5 text-right text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Share</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={`${row.countryCode || row.countryName}-${i}`} className="border-t border-border/60">
-              <td className="px-3 py-2.5 text-xs font-semibold text-muted-foreground">{i + 1}</td>
+            <tr key={`${row.countryCode || row.countryName}-${i}`} className="border-t border-border/50 transition-colors hover:bg-muted/30">
+              <td className="px-3 py-2.5 text-xs font-semibold text-muted-foreground/70">{i + 1}</td>
               <td className="px-3 py-2.5">
                 <div className="flex items-center gap-1.5">
                   <span>{row.flag}</span>
-                  <span className="font-medium">{row.countryName}</span>
+                  <span className="font-medium text-foreground/90">{row.countryName}</span>
                 </div>
               </td>
               <td className="px-3 py-2.5">
                 <div className="flex items-center justify-end gap-2">
                   <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
-                    <div className="h-full rounded-full bg-primary" style={{ width: `${(row.flights / max) * 100}%` }} />
+                    <div className="h-full rounded-full bg-primary/70 transition-all" style={{ width: `${(row.flights / max) * 100}%` }} />
                   </div>
-                  <span className="w-12 text-right tabular-nums font-semibold text-sm">
+                  <span className="w-14 text-right tabular-nums text-sm font-semibold">
                     {row.flights.toLocaleString()}
                   </span>
                 </div>
               </td>
-              <td className="px-3 py-2.5 text-right tabular-nums text-sm text-muted-foreground">
+              <td className="px-3 py-2.5 text-right tabular-nums text-sm font-medium text-muted-foreground">
                 {totalFlights > 0 ? ((row.flights / totalFlights) * 100).toFixed(1) : '0.0'}%
               </td>
             </tr>
@@ -248,7 +248,7 @@ function InfiniteCountryTable({
       <div ref={loaderRef} style={{ height: 1 }} />
       {loading && <div className="py-3 text-center text-sm text-muted-foreground">กำลังโหลด...</div>}
       {!hasMore && !loading && rows.length > 0 && (
-        <div className="py-3 text-center text-sm text-muted-foreground">แสดงข้อมูลครบแล้ว</div>
+        <div className="py-2.5 text-center text-xs text-muted-foreground/60">— แสดงข้อมูลครบแล้ว —</div>
       )}
     </div>
   );
@@ -342,7 +342,7 @@ export function AirlineView() {
   }, [airline?.id, previousLevel, filterValue, startDate, endDate]);
 
   // ── Trend data (for FlightRoutesChart) ──────────────────────────────────
-  const [trendRows, setTrendRows] = useState<Array<{ date: string; flights: number }>>([]);
+  const [trendRows, setTrendRows] = useState<Array<{ date: string; flights: number; departureFlights: number; arrivalFlights: number }>>([]);
   const [trendLoading, setTrendLoading] = useState(true);
 
   useEffect(() => {
@@ -524,7 +524,7 @@ export function AirlineView() {
 
   // ── Computed values ──────────────────────────────────────────────────────
   const chartData = useMemo(
-    () => trendRows.map((d) => ({ date: d.date, flights: d.flights })),
+    () => trendRows.map((d) => ({ date: d.date, flights: d.departureFlights, flightsCompare: d.arrivalFlights })),
     [trendRows],
   );
 
@@ -582,9 +582,9 @@ export function AirlineView() {
   // ── Guard: no airline selected ───────────────────────────────────────────
   if (!airline) {
     return (
-      <div className="rounded-[10px] border border-border bg-card p-6">
-        <div className="text-lg font-bold">ไม่พบข้อมูลสายการบิน</div>
-        <div className="mt-2 text-sm text-muted-foreground">กลับไปเลือกสายการบินอีกครั้ง</div>
+      <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
+        <div className="text-base font-semibold">ไม่พบข้อมูลสายการบิน</div>
+        <div className="mt-1.5 text-sm text-muted-foreground">กลับไปเลือกสายการบินอีกครั้ง</div>
         <div className="mt-4">
           <BackButton label="กลับ" onClick={() => drillTo(previousLevel)} />
         </div>
@@ -812,11 +812,11 @@ export function AirlineView() {
       {loading ? (
         <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-[126px] rounded-[10px] border border-border bg-card animate-pulse" />
+            <div key={i} className="h-[126px] animate-pulse rounded-xl border border-border bg-card" />
           ))}
         </div>
       ) : error ? (
-        <div className="rounded-[10px] border border-destructive/30 bg-destructive/5 p-4">
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
           <p className="text-sm text-destructive">{error}</p>
         </div>
       ) : (
@@ -829,18 +829,18 @@ export function AirlineView() {
           <FlightRoutesChart
             chartData={chartData}
             dateRange={chartDateRange}
-            compareMode={false}
+            compareMode={true}
             isDeparture={true}
-            chartHeightClass="h-[208px]"
+            chartHeightClass="h-[220px] sm:h-[240px]"
           />
         ) : (
-          <div className="flex h-[208px] items-center justify-center rounded-[10px] border border-dashed border-border bg-card text-sm text-muted-foreground">
+          <div className="flex h-[220px] items-center justify-center rounded-xl border border-dashed border-border bg-card text-sm text-muted-foreground">
             ไม่มีข้อมูลเที่ยวบินรายวันสำหรับสายการบินนี้
           </div>
         )
       )}
       {trendLoading && (
-        <div className="h-[240px] rounded-[10px] border border-border bg-card animate-pulse" />
+        <div className="h-[240px] animate-pulse rounded-xl border border-border bg-card" />
       )}
 
       {/* Row 2: Origin Airports | Destination Airports */}
@@ -850,8 +850,8 @@ export function AirlineView() {
             rows={originRows}
             loading={originLoading}
             hasMore={originHasMore}
-            loaderRef={originLoaderRef}
-            scrollRef={originScrollRef}
+            loaderRef={originLoaderRef as React.RefObject<HTMLDivElement>}
+            scrollRef={originScrollRef as React.RefObject<HTMLDivElement>}
             emptyText="ไม่มีข้อมูลสนามบินต้นทาง"
           />
         </Panel>
@@ -861,8 +861,8 @@ export function AirlineView() {
             rows={destRows}
             loading={destLoading}
             hasMore={destHasMore}
-            loaderRef={destLoaderRef}
-            scrollRef={destScrollRef}
+            loaderRef={destLoaderRef as React.RefObject<HTMLDivElement>}
+            scrollRef={destScrollRef as React.RefObject<HTMLDivElement>}
             emptyText="ไม่มีข้อมูลสนามบินปลายทาง"
           />
         </Panel>
@@ -876,33 +876,64 @@ export function AirlineView() {
             subtitle={`${detail.domesticFlights.toLocaleString()} ในประเทศ · ${detail.internationalFlights.toLocaleString()} ระหว่างประเทศ`}
           >
             {detail.totalFlights > 0 ? (
-              <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start">
-                <div style={{ width: 180, height: 180, flexShrink: 0 }}>
+              <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-center">
+                {/* Pie — fixed size so it stays proportional */}
+                <div className="mx-auto shrink-0 sm:mx-0" style={{ width: 200, height: 200 }}>
                   <DomIntlPie domestic={detail.domesticFlights} international={detail.internationalFlights} />
                 </div>
-                <div className="flex flex-col gap-3 justify-center">
-                  <div className="flex items-center gap-3">
-                    <div className="h-3 w-3 rounded-sm flex-shrink-0" style={{ background: 'rgba(59,130,246,0.7)' }} />
-                    <div>
-                      <div className="text-sm font-semibold">Domestic</div>
-                      <div className="text-xs text-muted-foreground">
-                        {detail.domesticFlights.toLocaleString()} เที่ยวบิน · {total > 0 ? ((detail.domesticFlights / total) * 100).toFixed(1) : '0'}%
-                      </div>
-                    </div>
+
+                {/* Rich legend — fills remaining horizontal space */}
+                <div className="flex w-full flex-1 flex-col gap-4 sm:pl-1">
+                  {/* Total callout */}
+                  <div className="rounded-lg bg-muted/40 px-4 py-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Total Flights</div>
+                    <div className="mt-0.5 text-2xl font-bold tabular-nums">{total.toLocaleString()}</div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <div className="h-3 w-3 rounded-sm flex-shrink-0" style={{ background: 'rgba(251,191,36,0.7)' }} />
-                    <div>
-                      <div className="text-sm font-semibold">International</div>
-                      <div className="text-xs text-muted-foreground">
-                        {detail.internationalFlights.toLocaleString()} เที่ยวบิน · {intlPct.toFixed(1)}%
+
+                  {/* Domestic */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <div className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: 'rgba(59,130,246,0.85)' }} />
+                        <span className="font-semibold">Domestic</span>
                       </div>
+                      <span className="tabular-nums font-bold">
+                        {total > 0 ? ((detail.domesticFlights / total) * 100).toFixed(1) : '0.0'}%
+                      </span>
                     </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{
+                          width: `${total > 0 ? (detail.domesticFlights / total) * 100 : 0}%`,
+                          background: 'rgba(59,130,246,0.85)',
+                        }}
+                      />
+                    </div>
+                    <div className="text-xs text-muted-foreground">{detail.domesticFlights.toLocaleString()} เที่ยวบิน</div>
+                  </div>
+
+                  {/* International */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <div className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: 'rgba(251,191,36,0.85)' }} />
+                        <span className="font-semibold">International</span>
+                      </div>
+                      <span className="tabular-nums font-bold">{intlPct.toFixed(1)}%</span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{ width: `${intlPct}%`, background: 'rgba(251,191,36,0.85)' }}
+                      />
+                    </div>
+                    <div className="text-xs text-muted-foreground">{detail.internationalFlights.toLocaleString()} เที่ยวบิน</div>
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="flex h-[180px] items-center justify-center text-sm text-muted-foreground">
+              <div className="flex h-[200px] items-center justify-center text-sm text-muted-foreground">
                 ไม่มีข้อมูล
               </div>
             )}

@@ -842,7 +842,10 @@ function TrendSparkChart(
           />
           <Tooltip
             contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '14px' }}
-            formatter={(value: number, name: string) => [`${value} เที่ยวบิน`, name]}
+            formatter={(value: number | string | undefined, name: string | undefined) => [
+              `${value ?? '-'} เที่ยวบิน`,
+              name ?? ''
+            ]}
           />
           {activeSeries === 'all' ? (
             <Area

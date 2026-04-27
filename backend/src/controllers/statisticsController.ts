@@ -1749,6 +1749,8 @@ type AirlineFullDataCached = {
 type AirlineTrendPoint = {
   date: string;
   flights: number;
+  departureFlights: number;
+  arrivalFlights: number;
 };
 
 async function getOrSetAirlineFullData(
@@ -2070,29 +2072,8 @@ export async function getDashboardAirlineTrend(req: Request, res: Response, next
     const cacheKey = `dashboard-airline-trend|id=${airlineId}|level=${level}|filter=${filterValue.toUpperCase().trim()}|start=${startDate || ''}|end=${endDate || ''}`;
 
     const trend = await getOrSetDashboardQueryCache<AirlineTrendPoint[]>(cacheKey, async () => {
-      let geoWhere = '';
       const queryParams: (number | string | string[])[] = [airlineId];
-      const needsAirportJoin = level === 'country' && filterValue !== '';
-
-      if (filterValue && level !== 'world') {
-        if (level === 'airport') {
-          geoWhere = `AND UPPER(TRIM(dfp.arr_airport)) = $2`;
-          queryParams.push(filterValue.toUpperCase().trim());
-        } else if (level === 'country') {
-          geoWhere = `AND (
-            UPPER(TRIM(ap.country_code)) = $2
-            OR UPPER(TRIM(ap.country)) = $2
-            OR UPPER(TRIM(ap.country_name)) = $2
-          )`;
-          queryParams.push(filterValue.toUpperCase().trim());
-        } else if (level === 'continent') {
-          const codes = await getAirportCodesForContinent(filterValue);
-          if (codes.length > 0) {
-            geoWhere = `AND UPPER(TRIM(dfp.arr_airport)) = ANY($2::text[])`;
-            queryParams.push(codes);
-          }
-        }
-      }
+      const fv = filterValue.toUpperCase().trim();
 
       let dateWhere = '';
       if (startDate) {
@@ -2104,25 +2085,137 @@ export async function getDashboardAirlineTrend(req: Request, res: Response, next
         queryParams.push(endDate);
       }
 
-      const joinClause = needsAirportJoin
-        ? `LEFT JOIN airports ap ON UPPER(TRIM(ap.code)) = UPPER(TRIM(dfp.arr_airport))`
-        : '';
+      let sql = '';
 
-      const sql = `
-        SELECT
-          DATE(dfp.departure_date)::text AS date,
-          COUNT(*)::int  AS flights
-        FROM departure_flight_paths dfp
-        ${joinClause}
-        WHERE dfp.airline_id = $1
-        ${geoWhere}
-        ${dateWhere}
-        GROUP BY DATE(dfp.departure_date)
-        ORDER BY DATE(dfp.departure_date) ASC
-      `;
+      if (level === 'airport' && fv) {
+        queryParams.push(fv);
+        const p = queryParams.length;
+        sql = `
+          SELECT
+            DATE(dfp.departure_date)::text AS date,
+            COUNT(*) FILTER (WHERE UPPER(TRIM(dfp.dep_airport)) = $${p})::int AS "departureFlights",
+            COUNT(*) FILTER (WHERE UPPER(TRIM(dfp.arr_airport)) = $${p})::int AS "arrivalFlights",
+            COUNT(*)::int AS flights
+          FROM departure_flight_paths dfp
+          WHERE dfp.airline_id = $1
+            AND (UPPER(TRIM(dfp.dep_airport)) = $${p} OR UPPER(TRIM(dfp.arr_airport)) = $${p})
+            ${dateWhere}
+          GROUP BY DATE(dfp.departure_date)
+          ORDER BY DATE(dfp.departure_date) ASC
+        `;
+      } else if (level === 'country' && fv) {
+        queryParams.push(fv);
+        const p = queryParams.length;
+        sql = `
+          SELECT
+            DATE(dfp.departure_date)::text AS date,
+            COUNT(*) FILTER (
+              WHERE UPPER(TRIM(dep_ap.country_code)) = $${p}
+                 OR UPPER(TRIM(dep_ap.country)) = $${p}
+                 OR UPPER(TRIM(dep_ap.country_name)) = $${p}
+            )::int AS "departureFlights",
+            COUNT(*) FILTER (
+              WHERE UPPER(TRIM(arr_ap.country_code)) = $${p}
+                 OR UPPER(TRIM(arr_ap.country)) = $${p}
+                 OR UPPER(TRIM(arr_ap.country_name)) = $${p}
+            )::int AS "arrivalFlights",
+            COUNT(*)::int AS flights
+          FROM departure_flight_paths dfp
+          LEFT JOIN airports dep_ap ON UPPER(TRIM(dep_ap.code)) = UPPER(TRIM(dfp.dep_airport))
+          LEFT JOIN airports arr_ap ON UPPER(TRIM(arr_ap.code)) = UPPER(TRIM(dfp.arr_airport))
+          WHERE dfp.airline_id = $1
+            AND (
+              UPPER(TRIM(dep_ap.country_code)) = $${p} OR UPPER(TRIM(dep_ap.country)) = $${p} OR UPPER(TRIM(dep_ap.country_name)) = $${p}
+              OR UPPER(TRIM(arr_ap.country_code)) = $${p} OR UPPER(TRIM(arr_ap.country)) = $${p} OR UPPER(TRIM(arr_ap.country_name)) = $${p}
+            )
+            ${dateWhere}
+          GROUP BY DATE(dfp.departure_date)
+          ORDER BY DATE(dfp.departure_date) ASC
+        `;
+      } else if (level === 'continent' && fv) {
+        const codes = await getAirportCodesForContinent(filterValue);
+        if (codes.length > 0) {
+          queryParams.push(codes);
+          const p = queryParams.length;
+          sql = `
+            SELECT
+              DATE(dfp.departure_date)::text AS date,
+              COUNT(*) FILTER (WHERE UPPER(TRIM(dfp.dep_airport)) = ANY($${p}::text[]))::int AS "departureFlights",
+              COUNT(*) FILTER (WHERE UPPER(TRIM(dfp.arr_airport)) = ANY($${p}::text[]))::int AS "arrivalFlights",
+              COUNT(*)::int AS flights
+            FROM departure_flight_paths dfp
+            WHERE dfp.airline_id = $1
+              AND (UPPER(TRIM(dfp.dep_airport)) = ANY($${p}::text[]) OR UPPER(TRIM(dfp.arr_airport)) = ANY($${p}::text[]))
+              ${dateWhere}
+            GROUP BY DATE(dfp.departure_date)
+            ORDER BY DATE(dfp.departure_date) ASC
+          `;
+        } else {
+          sql = `
+            SELECT
+              DATE(dfp.departure_date)::text AS date,
+              COUNT(*)::int AS "departureFlights",
+              0::int AS "arrivalFlights",
+              COUNT(*)::int AS flights
+            FROM departure_flight_paths dfp
+            WHERE dfp.airline_id = $1
+              ${dateWhere}
+            GROUP BY DATE(dfp.departure_date)
+            ORDER BY DATE(dfp.departure_date) ASC
+          `;
+        }
+      } else {
+        // world level: departure/arrival relative to airline's home country (top dep country by count)
+        sql = `
+          WITH airline_home AS (
+            SELECT
+              UPPER(TRIM(COALESCE(NULLIF(dep_ap.country_code, ''), NULLIF(dep_ap.country, ''), dep_ap.country_name))) AS cc,
+              UPPER(TRIM(COALESCE(NULLIF(dep_ap.country, ''), NULLIF(dep_ap.country_code, ''), dep_ap.country_name))) AS cn,
+              UPPER(TRIM(COALESCE(NULLIF(dep_ap.country_name, ''), NULLIF(dep_ap.country, ''), dep_ap.country_code))) AS cnn
+            FROM departure_flight_paths dfp
+            LEFT JOIN airports dep_ap ON UPPER(TRIM(dep_ap.code)) = UPPER(TRIM(dfp.dep_airport))
+            WHERE dfp.airline_id = $1
+              AND dep_ap.country_code IS NOT NULL
+            GROUP BY dep_ap.country_code, dep_ap.country, dep_ap.country_name
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+          )
+          SELECT
+            DATE(dfp.departure_date)::text AS date,
+            COUNT(*) FILTER (
+              WHERE EXISTS (
+                SELECT 1 FROM airline_home h
+                WHERE (h.cc <> '' AND UPPER(TRIM(dep_ap.country_code)) = h.cc)
+                   OR (h.cn <> '' AND UPPER(TRIM(dep_ap.country)) = h.cn)
+                   OR (h.cnn <> '' AND UPPER(TRIM(dep_ap.country_name)) = h.cnn)
+              )
+            )::int AS "departureFlights",
+            COUNT(*) FILTER (
+              WHERE EXISTS (
+                SELECT 1 FROM airline_home h
+                WHERE (h.cc <> '' AND UPPER(TRIM(arr_ap.country_code)) = h.cc)
+                   OR (h.cn <> '' AND UPPER(TRIM(arr_ap.country)) = h.cn)
+                   OR (h.cnn <> '' AND UPPER(TRIM(arr_ap.country_name)) = h.cnn)
+              )
+            )::int AS "arrivalFlights",
+            COUNT(*)::int AS flights
+          FROM departure_flight_paths dfp
+          LEFT JOIN airports dep_ap ON UPPER(TRIM(dep_ap.code)) = UPPER(TRIM(dfp.dep_airport))
+          LEFT JOIN airports arr_ap ON UPPER(TRIM(arr_ap.code)) = UPPER(TRIM(dfp.arr_airport))
+          WHERE dfp.airline_id = $1
+            ${dateWhere}
+          GROUP BY DATE(dfp.departure_date)
+          ORDER BY DATE(dfp.departure_date) ASC
+        `;
+      }
 
-      const { rows } = await pool.query<{ date: string; flights: number }>(sql, queryParams);
-      return rows.map((r) => ({ date: String(r.date), flights: Number(r.flights) || 0 }));
+      const { rows } = await pool.query<{ date: string; flights: number; departureFlights: number; arrivalFlights: number }>(sql, queryParams);
+      return rows.map((r) => ({
+        date: String(r.date),
+        flights: Number(r.flights) || 0,
+        departureFlights: Number(r.departureFlights) || 0,
+        arrivalFlights: Number(r.arrivalFlights) || 0,
+      }));
     });
 
     res.json({ rows: trend });

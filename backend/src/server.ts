@@ -7,7 +7,7 @@ import { serverConfig } from './config/server';
 import { initializeTimescaleDB } from './config/database';
 import routes from './routes';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
-import { schedulerService } from './services/schedulerService';
+import { schedulerService } from './services/preloader-preset';
 import {
   getDashboardQueryCacheFreshness,
   markDashboardPreloadAsCompleted,

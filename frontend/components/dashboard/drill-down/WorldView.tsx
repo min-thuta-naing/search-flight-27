@@ -1715,7 +1715,7 @@ function TopDestinations({
 
 function CountryLookupPanel() {
   const { drillTo } = useDrillDown();
-  const [countries, setCountries] = useState<AirportCountrySummary[]>(() => getCachedAirportCountries() ?? []);
+  const [airportCountries, setAirportCountries] = useState<AirportCountrySummary[]>(() => getCachedAirportCountries() ?? []);
   const [loading, setLoading] = useState(() => getCachedAirportCountries() === null);
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -1726,7 +1726,7 @@ function CountryLookupPanel() {
     const cachedCountries = getCachedAirportCountries();
 
     if (cachedCountries) {
-      setCountries(cachedCountries);
+      setAirportCountries(cachedCountries);
       setLoading(false);
       return () => {
         alive = false;
@@ -1739,13 +1739,13 @@ function CountryLookupPanel() {
         setError(null);
         const response = await airportApi.getAirportCountries();
         if (!alive) return;
-        setCachedAirportCountries(response.countries ?? []);
-        setCountries(response.countries ?? []);
+        setCachedAirportCountries(response.airportCountries ?? []);
+        setAirportCountries(response.airportCountries ?? []);
       } catch (err) {
         if (!alive) return;
         const message = err instanceof Error ? err.message : 'ไม่สามารถโหลดรายชื่อประเทศได้';
         setError(message);
-        setCountries([]);
+        setAirportCountries([]);
       } finally {
         if (alive) {
           setLoading(false);
@@ -1762,7 +1762,7 @@ function CountryLookupPanel() {
 
   const visibleCountries = useMemo(() => {
     const normalizedQuery = query.trim();
-    const rows = [...countries].sort((a, b) => a.country.localeCompare(b.country, 'en', { sensitivity: 'base' }));
+    const rows = [...airportCountries].sort((a, b) => a.country.localeCompare(b.country, 'en', { sensitivity: 'base' }));
 
     if (!normalizedQuery) {
       return rows;
@@ -1781,7 +1781,7 @@ function CountryLookupPanel() {
 
       return name.includes(normalizedQuery.toLowerCase());
     });
-  }, [countries, query]);
+  }, [airportCountries, query]);
 
   const mixedRows = useMemo<CountryLookupRow[]>(
     () =>

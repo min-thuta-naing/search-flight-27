@@ -40,7 +40,7 @@ export interface AirportCountrySummary {
 
 export class AirportModel {
   private static airportCountriesCache: {
-    countries: AirportCountrySummary[];
+    airportCountries: AirportCountrySummary[];
     totalCountries: number;
     totalAirports: number;
     cachedAt: number;
@@ -209,14 +209,14 @@ export class AirportModel {
    * Get country summaries for airport directory UIs.
    */
   static async getAirportCountries(): Promise<{
-    countries: AirportCountrySummary[];
+    airportCountries: AirportCountrySummary[];
     totalCountries: number;
     totalAirports: number;
   }> {
     const cached = AirportModel.airportCountriesCache;
     if (cached && Date.now() - cached.cachedAt < AirportModel.AIRPORT_COUNTRIES_CACHE_TTL_MS) {
       return {
-        countries: cached.countries,
+        airportCountries: cached.airportCountries,
         totalCountries: cached.totalCountries,
         totalAirports: cached.totalAirports,
       };
@@ -233,7 +233,7 @@ export class AirportModel {
     `;
 
     const result = await pool.query(query);
-    const countries = (result.rows as Array<{
+    const airportCountries = (result.rows as Array<{
       country: string;
       country_code: string | null;
       airport_count: number;
@@ -248,18 +248,18 @@ export class AirportModel {
         continent_icon: continentMeta.icon,
       } satisfies AirportCountrySummary;
     });
-    const totalAirports = countries.reduce((sum, country) => sum + country.airport_count, 0);
+    const totalAirports = airportCountries.reduce((sum, country) => sum + country.airport_count, 0);
 
     AirportModel.airportCountriesCache = {
-      countries,
-      totalCountries: countries.length,
+      airportCountries,
+      totalCountries: airportCountries.length,
       totalAirports,
       cachedAt: Date.now(),
     };
 
     return {
-      countries,
-      totalCountries: countries.length,
+      airportCountries,
+      totalCountries: airportCountries.length,
       totalAirports,
     };
   }

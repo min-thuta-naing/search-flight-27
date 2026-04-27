@@ -28,7 +28,7 @@ export interface AirportCountrySummary {
 }
 
 export interface AirportCountriesResponse {
-  countries: AirportCountrySummary[]
+  airportCountries: AirportCountrySummary[]
   totalCountries: number
   totalAirports: number
 }

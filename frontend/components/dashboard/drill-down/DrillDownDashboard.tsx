@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useCallback, createContext, useContext, useEffect } from 'react';
+import React, { useState, useCallback, createContext, useContext, useEffect, useRef } from 'react';
 import { ArrowUp } from 'lucide-react';
 import type { DrillLevel, TimeMode, ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } from '@/lib/dashboard/drill-down-data';
 import { getDashboardCacheStatus, type DashboardCacheStatusResponse } from '@/lib/dashboard/services/drilldown';
+import { getDashboardAirlineHomeBase, type DashboardAirlineHomeBaseResponse } from '@/lib/api/statistics-api';
 import { readSharedRangePreset, writeSharedRangePreset } from '@/lib/dashboard/range-preset-store';
 import { Button } from '@/components/ui/button';
 import { WorldView } from './WorldView';
@@ -12,6 +13,24 @@ import { ContinentView } from './ContinentView';
 import { CountryView } from './CountryView';
 import { AirportView } from './AirportView';
 import { AirlineView } from './AirlineView';
+
+const LEVEL_ORDER: DrillLevel[] = ['world', 'continent', 'country', 'airport', 'airline'];
+
+// Explicit data-query scope: set at drillTo time from the active level + merged selections.
+// Never derived by scanning deepest non-null selection — that leaks stale values after back-nav.
+export interface QueryScope { level: DrillLevel; value: string; }
+
+function toQueryScope(level: DrillLevel, sel: SelectionState): QueryScope {
+  if (level === 'continent') return { level, value: sel.continent?.name ?? '' };
+  if (level === 'country')   return { level, value: sel.country?.countryCode ?? sel.country?.name ?? '' };
+  if (level === 'airport')   return { level, value: sel.airport?.iata ?? '' };
+  if (level === 'airline') {
+    if (sel.airport?.iata) return { level: 'airport', value: sel.airport.iata };
+    if (sel.country) return { level: 'country', value: sel.country.countryCode ?? sel.country.name ?? '' };
+    if (sel.continent) return { level: 'continent', value: sel.continent.name };
+  }
+  return { level: 'world', value: '' };
+}
 
 // ── Context for drill-down state ──
 interface SelectionState {
@@ -21,12 +40,64 @@ interface SelectionState {
   airline?: { id: number; name: string } | null;
 }
 
+function buildAirlinePrefillSelections(
+  base: SelectionState,
+  homeBase: DashboardAirlineHomeBaseResponse,
+): SelectionState {
+  const next: SelectionState = {
+    airline: base.airline ?? null,
+  };
+
+  if (homeBase.continentName) {
+    next.continent = {
+      name: homeBase.continentName,
+      icon: homeBase.continentIcon || '\u{1F310}',
+      airports: '0',
+      flights: 0,
+      delta: '—',
+      yoy: 0,
+      yoyN: 0,
+      mom: 0,
+      momN: 0,
+      wow: 0,
+      wowN: 0,
+    };
+  }
+
+  if (homeBase.countryName) {
+    next.country = {
+      flag: homeBase.flag || '\u{1F3F3}\u{FE0F}',
+      name: homeBase.countryName,
+      countryCode: homeBase.countryCode || null,
+      airports: 0,
+      flights: 0,
+      delta: '—',
+      deltaN: 0,
+      bar: 0,
+    };
+  }
+
+  if (homeBase.iata) {
+    next.airport = {
+      iata: homeBase.iata,
+      name: homeBase.airportName || homeBase.iata,
+      flights: 0,
+      routes: 0,
+      airlines: 0,
+      color: 'var(--chart-1)',
+    };
+  }
+
+  return next;
+}
+
 export type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';
 
 interface DrillDownContextValue {
   level: DrillLevel;
   timeMode: TimeMode;
   rangePreset: RangePreset;
+  queryScope: QueryScope;
   drillTo: (level: DrillLevel, selection?: SelectionState) => void;
   setTimeMode: (mode: TimeMode) => void;
   setRangePreset: (preset: RangePreset) => void;
@@ -37,6 +108,7 @@ const DrillDownContext = createContext<DrillDownContextValue>({
   level: 'world',
   timeMode: 'yoy',
   rangePreset: 'focus',
+  queryScope: { level: 'world', value: '' },
   drillTo: () => {},
   setTimeMode: () => {},
   setRangePreset: () => {},
@@ -53,16 +125,59 @@ export function DrillDownDashboard() {
   const [timeMode, setTimeMode] = useState<TimeMode>('yoy');
   const [rangePreset, setRangePreset] = useState<RangePreset>('focus');
   const [selections, setSelections] = useState<SelectionState>({});
+  const [queryScope, setQueryScope] = useState<QueryScope>({ level: 'world', value: '' });
+  // Ref so drillTo can read current selections synchronously without a stale closure.
+  const selectionsRef = useRef<SelectionState>({});
+  const airlinePrefillSeqRef = useRef(0);
   const [cacheStatus, setCacheStatus] = useState<DashboardCacheStatusResponse | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [dismissedFailure, setDismissedFailure] = useState(false);
 
-  // Non-destructive: preserve all prior selections, merge in the new payload
-  const drillTo = useCallback((newLevel: DrillLevel, selection?: SelectionState) => {
+  // Additive selections (sticky path/history for breadcrumb UX).
+  // queryScope is set from the target level + merged selections at call time so it is always
+  // exact — never inferred from the deepest non-null selection in history.
+  // For 'airline' drills the scope carries over from the prior geo level.
+  const buildMergedSelections = useCallback((selection?: SelectionState) => {
+    return selection ? { ...selectionsRef.current, ...selection } : selectionsRef.current;
+  }, []);
+
+  const commitDrill = useCallback((newLevel: DrillLevel, merged: SelectionState) => {
+    selectionsRef.current = merged;
+    setSelections(merged);
     setLevel(newLevel);
-    setSelections((prev) => ({ ...prev, ...selection }));
+    setQueryScope(toQueryScope(newLevel, merged));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
+
+  const drillTo = useCallback((newLevel: DrillLevel, selection?: SelectionState) => {
+    const merged = buildMergedSelections(selection);
+
+    if (newLevel === 'airline' && merged.airline?.id) {
+      const requestSeq = ++airlinePrefillSeqRef.current;
+
+      void (async () => {
+        try {
+          const homeBase = await getDashboardAirlineHomeBase({ airlineId: merged.airline!.id });
+          if (requestSeq !== airlinePrefillSeqRef.current) {
+            return;
+          }
+
+          const prefilled = buildAirlinePrefillSelections(merged, homeBase);
+          commitDrill('airline', prefilled);
+        } catch {
+          if (requestSeq !== airlinePrefillSeqRef.current) {
+            return;
+          }
+
+          commitDrill('airline', { airline: merged.airline ?? null });
+        }
+      })();
+
+      return;
+    }
+
+    commitDrill(newLevel, merged);
+  }, [buildMergedSelections, commitDrill]);
 
   useEffect(() => {
     const stored = readSharedRangePreset('focus');
@@ -132,7 +247,7 @@ export function DrillDownDashboard() {
   const showBootstrapGate = !isPreloadReady && !(isPreloadFailed && dismissedFailure);
 
   return (
-    <DrillDownContext.Provider value={{ level, timeMode, rangePreset, drillTo, setTimeMode, setRangePreset, selections }}>
+    <DrillDownContext.Provider value={{ level, timeMode, rangePreset, queryScope, drillTo, setTimeMode, setRangePreset, selections }}>
       <div className="space-y-4">
         {showBootstrapGate ? (
           <div className="rounded-2xl border border-border bg-card p-6 shadow-sm">
@@ -306,8 +421,7 @@ function StatusLine() {
     },
   ];
 
-  const LEVELS: DrillLevel[] = ['world', 'continent', 'country', 'airport', 'airline'];
-  const currentIdx = LEVELS.indexOf(level);
+  const currentIdx = LEVEL_ORDER.indexOf(level);
 
   const hasSelectionForLevel = (stepId: DrillLevel): boolean => {
     if (stepId === 'world') return true;
@@ -318,17 +432,13 @@ function StatusLine() {
     return false;
   };
 
-  const visibleSteps = steps.filter(
-    (s) => s.id === 'world' || s.id === level || hasSelectionForLevel(s.id),
-  );
-
   return (
     <div className="w-full px-2 sm:px-4">
       <div className="rounded-xl bg-slate-100/80 px-2 py-2 shadow-sm ring-1 ring-slate-200/70">
         <div className="flex w-full items-center justify-center overflow-x-auto [scrollbar-width:thin]">
           <div className="flex min-w-max items-center gap-2">
-            {visibleSteps.map((step, i) => {
-              const globalIdx = LEVELS.indexOf(step.id);
+            {steps.map((step, i) => {
+              const globalIdx = LEVEL_ORDER.indexOf(step.id);
               const isActive = globalIdx === currentIdx;
               const isClickable = globalIdx < currentIdx || hasSelectionForLevel(step.id);
 

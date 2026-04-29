@@ -14,15 +14,7 @@ export type AirlineRow = DashboardAirlinesRowResponse;
 
 
 export default function AirlineOverviewPanel() {
-  const { drillTo, level, selections } = useDrillDown();
-
-  // Compute geo filter based on the current drill-down level
-  const filterValue = useMemo(() => {
-    if (level === 'continent') return selections.continent?.name ?? '';
-    if (level === 'country') return selections.country?.countryCode ?? selections.country?.name ?? '';
-    if (level === 'airport') return selections.airport?.iata ?? '';
-    return '';
-  }, [level, selections]);
+  const { drillTo, queryScope } = useDrillDown();
 
   const PAGE_SIZE = 15;
   const [search, setSearch] = useState('');
@@ -44,7 +36,7 @@ export default function AirlineOverviewPanel() {
     setError(null);
     setLoading(true);
 
-    statisticsApi.getDashboardAirlines({ page: 0, pageSize: PAGE_SIZE, search, level, filterValue }).then((res) => {
+    statisticsApi.getDashboardAirlines({ page: 0, pageSize: PAGE_SIZE, search, level: queryScope.level, filterValue: queryScope.value }).then((res) => {
       if (!alive) return;
       setAirlines(res.rows);
       setHasMore(res.hasMore);
@@ -57,14 +49,14 @@ export default function AirlineOverviewPanel() {
     });
 
     return () => { alive = false; };
-  }, [search, level, filterValue]);
+  }, [search, queryScope.level, queryScope.value]);
 
   const loadMore = useCallback(() => {
     if (loading || !hasMore) return;
     let alive = true;
     setLoading(true);
 
-    statisticsApi.getDashboardAirlines({ page: page + 1, pageSize: PAGE_SIZE, search, level, filterValue }).then((res) => {
+    statisticsApi.getDashboardAirlines({ page: page + 1, pageSize: PAGE_SIZE, search, level: queryScope.level, filterValue: queryScope.value }).then((res) => {
       if (!alive) return;
       setAirlines((prev) => [...prev, ...res.rows]);
       setHasMore(res.hasMore);
@@ -76,7 +68,7 @@ export default function AirlineOverviewPanel() {
     });
 
     return () => { alive = false; };
-  }, [loading, hasMore, page, search, level, filterValue]);
+  }, [loading, hasMore, page, search, queryScope.level, queryScope.value]);
 
   // Observe the loader div relative to the scroll container, not the viewport
   useEffect(() => {

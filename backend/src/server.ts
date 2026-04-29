@@ -8,6 +8,7 @@ import { initializeTimescaleDB } from './config/database';
 import routes from './routes';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { schedulerService } from './services/preloader-preset';
+import { schedulerService as botSchedulerService } from './services/schedulerService';
 import {
   getDashboardQueryCacheFreshness,
   markDashboardPreloadAsCompleted,
@@ -139,6 +140,7 @@ async function startServer(): Promise<void> {
     // ✅ เริ่ม Scheduled Jobs (ถ้าเปิดใช้งาน)
     if (process.env.ENABLE_SCHEDULED_JOBS === 'true') {
       schedulerService.startAll();
+      botSchedulerService.startAll();
     } else {
       console.log('⚠️  Scheduled jobs are disabled (set ENABLE_SCHEDULED_JOBS=true in .env to enable)');
     }

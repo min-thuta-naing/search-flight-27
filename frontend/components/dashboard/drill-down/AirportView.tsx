@@ -8,7 +8,9 @@ import { type MonthCaptionProps, useDayPicker } from 'react-day-picker';
 import {
   ResponsiveContainer,
   AreaChart,
+  ComposedChart,
   Area,
+  Line,
   BarChart,
   Bar,
   CartesianGrid,
@@ -335,6 +337,7 @@ export function AirportView() {
         departureFlights: 0,
         arrivalFlights: 0,
         flights: 0,
+        cancelledFlights: 0,
       })),
       monthLabels: airportTrend?.monthLabels ?? [...THAI_MONTH_LABELS],
     }),
@@ -688,8 +691,8 @@ function TrendSparkChart(
     trend,
   }: {
     trend: {
-      daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number }>;
-      monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number }>;
+      daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number; cancelledFlights: number }>;
+      monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number; cancelledFlights: number }>;
       monthLabels: string[];
     };
   },
@@ -717,7 +720,7 @@ function TrendSparkChart(
   ];
 
   // Mirror flight-routes-chart behavior: trim only leading/trailing zero periods.
-  const trimZeroEdges = <T extends { total: number }>(rows: T[]): T[] => {
+  const trimZeroEdges = <T extends { total: number; cancelled: number }>(rows: T[]): T[] => {
     if (!rows.length) return rows;
 
     let firstIndex = -1;
@@ -737,12 +740,13 @@ function TrendSparkChart(
   };
 
   // For monthly axes, keep month categories but avoid drawing values for zero months.
-  const toRenderableMonthly = <T extends { day: string; dep: number; arr: number; total: number }>(rows: T[]) =>
+  const toRenderableMonthly = <T extends { day: string; dep: number; arr: number; total: number; cancelled: number }>(rows: T[]) =>
     rows.map((row) => ({
       ...row,
       dep: row.dep === 0 ? null : row.dep,
       arr: row.arr === 0 ? null : row.arr,
       total: row.total === 0 ? null : row.total,
+      cancelled: row.cancelled === 0 ? null : row.cancelled,
     }));
 
   const now = new Date();
@@ -755,6 +759,7 @@ function TrendSparkChart(
     dep: MONTHLY[i]?.departureFlights || 0,
     arr: MONTHLY[i]?.arrivalFlights || 0,
     total: MONTHLY[i]?.flights || 0,
+    cancelled: MONTHLY[i]?.cancelledFlights || 0,
   }));
 
   const yoyData = toRenderableMonthly(trimZeroEdges(yoyDataRaw));
@@ -810,7 +815,7 @@ function TrendSparkChart(
         </div>
       </div>
       <ResponsiveContainer width="100%" minHeight={180} height={192}>
-        <AreaChart
+        <ComposedChart
           data={tData}
           margin={{
             top: 10,
@@ -842,10 +847,7 @@ function TrendSparkChart(
           />
           <Tooltip
             contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '14px' }}
-            formatter={(value: number | string | undefined, name: string | undefined) => [
-              `${value ?? '-'} เที่ยวบิน`,
-              name ?? ''
-            ]}
+            formatter={(value: any, name: any) => [`${value ?? '-'} เที่ยวบิน`, name ?? '']}
           />
           {activeSeries === 'all' ? (
             <Area
@@ -881,6 +883,16 @@ function TrendSparkChart(
               />
             </>
           )}
+          <Line
+            type="monotone"
+            dataKey="cancelled"
+            name="ยกเลิก"
+            connectNulls={false}
+            stroke="hsl(0 84% 55%)"
+            strokeWidth={2}
+            strokeDasharray="5 3"
+            dot={false}
+          />
           <ReferenceDot
             x={AP_MONTHS[nowIdx]}
             y={activeSeries === 'all'
@@ -894,7 +906,7 @@ function TrendSparkChart(
             strokeWidth={2}
           />
           <ReferenceDot x={peakEntry.day} y={peak} r={7} fill="#ff9f43" stroke="#fff" strokeWidth={2} />
-        </AreaChart>
+        </ComposedChart>
       </ResponsiveContainer>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between text-[15px] font-medium text-muted-foreground mt-2.5">
         <span>{dateRange}</span>
@@ -907,6 +919,7 @@ function TrendSparkChart(
               <span style={{ color: getSeriesTone('arr').lineColorCss }} className="font-bold">{'\u25CF'} ขาเข้า</span>
             </>
           )}
+          <span style={{ color: 'hsl(0 84% 55%)' }} className="font-bold">{'——'} ยกเลิก</span>
           <span style={{ color: 'var(--chart-current)' }} className="font-bold">
             {'\u25CF'} เดือนนี้
             {currentPeriodDetail ? ` \u00B7 ${currentPeriodDetail}` : ''}
@@ -923,8 +936,8 @@ function SeasonalTrendChart(
     trend,
   }: {
     trend: {
-      daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number }>;
-      monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number }>;
+      daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number; cancelledFlights: number }>;
+      monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number; cancelledFlights: number }>;
       monthLabels: string[];
     };
   },

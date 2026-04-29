@@ -102,13 +102,6 @@ function formatDateInput(date: Date) {
 
 // ─── drill helpers ───────────────────────────────────────────────────────────
 
-function getPreviousLevel(selections: { continent?: unknown; country?: unknown; airport?: unknown }): DrillLevel {
-  if (selections.airport) return 'airport';
-  if (selections.country) return 'country';
-  if (selections.continent) return 'continent';
-  return 'world';
-}
-
 // ─── sub-components ──────────────────────────────────────────────────────────
 
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
@@ -196,8 +189,8 @@ function InfiniteCountryTable({
   totalFlights: number;
   loading: boolean;
   hasMore: boolean;
-  loaderRef: React.RefObject<HTMLDivElement>;
-  scrollRef: React.RefObject<HTMLDivElement>;
+  loaderRef: React.RefObject<HTMLDivElement | null>;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
   if (!rows.length && !loading) {
     return (
@@ -283,17 +276,8 @@ function DomIntlPie({ domestic, international }: { domestic: number; internation
 // ─── main view ───────────────────────────────────────────────────────────────
 
 export function AirlineView() {
-  const { drillTo, level, selections, rangePreset, setRangePreset } = useDrillDown();
+  const { drillTo, selections, rangePreset, setRangePreset, queryScope } = useDrillDown();
   const airline = selections.airline;
-
-  const previousLevel = useMemo(() => getPreviousLevel(selections), [selections]);
-
-  const filterValue = useMemo(() => {
-    if (previousLevel === 'continent') return selections.continent?.name ?? '';
-    if (previousLevel === 'country') return selections.country?.countryCode ?? selections.country?.name ?? '';
-    if (previousLevel === 'airport') return selections.airport?.iata ?? '';
-    return '';
-  }, [previousLevel, selections]);
 
   // ── Date range state ─────────────────────────────────────────────────────
   const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined);
@@ -331,7 +315,7 @@ export function AirlineView() {
     setLoading(true);
     setError(null);
     statisticsApi
-      .getDashboardAirlineDetail({ airlineId: airline.id, level: previousLevel, filterValue, startDate, endDate })
+      .getDashboardAirlineDetail({ airlineId: airline.id, level: queryScope.level, filterValue: queryScope.value, startDate, endDate })
       .then((data) => { if (!alive) return; setDetail(data); setLoading(false); })
       .catch((err) => {
         if (!alive) return;
@@ -339,7 +323,7 @@ export function AirlineView() {
         setLoading(false);
       });
     return () => { alive = false; };
-  }, [airline?.id, previousLevel, filterValue, startDate, endDate]);
+  }, [airline?.id, queryScope.level, queryScope.value, startDate, endDate]);
 
   // ── Trend data (for FlightRoutesChart) ──────────────────────────────────
   const [trendRows, setTrendRows] = useState<Array<{ date: string; flights: number; departureFlights: number; arrivalFlights: number }>>([]);
@@ -351,11 +335,11 @@ export function AirlineView() {
     setTrendLoading(true);
     setTrendRows([]);
     statisticsApi
-      .getDashboardAirlineTrend({ airlineId: airline.id, level: previousLevel, filterValue, startDate, endDate })
+      .getDashboardAirlineTrend({ airlineId: airline.id, level: queryScope.level, filterValue: queryScope.value, startDate, endDate })
       .then((data) => { if (!alive) return; setTrendRows(data.rows); setTrendLoading(false); })
       .catch(() => { if (!alive) return; setTrendLoading(false); });
     return () => { alive = false; };
-  }, [airline?.id, previousLevel, filterValue, startDate, endDate]);
+  }, [airline?.id, queryScope.level, queryScope.value, startDate, endDate]);
 
   // ── Origin airports infinite scroll ─────────────────────────────────────
   const [originRows, setOriginRows] = useState<DashboardAirlineAirportRow[]>([]);
@@ -373,7 +357,7 @@ export function AirlineView() {
     setOriginHasMore(true);
     setOriginLoading(true);
     statisticsApi
-      .getDashboardAirlineOriginAirports({ airlineId: airline.id, level: previousLevel, filterValue, offset: 0, pageSize: INIT_SIZE, startDate, endDate })
+      .getDashboardAirlineOriginAirports({ airlineId: airline.id, level: queryScope.level, filterValue: queryScope.value, offset: 0, pageSize: INIT_SIZE, startDate, endDate })
       .then((res) => {
         if (!alive) return;
         setOriginRows(res.rows);
@@ -383,13 +367,13 @@ export function AirlineView() {
       })
       .catch(() => { if (!alive) return; setOriginLoading(false); });
     return () => { alive = false; };
-  }, [airline?.id, previousLevel, filterValue, startDate, endDate]);
+  }, [airline?.id, queryScope.level, queryScope.value, startDate, endDate]);
 
   const loadMoreOrigin = useCallback(() => {
     if (originLoading || !originHasMore || !airline?.id) return;
     setOriginLoading(true);
     statisticsApi
-      .getDashboardAirlineOriginAirports({ airlineId: airline.id, level: previousLevel, filterValue, offset: originLoaded, pageSize: LOAD_MORE_SIZE, startDate, endDate })
+      .getDashboardAirlineOriginAirports({ airlineId: airline.id, level: queryScope.level, filterValue: queryScope.value, offset: originLoaded, pageSize: LOAD_MORE_SIZE, startDate, endDate })
       .then((res) => {
         setOriginRows((prev) => [...prev, ...res.rows]);
         setOriginLoaded((prev) => prev + res.rows.length);
@@ -397,7 +381,7 @@ export function AirlineView() {
         setOriginLoading(false);
       })
       .catch(() => { setOriginLoading(false); });
-  }, [airline?.id, previousLevel, filterValue, originLoading, originHasMore, originLoaded, startDate, endDate]);
+  }, [airline?.id, queryScope.level, queryScope.value, originLoading, originHasMore, originLoaded, startDate, endDate]);
 
   useEffect(() => {
     if (!originHasMore || originLoading) return;
@@ -428,7 +412,7 @@ export function AirlineView() {
     setDestHasMore(true);
     setDestLoading(true);
     statisticsApi
-      .getDashboardAirlineDestAirports({ airlineId: airline.id, level: previousLevel, filterValue, offset: 0, pageSize: INIT_SIZE, startDate, endDate })
+      .getDashboardAirlineDestAirports({ airlineId: airline.id, level: queryScope.level, filterValue: queryScope.value, offset: 0, pageSize: INIT_SIZE, startDate, endDate })
       .then((res) => {
         if (!alive) return;
         setDestRows(res.rows);
@@ -438,13 +422,13 @@ export function AirlineView() {
       })
       .catch(() => { if (!alive) return; setDestLoading(false); });
     return () => { alive = false; };
-  }, [airline?.id, previousLevel, filterValue, startDate, endDate]);
+  }, [airline?.id, queryScope.level, queryScope.value, startDate, endDate]);
 
   const loadMoreDest = useCallback(() => {
     if (destLoading || !destHasMore || !airline?.id) return;
     setDestLoading(true);
     statisticsApi
-      .getDashboardAirlineDestAirports({ airlineId: airline.id, level: previousLevel, filterValue, offset: destLoaded, pageSize: LOAD_MORE_SIZE, startDate, endDate })
+      .getDashboardAirlineDestAirports({ airlineId: airline.id, level: queryScope.level, filterValue: queryScope.value, offset: destLoaded, pageSize: LOAD_MORE_SIZE, startDate, endDate })
       .then((res) => {
         setDestRows((prev) => [...prev, ...res.rows]);
         setDestLoaded((prev) => prev + res.rows.length);
@@ -452,7 +436,7 @@ export function AirlineView() {
         setDestLoading(false);
       })
       .catch(() => { setDestLoading(false); });
-  }, [airline?.id, previousLevel, filterValue, destLoading, destHasMore, destLoaded, startDate, endDate]);
+  }, [airline?.id, queryScope.level, queryScope.value, destLoading, destHasMore, destLoaded, startDate, endDate]);
 
   useEffect(() => {
     if (!destHasMore || destLoading) return;
@@ -483,7 +467,7 @@ export function AirlineView() {
     setCountryHasMore(true);
     setCountryLoading(true);
     statisticsApi
-      .getDashboardAirlineDestCountries({ airlineId: airline.id, level: previousLevel, filterValue, offset: 0, pageSize: INIT_SIZE, startDate, endDate })
+      .getDashboardAirlineDestCountries({ airlineId: airline.id, level: queryScope.level, filterValue: queryScope.value, offset: 0, pageSize: INIT_SIZE, startDate, endDate })
       .then((res) => {
         if (!alive) return;
         setCountryRows(res.rows);
@@ -493,13 +477,13 @@ export function AirlineView() {
       })
       .catch(() => { if (!alive) return; setCountryLoading(false); });
     return () => { alive = false; };
-  }, [airline?.id, previousLevel, filterValue, startDate, endDate]);
+  }, [airline?.id, queryScope.level, queryScope.value, startDate, endDate]);
 
   const loadMoreCountries = useCallback(() => {
     if (countryLoading || !countryHasMore || !airline?.id) return;
     setCountryLoading(true);
     statisticsApi
-      .getDashboardAirlineDestCountries({ airlineId: airline.id, level: previousLevel, filterValue, offset: countryLoaded, pageSize: LOAD_MORE_SIZE, startDate, endDate })
+      .getDashboardAirlineDestCountries({ airlineId: airline.id, level: queryScope.level, filterValue: queryScope.value, offset: countryLoaded, pageSize: LOAD_MORE_SIZE, startDate, endDate })
       .then((res) => {
         setCountryRows((prev) => [...prev, ...res.rows]);
         setCountryLoaded((prev) => prev + res.rows.length);
@@ -507,7 +491,7 @@ export function AirlineView() {
         setCountryLoading(false);
       })
       .catch(() => { setCountryLoading(false); });
-  }, [airline?.id, previousLevel, filterValue, countryLoading, countryHasMore, countryLoaded, startDate, endDate]);
+  }, [airline?.id, queryScope.level, queryScope.value, countryLoading, countryHasMore, countryLoaded, startDate, endDate]);
 
   useEffect(() => {
     if (!countryHasMore || countryLoading) return;
@@ -586,7 +570,7 @@ export function AirlineView() {
         <div className="text-base font-semibold">ไม่พบข้อมูลสายการบิน</div>
         <div className="mt-1.5 text-sm text-muted-foreground">กลับไปเลือกสายการบินอีกครั้ง</div>
         <div className="mt-4">
-          <BackButton label="กลับ" onClick={() => drillTo(previousLevel)} />
+          <BackButton label="กลับ" onClick={() => drillTo(queryScope.level)} />
         </div>
       </div>
     );
@@ -604,20 +588,20 @@ export function AirlineView() {
           </div>
           <h2 className="text-xl font-bold break-words">{airlineName}</h2>
           <p className="text-[15px] text-muted-foreground mt-1">
-            {previousLevel === 'world' && 'ข้อมูลทั่วโลก'}
-            {previousLevel === 'continent' && `ทวีป: ${selections.continent?.name ?? ''}`}
-            {previousLevel === 'country' && `ประเทศ: ${selections.country?.name ?? ''}`}
-            {previousLevel === 'airport' && `สนามบิน: ${selections.airport?.iata ?? ''} · ${selections.airport?.name ?? ''}`}
+            {queryScope.level === 'world' && 'ข้อมูลทั่วโลก'}
+            {queryScope.level === 'continent' && `ทวีป: ${selections.continent?.name ?? ''}`}
+            {queryScope.level === 'country' && `ประเทศ: ${selections.country?.name ?? ''}`}
+            {queryScope.level === 'airport' && `สนามบิน: ${selections.airport?.iata ?? ''} · ${selections.airport?.name ?? ''}`}
           </p>
           <div className="mt-3">
             <BackButton
               label={
-                previousLevel === 'world' ? 'กลับสู่ภาพรวมโลก'
-                : previousLevel === 'continent' ? 'กลับสู่ทวีป'
-                : previousLevel === 'country' ? 'กลับสู่ประเทศ'
+                queryScope.level === 'world' ? 'กลับสู่ภาพรวมโลก'
+                : queryScope.level === 'continent' ? 'กลับสู่ทวีป'
+                : queryScope.level === 'country' ? 'กลับสู่ประเทศ'
                 : 'กลับสู่สนามบิน'
               }
-              onClick={() => drillTo(previousLevel)}
+              onClick={() => drillTo(queryScope.level)}
             />
           </div>
         </div>

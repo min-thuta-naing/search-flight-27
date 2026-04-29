@@ -196,6 +196,7 @@ export interface DashboardAirportTrendDailyPoint {
   departureFlights: number;
   arrivalFlights: number;
   flights: number;
+  cancelledFlights: number;
   deltaPercent: number | null;
 }
 
@@ -214,6 +215,7 @@ export interface DashboardAirportTrendsResponse {
     departureFlights: number;
     arrivalFlights: number;
     flights: number;
+    cancelledFlights: number;
   }>;
 }
 
@@ -2523,6 +2525,21 @@ export class DashboardSummaryService {
           AND departure_date::date <= $2::date
           AND UPPER(TRIM(arr_airport)) = $1
       ),
+      cancelled_rows AS (
+        SELECT departure_date::date AS flight_date
+        FROM departure_flight_paths
+        WHERE departure_date::date >= ($2::date - INTERVAL '34 day')
+          AND departure_date::date <= $2::date
+          AND (UPPER(TRIM(dep_airport)) = $1 OR UPPER(TRIM(arr_airport)) = $1)
+          AND status = 'cancelled'
+        UNION ALL
+        SELECT departure_date::date AS flight_date
+        FROM arrival_flight_paths
+        WHERE departure_date::date >= ($2::date - INTERVAL '34 day')
+          AND departure_date::date <= $2::date
+          AND (UPPER(TRIM(dep_airport)) = $1 OR UPPER(TRIM(arr_airport)) = $1)
+          AND status = 'cancelled'
+      ),
       dep_by_day AS (
         SELECT flight_date, COUNT(*)::int AS dep_flights
         FROM dep_rows
@@ -2531,6 +2548,11 @@ export class DashboardSummaryService {
       arr_by_day AS (
         SELECT flight_date, COUNT(*)::int AS arr_flights
         FROM arr_rows
+        GROUP BY flight_date
+      ),
+      cancelled_by_day AS (
+        SELECT flight_date, COUNT(*)::int AS cancelled_flights
+        FROM cancelled_rows
         GROUP BY flight_date
       ),
       all_days AS (
@@ -2543,10 +2565,12 @@ export class DashboardSummaryService {
           d.flight_date,
           COALESCE(dep.dep_flights, 0)::int AS departure_flights,
           COALESCE(arr.arr_flights, 0)::int AS arrival_flights,
-          (COALESCE(dep.dep_flights, 0) + COALESCE(arr.arr_flights, 0))::int AS flights
+          (COALESCE(dep.dep_flights, 0) + COALESCE(arr.arr_flights, 0))::int AS flights,
+          COALESCE(c.cancelled_flights, 0)::int AS cancelled_flights
         FROM all_days d
         LEFT JOIN dep_by_day dep ON dep.flight_date = d.flight_date
         LEFT JOIN arr_by_day arr ON arr.flight_date = d.flight_date
+        LEFT JOIN cancelled_by_day c ON c.flight_date = d.flight_date
       ),
       with_lag AS (
         SELECT
@@ -2554,6 +2578,7 @@ export class DashboardSummaryService {
           departure_flights,
           arrival_flights,
           flights,
+          cancelled_flights,
           LAG(flights) OVER (ORDER BY flight_date ASC) AS prev_flights
         FROM merged
       )
@@ -2562,6 +2587,7 @@ export class DashboardSummaryService {
         departure_flights,
         arrival_flights,
         flights,
+        cancelled_flights,
         CASE
           WHEN prev_flights IS NULL OR prev_flights = 0 THEN NULL
           ELSE ((flights - prev_flights)::numeric / prev_flights::numeric) * 100
@@ -2597,6 +2623,21 @@ export class DashboardSummaryService {
           AND departure_date::date < make_date($2 + 1, 1, 1)
           AND UPPER(TRIM(arr_airport)) = $1
       ),
+      cancelled_rows AS (
+        SELECT EXTRACT(MONTH FROM departure_date)::int AS month_num
+        FROM departure_flight_paths
+        WHERE departure_date::date >= make_date($2, 1, 1)
+          AND departure_date::date < make_date($2 + 1, 1, 1)
+          AND (UPPER(TRIM(dep_airport)) = $1 OR UPPER(TRIM(arr_airport)) = $1)
+          AND status = 'cancelled'
+        UNION ALL
+        SELECT EXTRACT(MONTH FROM departure_date)::int AS month_num
+        FROM arrival_flight_paths
+        WHERE departure_date::date >= make_date($2, 1, 1)
+          AND departure_date::date < make_date($2 + 1, 1, 1)
+          AND (UPPER(TRIM(dep_airport)) = $1 OR UPPER(TRIM(arr_airport)) = $1)
+          AND status = 'cancelled'
+      ),
       dep_counts AS (
         SELECT month_num, COUNT(*)::int AS departure_flights
         FROM dep_rows
@@ -2606,15 +2647,22 @@ export class DashboardSummaryService {
         SELECT month_num, COUNT(*)::int AS arrival_flights
         FROM arr_rows
         GROUP BY month_num
+      ),
+      cancelled_counts AS (
+        SELECT month_num, COUNT(*)::int AS cancelled_flights
+        FROM cancelled_rows
+        GROUP BY month_num
       )
       SELECT
         m.month_num,
         COALESCE(dep.departure_flights, 0)::int AS departure_flights,
         COALESCE(arr.arrival_flights, 0)::int AS arrival_flights,
-        (COALESCE(dep.departure_flights, 0) + COALESCE(arr.arrival_flights, 0))::int AS flights
+        (COALESCE(dep.departure_flights, 0) + COALESCE(arr.arrival_flights, 0))::int AS flights,
+        COALESCE(cancelled.cancelled_flights, 0)::int AS cancelled_flights
       FROM generate_series(1, 12) AS m(month_num)
       LEFT JOIN dep_counts dep ON dep.month_num = m.month_num
       LEFT JOIN arr_counts arr ON arr.month_num = m.month_num
+      LEFT JOIN cancelled_counts cancelled ON cancelled.month_num = m.month_num
       ORDER BY m.month_num ASC
     `;
 
@@ -2637,20 +2685,23 @@ export class DashboardSummaryService {
       departure_flights: number;
       arrival_flights: number;
       flights: number;
+      cancelled_flights: number;
       delta_percent: number | null;
     }>).map((row) => ({
       date: formatDateForQuery(new Date(row.flight_date)),
       departureFlights: Number(row.departure_flights) || 0,
       arrivalFlights: Number(row.arrival_flights) || 0,
       flights: Number(row.flights) || 0,
+      cancelledFlights: Number(row.cancelled_flights) || 0,
       deltaPercent: row.delta_percent == null ? null : Number(row.delta_percent),
     }));
 
-    const monthly = (monthlyResult.rows as Array<{ month_num: number; departure_flights: number; arrival_flights: number; flights: number }>).map((row) => ({
+    const monthly = (monthlyResult.rows as Array<{ month_num: number; departure_flights: number; arrival_flights: number; flights: number; cancelled_flights: number }>).map((row) => ({
       month: Number(row.month_num) || 0,
       departureFlights: Number(row.departure_flights) || 0,
       arrivalFlights: Number(row.arrival_flights) || 0,
       flights: Number(row.flights) || 0,
+      cancelledFlights: Number(row.cancelled_flights) || 0,
     }));
 
     return {

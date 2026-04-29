@@ -16,3 +16,4 @@ bstart.bat
 FlightDashboard_Implementation_Plan.md
 country_airports_summary.csv
 .claude/
+docker-compose.yml

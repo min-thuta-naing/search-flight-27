@@ -326,6 +326,7 @@ export interface DashboardAirportTrendDailyPointResponse {
   departureFlights: number;
   arrivalFlights: number;
   flights: number;
+  cancelledFlights?: number;
   deltaPercent: number | null;
 }
 
@@ -344,6 +345,7 @@ export interface DashboardAirportTrendsResponse {
     departureFlights: number;
     arrivalFlights: number;
     flights: number;
+    cancelledFlights?: number;
   }>;
 }
 
@@ -1150,4 +1152,10 @@ export class StatisticsApi {
 }
 
 export const statisticsApi = new StatisticsApi();
+
+export async function getDashboardAirlineHomeBase(
+  options: Parameters<StatisticsApi['getDashboardAirlineHomeBase']>[0],
+) {
+  return statisticsApi.getDashboardAirlineHomeBase(options);
+}
 

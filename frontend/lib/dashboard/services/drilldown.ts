@@ -201,8 +201,8 @@ export async function getAirportInsights(
 const THAI_MONTH_LABELS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'] as const;
 
 export interface AirportTrendSeries {
-  daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number; delta: number | null }>;
-  monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number }>;
+  daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number; cancelledFlights: number; delta: number | null }>;
+  monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number; cancelledFlights: number }>;
   monthLabels: string[];
 }
 
@@ -220,12 +220,14 @@ export async function getAirportTrends(
           departureFlights: point.departureFlights ?? Math.round(point.flights * 0.5),
           arrivalFlights: point.arrivalFlights ?? (point.flights - Math.round(point.flights * 0.5)),
           flights: point.flights,
+          cancelledFlights: point.cancelledFlights ?? 0,
         }
       : {
           month: monthNumber,
           departureFlights: 0,
           arrivalFlights: 0,
           flights: 0,
+          cancelledFlights: 0,
         };
   });
 
@@ -235,6 +237,7 @@ export async function getAirportTrends(
       departureFlights: point.departureFlights ?? Math.round(point.flights * 0.5),
       arrivalFlights: point.arrivalFlights ?? (point.flights - Math.round(point.flights * 0.5)),
       flights: point.flights,
+      cancelledFlights: point.cancelledFlights ?? 0,
       delta: point.deltaPercent,
     })),
     monthly,

@@ -34,7 +34,7 @@ services:
     environment:
       PORT: 3001
       NODE_ENV: production
-      DB_HOST: postgres
+      DB_HOST: host.docker.internal
       DB_PORT: 5432
       DB_NAME: flight_search
       DB_USER: postgres
@@ -51,9 +51,6 @@ services:
       AUTO_SYNC_AIRPORTS: "true"
     ports:
       - "3001:3001"
-    depends_on:
-      postgres:
-        condition: service_healthy
     volumes:
       - ./backend/data:/app/data
     networks:
@@ -91,5 +88,3 @@ volumes:
 networks:
   flight_search_network:
     driver: bridge
-
-

@@ -232,12 +232,22 @@ function toQueryValue(value: unknown): string {
 }
 
 function buildDashboardQueryCacheKey(scope: string, query: Request['query']): string {
+  const startDate = toQueryValue(query.start_date);
+  const endDate = toQueryValue(query.end_date);
+  // When both explicit dates are present, window_days is redundant — the date range
+  // fully determines the query. Dropping it lets preload-warmed entries (which always
+  // carry window_days=15) be reused by runtime requests that carry any window_days value
+  // alongside the same explicit dates, and vice-versa.
+  const windowDaysPart = startDate !== '' && endDate !== ''
+    ? null
+    : `window_days=${toQueryValue(query.window_days)}`;
+
   return [
     scope,
     `date=${toQueryValue(query.date)}`,
-    `window_days=${toQueryValue(query.window_days)}`,
-    `start_date=${toQueryValue(query.start_date)}`,
-    `end_date=${toQueryValue(query.end_date)}`,
+    windowDaysPart,
+    `start_date=${startDate}`,
+    `end_date=${endDate}`,
     `airport=${toQueryValue(query.airport)}`,
     `country=${toQueryValue(query.country)}`,
     `continent=${toQueryValue(query.continent)}`,
@@ -245,7 +255,7 @@ function buildDashboardQueryCacheKey(scope: string, query: Request['query']): st
     `include_core=${toQueryValue(query.include_core)}`,
     `include_seasonal=${toQueryValue(query.include_seasonal)}`,
     `include_top_routes=${toQueryValue(query.include_top_routes)}`,
-  ].join('|');
+  ].filter((part): part is string => part !== null).join('|');
 }
 
 function formatDateForKey(date: Date): string {

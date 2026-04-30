@@ -4,7 +4,7 @@ import React, { useState, useCallback, createContext, useContext, useEffect, use
 import { ArrowUp } from 'lucide-react';
 import type { DrillLevel, TimeMode, ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } from '@/lib/dashboard/drill-down-data';
-import { getDashboardCacheStatus, type DashboardCacheStatusResponse } from '@/lib/dashboard/services/drilldown';
+import { usePreloadStatus } from '@/lib/dashboard/preload/usePreloadStatus';
 import { getDashboardAirlineHomeBase, type DashboardAirlineHomeBaseResponse } from '@/lib/api/statistics-api';
 import { readSharedRangePreset, writeSharedRangePreset } from '@/lib/dashboard/range-preset-store';
 import { Button } from '@/components/ui/button';
@@ -144,8 +144,7 @@ export function DrillDownDashboard() {
   // Ref so drillTo can read current queryScope synchronously (used to freeze airline scope at drill time).
   const queryScopeRef = useRef<QueryScope>({ level: 'world', value: '' });
   const airlinePrefillSeqRef = useRef(0);
-  const [cacheStatus, setCacheStatus] = useState<DashboardCacheStatusResponse | null>(null);
-  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const { cacheStatus, bootstrapError } = usePreloadStatus();
   const [dismissedFailure, setDismissedFailure] = useState(false);
 
   // Additive selections (sticky path/history for breadcrumb UX).
@@ -213,51 +212,6 @@ export function DrillDownDashboard() {
   useEffect(() => {
     writeSharedRangePreset(rangePreset);
   }, [rangePreset]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-    const pollStatus = async () => {
-      let shouldContinue = true;
-
-      try {
-        const status = await getDashboardCacheStatus();
-        if (cancelled) {
-          return;
-        }
-
-        setCacheStatus(status);
-        setBootstrapError(null);
-
-        if (status.preload.phase === 'failed' && status.preload.error) {
-          setBootstrapError(status.preload.error);
-        }
-
-        if (status.preload.phase !== 'running') {
-          shouldContinue = false;
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setBootstrapError(error instanceof Error ? error.message : 'Failed to load dashboard preload status');
-        }
-        shouldContinue = false;
-      } finally {
-        if (!cancelled && shouldContinue) {
-          timeoutId = setTimeout(pollStatus, 3000);
-        }
-      }
-    };
-
-    void pollStatus();
-
-    return () => {
-      cancelled = true;
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-    };
-  }, []);
 
   const preloadPhase = cacheStatus?.preload.phase ?? 'idle';
   const preloadMinutes = cacheStatus?.preload.durationMinutes ?? 0;

@@ -30,12 +30,12 @@ import {
   getDashboardTopCountries,
   getDashboardTopAirports,
   getDashboardTopDestinations,
-  getDashboardCacheStatus,
   type DashboardDateBoundsResponse,
   type DashboardSummaryResponse,
   type DashboardTopRanksResponse,
   type DashboardTopDestinationsResponse,
 } from '@/lib/dashboard/services/drilldown';
+import { useWorldPreloadGate } from '@/lib/dashboard/preload/useWorldPreloadGate';
 import type {
   DashboardContinentCardResponse,
 } from '@/lib/api/statistics-api';
@@ -55,8 +55,6 @@ import type { KPIItem } from './DrillDownDashboard';
 import type { RangePreset } from './DrillDownDashboard';
 import type { AirportInfo, CountryData } from '@/types/dashboard';
 import { cn } from '@/lib/utils';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
 const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'xl:h-[540px]';
 const COUNTRY_DISPLAY_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
@@ -100,7 +98,6 @@ type TopAirportViewRow = {
   deltaPercent: number;
 };
 
-type PreloadState = 'idle' | 'running' | 'ready' | 'failed';
 const PRELOAD_GATE_MAX_WAIT_MS = 15_000;
 
 const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
@@ -255,11 +252,9 @@ function parseContinentCountryCount(value: string) {
 
 export function WorldView() {
   const { drillTo, timeMode, rangePreset, setRangePreset } = useDrillDown();
-  const presetPreloadDoneRef = useRef(false);
-  const preloadGateStartRef = useRef<number | null>(null);
-  const [dashboardDateBounds, setDashboardDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
-  const [presetPreloadState, setPresetPreloadState] = useState<PreloadState>('idle');
   const [hydratedNow, setHydratedNow] = useState<Date | null>(null);
+  const { presetPreloadState, gateStartedAtMsRef } = useWorldPreloadGate(!!hydratedNow);
+  const [dashboardDateBounds, setDashboardDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
   const initialPresetRange = useMemo<DateRange | undefined>(
     () => (hydratedNow ? buildPresetRange(rangePreset, hydratedNow, dashboardDateBounds) : undefined),
     [rangePreset, dashboardDateBounds, hydratedNow],
@@ -333,93 +328,6 @@ export function WorldView() {
   }, []);
 
   useEffect(() => {
-    if (!hydratedNow) {
-      return;
-    }
-
-    if (presetPreloadDoneRef.current) {
-      return;
-    }
-
-    let alive = true;
-    presetPreloadDoneRef.current = true;
-    preloadGateStartRef.current = Date.now();
-    setPresetPreloadState('running');
-
-    const pingBackendHealth = async () => {
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 5000);
-
-      try {
-        const response = await fetch(`${API_BASE_URL}/health`, {
-          method: 'GET',
-          signal: controller.signal,
-        });
-        console.debug('[WorldView] backend health status', {
-          status: response.status,
-          ok: response.ok,
-        });
-      } catch (error) {
-        console.warn('[WorldView] backend health ping failed', {
-          message: error instanceof Error ? error.message : String(error),
-        });
-      } finally {
-        window.clearTimeout(timeout);
-      }
-    };
-
-    const wait = (ms: number) => new Promise<void>((resolve) => {
-      window.setTimeout(resolve, ms);
-    });
-
-    const waitForBackendPreloadReady = async () => {
-      await pingBackendHealth();
-
-      const timeoutAt = Date.now() + 180_000;
-      while (alive && Date.now() < timeoutAt) {
-        try {
-          const status = await getDashboardCacheStatus();
-          console.debug('[WorldView] backend preload status', {
-            phase: status.preload.phase,
-            inFlightEntries: status.queryCache.inFlightEntries,
-            cacheEntries: status.queryCache.cacheEntries,
-          });
-
-          if (status.preload.phase === 'failed') {
-            if (alive) {
-              setPresetPreloadState('failed');
-            }
-            return;
-          }
-
-          if (status.preload.phase === 'completed' || status.queryCache.inFlightEntries <= 0) {
-            if (alive) {
-              setPresetPreloadState('ready');
-            }
-            return;
-          }
-        } catch (error) {
-          console.warn('[WorldView] preload status polling failed', {
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-
-        await wait(3000);
-      }
-
-      if (alive) {
-        setPresetPreloadState('failed');
-      }
-    };
-
-    void waitForBackendPreloadReady();
-
-    return () => {
-      alive = false;
-    };
-  }, [hydratedNow]);
-
-  useEffect(() => {
     if (rangePreset === 'all' && !dashboardDateBounds?.minDate) {
       setLoading(true);
       setTopRanksLoading(true);
@@ -461,8 +369,10 @@ export function WorldView() {
     const cacheKey = isPreloadedPresetMode
       ? `preset:${durationMode}`
       : `${startDate}__${endDate}`;
-    const queryOptions = isPreloadedPresetMode
-      ? { windowDays: activePresetWindowDays }
+    // Preset mode: use UTC-based dates to match the backend preload's buildPresetDateRange().
+    // Non-preset mode: use local-date strings from the date picker as-is.
+    const queryOptions = isPreloadedPresetMode && durationMode && durationMode !== 'all'
+      ? buildPresetUtcQueryDates(durationMode as Exclude<RangePreset, 'all'>)
       : { startDate, endDate };
     const summaryCacheState = getWorldSummaryCacheState(cacheKey);
     const topRanksCacheState = getWorldTopRanksCacheState(cacheKey);
@@ -473,8 +383,8 @@ export function WorldView() {
     const shouldRefreshSummary = !cachedSummary;
     const shouldRefreshTopRanks = !cachedTopRanks;
     const shouldRefreshTopDestinations = !cachedTopDestinations;
-    const elapsedPreloadGateMs = preloadGateStartRef.current
-      ? Date.now() - preloadGateStartRef.current
+    const elapsedPreloadGateMs = gateStartedAtMsRef.current
+      ? Date.now() - gateStartedAtMsRef.current
       : Number.POSITIVE_INFINITY;
     const canBypassPreloadGate = elapsedPreloadGateMs >= PRELOAD_GATE_MAX_WAIT_MS;
     const missingAllSelectedPresetData = shouldRefreshSummary && shouldRefreshTopRanks && shouldRefreshTopDestinations;
@@ -1219,6 +1129,30 @@ function formatLocalDateInput(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function formatUtcDate(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function addUtcDays(isoDate: string, n: number): string {
+  const d = new Date(`${isoDate}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return formatUtcDate(d);
+}
+
+// Mirrors buildPresetDateRange() in statisticsController.ts — must stay in sync.
+function buildPresetUtcQueryDates(preset: Exclude<RangePreset, 'all'>): { startDate: string; endDate: string } {
+  const today = formatUtcDate(new Date());
+  if (preset === 'focus') return { startDate: addUtcDays(today, -15), endDate: addUtcDays(today, 15) };
+  if (preset === '7')     return { startDate: today,                  endDate: addUtcDays(today, 6) };
+  if (preset === '30')    return { startDate: today,                  endDate: addUtcDays(today, 29) };
+  if (preset === '90')    return { startDate: today,                  endDate: addUtcDays(today, 89) };
+  if (preset === '180')   return { startDate: today,                  endDate: addUtcDays(today, 179) };
+  return { startDate: today, endDate: addUtcDays(today, 364) }; // '365'
 }
 
 function renderRankDeltaPill(deltaFlights: number, deltaPercent: number) {

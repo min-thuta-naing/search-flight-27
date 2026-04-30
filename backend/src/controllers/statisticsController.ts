@@ -1767,19 +1767,21 @@ async function getOrSetAirlineFullData(
 
     if (filterValue && level !== 'world') {
       if (level === 'airport') {
-        geoWhere = `AND UPPER(TRIM(dfp.arr_airport)) = $2`;
+        // Filter by departure airport so originAgg={scope} and destAgg=all destinations from it.
+        // Filtering by arrival would pin arr_iata to the scope, collapsing destAgg to one row.
+        geoWhere = `AND UPPER(TRIM(dfp.dep_airport)) = $2`;
         queryParams.push(filterValue.toUpperCase().trim());
       } else if (level === 'country') {
         geoWhere = `AND (
-          UPPER(TRIM(ap_arr.country_code)) = $2
-          OR UPPER(TRIM(ap_arr.country)) = $2
-          OR UPPER(TRIM(ap_arr.country_name)) = $2
+          UPPER(TRIM(ap_dep.country_code)) = $2
+          OR UPPER(TRIM(ap_dep.country)) = $2
+          OR UPPER(TRIM(ap_dep.country_name)) = $2
         )`;
         queryParams.push(filterValue.toUpperCase().trim());
       } else if (level === 'continent') {
         const codes = await getAirportCodesForContinent(filterValue);
         if (codes.length > 0) {
-          geoWhere = `AND UPPER(TRIM(dfp.arr_airport)) = ANY($2::text[])`;
+          geoWhere = `AND UPPER(TRIM(dfp.dep_airport)) = ANY($2::text[])`;
           queryParams.push(codes);
         }
       }

@@ -122,8 +122,8 @@ function InfiniteAirportTable({
   rows: DashboardAirlineAirportRow[];
   loading: boolean;
   hasMore: boolean;
-  loaderRef: React.RefObject<HTMLDivElement>;
-  scrollRef: React.RefObject<HTMLDivElement>;
+  loaderRef: React.RefObject<HTMLDivElement | null>;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
   emptyText?: string;
 }) {
   if (!rows.length && !loading) {
@@ -834,8 +834,8 @@ export function AirlineView() {
             rows={originRows}
             loading={originLoading}
             hasMore={originHasMore}
-            loaderRef={originLoaderRef as React.RefObject<HTMLDivElement>}
-            scrollRef={originScrollRef as React.RefObject<HTMLDivElement>}
+            loaderRef={originLoaderRef}
+            scrollRef={originScrollRef}
             emptyText="ไม่มีข้อมูลสนามบินต้นทาง"
           />
         </Panel>
@@ -845,8 +845,8 @@ export function AirlineView() {
             rows={destRows}
             loading={destLoading}
             hasMore={destHasMore}
-            loaderRef={destLoaderRef as React.RefObject<HTMLDivElement>}
-            scrollRef={destScrollRef as React.RefObject<HTMLDivElement>}
+            loaderRef={destLoaderRef}
+            scrollRef={destScrollRef}
             emptyText="ไม่มีข้อมูลสนามบินปลายทาง"
           />
         </Panel>

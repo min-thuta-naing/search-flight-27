@@ -32,6 +32,19 @@ function toQueryScope(level: DrillLevel, sel: SelectionState): QueryScope {
   return { level: 'world', value: '' };
 }
 
+// Returns a copy of sel with geo fields deeper than scope.level removed.
+// Used on the airline fallback path so the status line never shows stale
+// airport/country breadcrumbs from a previous navigation branch.
+function selectionsUpToScope(sel: SelectionState, scope: QueryScope): SelectionState {
+  const idx = LEVEL_ORDER.indexOf(scope.level);
+  return {
+    airline:   sel.airline,
+    continent: idx >= 1 ? sel.continent : undefined,
+    country:   idx >= 2 ? sel.country   : undefined,
+    airport:   idx >= 3 ? sel.airport   : undefined,
+  };
+}
+
 // ── Context for drill-down state ──
 interface SelectionState {
   continent?: ContinentData;
@@ -128,6 +141,8 @@ export function DrillDownDashboard() {
   const [queryScope, setQueryScope] = useState<QueryScope>({ level: 'world', value: '' });
   // Ref so drillTo can read current selections synchronously without a stale closure.
   const selectionsRef = useRef<SelectionState>({});
+  // Ref so drillTo can read current queryScope synchronously (used to freeze airline scope at drill time).
+  const queryScopeRef = useRef<QueryScope>({ level: 'world', value: '' });
   const airlinePrefillSeqRef = useRef(0);
   const [cacheStatus, setCacheStatus] = useState<DashboardCacheStatusResponse | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
@@ -141,11 +156,13 @@ export function DrillDownDashboard() {
     return selection ? { ...selectionsRef.current, ...selection } : selectionsRef.current;
   }, []);
 
-  const commitDrill = useCallback((newLevel: DrillLevel, merged: SelectionState) => {
+  const commitDrill = useCallback((newLevel: DrillLevel, merged: SelectionState, explicitScope?: QueryScope) => {
     selectionsRef.current = merged;
     setSelections(merged);
     setLevel(newLevel);
-    setQueryScope(toQueryScope(newLevel, merged));
+    const scope = explicitScope ?? toQueryScope(newLevel, merged);
+    queryScopeRef.current = scope;
+    setQueryScope(scope);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
@@ -154,6 +171,10 @@ export function DrillDownDashboard() {
 
     if (newLevel === 'airline' && merged.airline?.id) {
       const requestSeq = ++airlinePrefillSeqRef.current;
+      // Freeze the active geo scope synchronously before the async home-base lookup.
+      // Using queryScopeRef (not re-deriving from merged) prevents stale sticky selections
+      // (e.g. an old airport from a previous branch) from leaking into the airline scope.
+      const airlineScope = queryScopeRef.current;
 
       void (async () => {
         try {
@@ -163,13 +184,14 @@ export function DrillDownDashboard() {
           }
 
           const prefilled = buildAirlinePrefillSelections(merged, homeBase);
-          commitDrill('airline', prefilled);
+          commitDrill('airline', prefilled, airlineScope);
         } catch {
           if (requestSeq !== airlinePrefillSeqRef.current) {
             return;
           }
-
-          commitDrill('airline', { airline: merged.airline ?? null });
+          // Strip geo fields deeper than the frozen scope so stale airport/country from a
+          // previous branch don't appear in the status line. Scope is still the captured branch scope.
+          commitDrill('airline', selectionsUpToScope(merged, airlineScope), airlineScope);
         }
       })();
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { addDays, format, subDays } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { ChevronDown } from 'lucide-react';
@@ -1006,6 +1006,8 @@ function BusiestAirportsPanel({
   const [sortKey, setSortKey] = useState<'iata' | 'name' | 'flights' | 'routes' | 'airlines'>('flights');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [visibleCount, setVisibleCount] = useState(AIRPORT_TABLE_INITIAL_ROWS);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const loaderRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setVisibleCount(AIRPORT_TABLE_INITIAL_ROWS);
@@ -1048,9 +1050,22 @@ function BusiestAirportsPanel({
     return sortDirection === 'asc' ? '↑' : '↓';
   };
 
-  const handleMore = () => {
+  const loadMore = useCallback(() => {
     setVisibleCount((current) => Math.min(current + AIRPORT_TABLE_STEP_ROWS, sorted.length));
-  };
+  }, [sorted.length]);
+
+  useEffect(() => {
+    if (!hasMoreRows) return;
+    const root = scrollRef.current;
+    const target = loaderRef.current;
+    if (!root || !target) return;
+    const observer = new window.IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) loadMore(); },
+      { root, threshold: 0 },
+    );
+    observer.observe(target);
+    return () => observer.unobserve(target);
+  }, [hasMoreRows, loadMore]);
 
   return (
     <div className="bg-card border border-border rounded-[10px] p-4 lg:h-[400px] lg:flex lg:flex-col">
@@ -1062,7 +1077,7 @@ function BusiestAirportsPanel({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border/70">
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
           <table className="w-full min-w-[720px] border-collapse text-sm">
             <thead className="sticky top-0 z-10">
               <tr className="border-b border-border bg-card">
@@ -1123,19 +1138,12 @@ function BusiestAirportsPanel({
                   </tr>
                 ))
               )}
-              {hasMoreRows ? (
-                <tr className="border-t border-border/70 bg-card">
-                  <td colSpan={5} className="px-3 py-3">
-                    <div className="flex justify-center">
-                      <Button type="button" variant="outline" onClick={handleMore} className="h-8 px-4 text-xs">
-                        เพิ่มเติม
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ) : null}
             </tbody>
           </table>
+          <div ref={loaderRef} style={{ height: 1 }} />
+          {!hasMoreRows && visibleRows.length > 0 && (
+            <div className="py-3 text-center text-muted-foreground text-sm">แสดงข้อมูลครบแล้ว</div>
+          )}
         </div>
       </div>
     </div>
@@ -1263,10 +1271,29 @@ function AirlineMarketSharePanel({
   const max = airlines[0]?.flights || 1;
   const visibleAirlines = airlines.slice(0, visibleCount);
   const hasMoreRows = visibleCount < airlines.length;
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const loaderRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setVisibleCount(5);
   }, [rows]);
+
+  const loadMore = useCallback(() => {
+    setVisibleCount((current) => Math.min(current + 10, airlines.length));
+  }, [airlines.length]);
+
+  useEffect(() => {
+    if (!hasMoreRows) return;
+    const root = scrollRef.current;
+    const target = loaderRef.current;
+    if (!root || !target) return;
+    const observer = new window.IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) loadMore(); },
+      { root, threshold: 0 },
+    );
+    observer.observe(target);
+    return () => observer.unobserve(target);
+  }, [hasMoreRows, loadMore]);
 
   return (
     <div className="bg-card border border-border rounded-[10px] p-5 lg:h-[400px] lg:flex lg:flex-col">
@@ -1278,7 +1305,7 @@ function AirlineMarketSharePanel({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border/70">
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
           <table className="w-full min-w-[620px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/20">
@@ -1314,23 +1341,12 @@ function AirlineMarketSharePanel({
                 );
               })
             )}
-            {hasMoreRows && (
-              <tr className="border-t border-border/70 bg-card">
-                <td colSpan={5} className="px-3 py-3">
-                  <div className="flex justify-center">
-                    <button
-                      type="button"
-                      onClick={() => setVisibleCount((current) => Math.min(current + 10, airlines.length))}
-                      className="inline-flex items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"
-                    >
-                      เพิ่มเติม
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            )}
           </tbody>
           </table>
+          <div ref={loaderRef} style={{ height: 1 }} />
+          {!hasMoreRows && visibleAirlines.length > 0 && (
+            <div className="py-3 text-center text-muted-foreground text-sm">แสดงข้อมูลครบแล้ว</div>
+          )}
         </div>
       </div>
     </div>

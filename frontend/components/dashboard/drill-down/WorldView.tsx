@@ -256,7 +256,7 @@ function parseContinentCountryCount(value: string) {
 }
 
 export function WorldView() {
-  const { drillTo, timeMode, rangePreset, setRangePreset } = useDrillDown();
+  const { drillTo, timeMode, rangePreset, setRangePreset, customDateRange, setCustomDateRange } = useDrillDown();
   const [hydratedNow, setHydratedNow] = useState<Date | null>(null);
   const { presetPreloadState, gateStartedAtMsRef } = useWorldPreloadGate(!!hydratedNow);
   const [dashboardDateBounds, setDashboardDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
@@ -333,6 +333,19 @@ export function WorldView() {
   }, []);
 
   useEffect(() => {
+    if (!customDateRange) return;
+    setDateRange(customDateRange);
+    setDurationMode(null);
+    setShowCustomDateRange(true);
+    setIsExtendedRangeOpen(false);
+    setDateError(false);
+    setFromCalendarMonth(customDateRange.from);
+    setToCalendarMonth(customDateRange.to);
+  }, [customDateRange]);
+
+  useEffect(() => {
+    if (customDateRange) return;
+
     if (rangePreset === 'all' && !dashboardDateBounds?.minDate) {
       setLoading(true);
       setTopRanksLoading(true);
@@ -351,7 +364,7 @@ export function WorldView() {
       setDateError,
       dashboardDateBounds,
     );
-  }, [rangePreset, dashboardDateBounds]);
+  }, [rangePreset, dashboardDateBounds, customDateRange]);
 
   useEffect(() => {
     let mounted = true;
@@ -906,10 +919,13 @@ export function WorldView() {
                         setDurationMode(null);
                         setDateError(false);
                         if (date) setFromCalendarMonth(date);
-                        setDateRange((prev) => ({
-                          from: date,
-                          to: prev?.to && date && prev.to < date ? date : prev?.to,
-                        }));
+                        const prevTo = dateRange?.to;
+                        const newTo = prevTo && date && prevTo < date ? date : prevTo;
+                        const nextRange = { from: date, to: newTo };
+                        setDateRange(nextRange);
+                        if (date && newTo) {
+                          setCustomDateRange({ from: date, to: newTo });
+                        }
                       }}
                       initialFocus
                     />
@@ -944,7 +960,11 @@ export function WorldView() {
                         setDurationMode(null);
                         setDateError(false);
                         if (date) setToCalendarMonth(date);
-                        setDateRange((prev) => ({ from: prev?.from, to: date }));
+                        const nextRange = { from: dateRange?.from, to: date };
+                        setDateRange(nextRange);
+                        if (dateRange?.from && date) {
+                          setCustomDateRange({ from: dateRange.from, to: date });
+                        }
                       }}
                       disabled={(date) => (dateRange?.from ? date < dateRange.from : false)}
                       initialFocus

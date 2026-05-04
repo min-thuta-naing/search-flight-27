@@ -156,7 +156,7 @@ function toDateKey(value: Date) {
 }
 
 export function AirportView() {
-  const { drillTo, timeMode, rangePreset, setRangePreset, selections } = useDrillDown();
+  const { drillTo, timeMode, rangePreset, setRangePreset, selections, customDateRange, setCustomDateRange } = useDrillDown();
   const airport = selections.airport || MK_AIRPORTS[0];
   const [airportOverview, setAirportOverview] = useState<DashboardAirportOverviewResponse | null>(null);
   const [airportInsights, setAirportInsights] = useState<DashboardAirportInsightsResponse | null>(null);
@@ -364,6 +364,18 @@ export function AirportView() {
   }, [trendSeries.daily]);
 
   useEffect(() => {
+    if (!customDateRange) return;
+    setDateRange(customDateRange);
+    setDurationMode(null);
+    setShowCustomDateRange(true);
+    setIsExtendedRangeOpen(false);
+    setDateError(false);
+    setFromCalendarMonth(customDateRange.from);
+    setToCalendarMonth(customDateRange.to);
+  }, [customDateRange]);
+
+  useEffect(() => {
+    if (customDateRange) return;
     const presetAnchorDate = airportDataRange?.to ?? new Date();
     const nextRange = rangePreset === 'all'
       ? airportDataRange
@@ -379,7 +391,7 @@ export function AirportView() {
       setFromCalendarMonth(nextRange.from);
       setToCalendarMonth(nextRange.to || nextRange.from);
     }
-  }, [rangePreset, airportDataRange]);
+  }, [rangePreset, airportDataRange, customDateRange]);
 
   const routeChartDateRange = dateRange ?? airportDataRange;
 
@@ -583,10 +595,11 @@ export function AirportView() {
                         setDurationMode(null);
                         setDateError(false);
                         if (date) setFromCalendarMonth(date);
-                        setDateRange((prev) => ({
-                          from: date,
-                          to: prev?.to && date && prev.to < date ? date : prev?.to,
-                        }));
+                        const prevTo = dateRange?.to;
+                        const newTo = prevTo && date && prevTo < date ? date : prevTo;
+                        const nextRange = { from: date, to: newTo };
+                        setDateRange(nextRange);
+                        if (date && newTo) setCustomDateRange({ from: date, to: newTo });
                       }}
                       initialFocus
                     />
@@ -619,7 +632,9 @@ export function AirportView() {
                         setDurationMode(null);
                         setDateError(false);
                         if (date) setToCalendarMonth(date);
-                        setDateRange((prev) => ({ from: prev?.from, to: date }));
+                        const nextRange = { from: dateRange?.from, to: date };
+                        setDateRange(nextRange);
+                        if (dateRange?.from && date) setCustomDateRange({ from: dateRange.from, to: date });
                       }}
                       disabled={(date) => (dateRange?.from ? date < dateRange.from : false)}
                       initialFocus

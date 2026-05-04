@@ -7,6 +7,7 @@ import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } fro
 import { usePreloadStatus } from '@/lib/dashboard/preload/usePreloadStatus';
 import { getDashboardAirlineHomeBase, type DashboardAirlineHomeBaseResponse } from '@/lib/api/statistics-api';
 import { readSharedRangePreset, writeSharedRangePreset } from '@/lib/dashboard/range-preset-store';
+import { readPersistedCustomRange, writePersistedCustomRange } from '@/lib/dashboard/filter-store';
 import { Button } from '@/components/ui/button';
 import { WorldView } from './WorldView';
 import { ContinentView } from './ContinentView';
@@ -30,6 +31,19 @@ function toQueryScope(level: DrillLevel, sel: SelectionState): QueryScope {
     if (sel.continent) return { level: 'continent', value: sel.continent.name };
   }
   return { level: 'world', value: '' };
+}
+
+function selectionsEqual(a: SelectionState, b: SelectionState): boolean {
+  return (
+    a.continent?.name === b.continent?.name &&
+    (a.country?.countryCode ?? a.country?.name) === (b.country?.countryCode ?? b.country?.name) &&
+    a.airport?.iata === b.airport?.iata &&
+    a.airline?.id === b.airline?.id
+  );
+}
+
+function scopeEqual(a: QueryScope, b: QueryScope): boolean {
+  return a.level === b.level && a.value === b.value;
 }
 
 // Returns a copy of sel with geo fields deeper than scope.level removed.
@@ -115,6 +129,9 @@ interface DrillDownContextValue {
   setTimeMode: (mode: TimeMode) => void;
   setRangePreset: (preset: RangePreset) => void;
   selections: SelectionState;
+  customDateRange: { from: Date; to: Date } | undefined;
+  setCustomDateRange: (range: { from: Date; to: Date } | undefined) => void;
+  resetFilters: () => void;
 }
 
 const DrillDownContext = createContext<DrillDownContextValue>({
@@ -126,6 +143,9 @@ const DrillDownContext = createContext<DrillDownContextValue>({
   setTimeMode: () => {},
   setRangePreset: () => {},
   selections: {},
+  customDateRange: undefined,
+  setCustomDateRange: () => {},
+  resetFilters: () => {},
 });
 
 export function useDrillDown() {
@@ -136,12 +156,13 @@ export function useDrillDown() {
 export function DrillDownDashboard() {
   const [level, setLevel] = useState<DrillLevel>('world');
   const [timeMode, setTimeMode] = useState<TimeMode>('yoy');
-  const [rangePreset, setRangePreset] = useState<RangePreset>('focus');
+  const [rangePresetValue, setRangePresetValue] = useState<RangePreset>('focus');
+  const [customDateRange, setCustomDateRangeState] = useState<{ from: Date; to: Date } | undefined>(undefined);
   const [selections, setSelections] = useState<SelectionState>({});
   const [queryScope, setQueryScope] = useState<QueryScope>({ level: 'world', value: '' });
-  // Ref so drillTo can read current selections synchronously without a stale closure.
+  // Refs so handlers can read current state synchronously without stale closures.
+  const levelRef = useRef<DrillLevel>('world');
   const selectionsRef = useRef<SelectionState>({});
-  // Ref so drillTo can read current queryScope synchronously (used to freeze airline scope at drill time).
   const queryScopeRef = useRef<QueryScope>({ level: 'world', value: '' });
   const airlinePrefillSeqRef = useRef(0);
   const { cacheStatus, bootstrapError } = usePreloadStatus();
@@ -156,17 +177,35 @@ export function DrillDownDashboard() {
   }, []);
 
   const commitDrill = useCallback((newLevel: DrillLevel, merged: SelectionState, explicitScope?: QueryScope) => {
-    selectionsRef.current = merged;
-    setSelections(merged);
-    setLevel(newLevel);
     const scope = explicitScope ?? toQueryScope(newLevel, merged);
-    queryScopeRef.current = scope;
-    setQueryScope(scope);
+
+    const levelChanged = newLevel !== levelRef.current;
+    const selectionsChanged = !selectionsEqual(merged, selectionsRef.current);
+    const scopeChanged = !scopeEqual(scope, queryScopeRef.current);
+
+    if (!levelChanged && !selectionsChanged && !scopeChanged) return;
+
+    if (levelChanged) {
+      levelRef.current = newLevel;
+      setLevel(newLevel);
+    }
+    if (selectionsChanged) {
+      selectionsRef.current = merged;
+      setSelections(merged);
+    }
+    if (scopeChanged) {
+      queryScopeRef.current = scope;
+      setQueryScope(scope);
+    }
+
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
   const drillTo = useCallback((newLevel: DrillLevel, selection?: SelectionState) => {
     const merged = buildMergedSelections(selection);
+
+    // Guard: nothing to do if level and selections are already identical.
+    if (newLevel === levelRef.current && selectionsEqual(merged, selectionsRef.current)) return;
 
     if (newLevel === 'airline' && merged.airline?.id) {
       const requestSeq = ++airlinePrefillSeqRef.current;
@@ -178,16 +217,12 @@ export function DrillDownDashboard() {
       void (async () => {
         try {
           const homeBase = await getDashboardAirlineHomeBase({ airlineId: merged.airline!.id });
-          if (requestSeq !== airlinePrefillSeqRef.current) {
-            return;
-          }
+          if (requestSeq !== airlinePrefillSeqRef.current) return;
 
           const prefilled = buildAirlinePrefillSelections(merged, homeBase);
           commitDrill('airline', prefilled, airlineScope);
         } catch {
-          if (requestSeq !== airlinePrefillSeqRef.current) {
-            return;
-          }
+          if (requestSeq !== airlinePrefillSeqRef.current) return;
           // Strip geo fields deeper than the frozen scope so stale airport/country from a
           // previous branch don't appear in the status line. Scope is still the captured branch scope.
           commitDrill('airline', selectionsUpToScope(merged, airlineScope), airlineScope);
@@ -202,16 +237,38 @@ export function DrillDownDashboard() {
 
   useEffect(() => {
     const stored = readSharedRangePreset('focus');
-    if (stored !== rangePreset) {
-      setRangePreset(stored);
+    if (stored !== rangePresetValue) {
+      setRangePresetValue(stored);
+    }
+    const persisted = readPersistedCustomRange();
+    if (persisted) {
+      setCustomDateRangeState(persisted);
     }
     // Run once on mount to avoid SSR/CSR mismatch from sessionStorage.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    writeSharedRangePreset(rangePreset);
-  }, [rangePreset]);
+    writeSharedRangePreset(rangePresetValue);
+  }, [rangePresetValue]);
+
+  const handleSetRangePreset = useCallback((preset: RangePreset) => {
+    setRangePresetValue(preset);
+    setCustomDateRangeState(undefined);
+    writePersistedCustomRange(null);
+  }, []);
+
+  const setCustomDateRange = useCallback((range: { from: Date; to: Date } | undefined) => {
+    setCustomDateRangeState(range);
+    writePersistedCustomRange(range ?? null);
+  }, []);
+
+  const resetFilters = useCallback(() => {
+    setRangePresetValue('focus');
+    setCustomDateRangeState(undefined);
+    writePersistedCustomRange(null);
+    writeSharedRangePreset('focus');
+  }, []);
 
   const preloadPhase = cacheStatus?.preload.phase ?? 'idle';
   const preloadMinutes = cacheStatus?.preload.durationMinutes ?? 0;
@@ -223,7 +280,7 @@ export function DrillDownDashboard() {
   const showBootstrapGate = !isPreloadReady && !(isPreloadFailed && dismissedFailure);
 
   return (
-    <DrillDownContext.Provider value={{ level, timeMode, rangePreset, queryScope, drillTo, setTimeMode, setRangePreset, selections }}>
+    <DrillDownContext.Provider value={{ level, timeMode, rangePreset: rangePresetValue, queryScope, drillTo, setTimeMode, setRangePreset: handleSetRangePreset, selections, customDateRange, setCustomDateRange, resetFilters }}>
       <div className="space-y-4">
         {showBootstrapGate ? (
           <div className="rounded-2xl border border-border bg-card p-6 shadow-sm">

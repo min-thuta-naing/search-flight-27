@@ -276,7 +276,7 @@ function DomIntlPie({ domestic, international }: { domestic: number; internation
 // ─── main view ───────────────────────────────────────────────────────────────
 
 export function AirlineView() {
-  const { drillTo, selections, rangePreset, setRangePreset, queryScope } = useDrillDown();
+  const { drillTo, selections, rangePreset, setRangePreset, queryScope, customDateRange, setCustomDateRange } = useDrillDown();
   const airline = selections.airline;
 
   // ── Date range state ─────────────────────────────────────────────────────
@@ -289,6 +289,18 @@ export function AirlineView() {
   const [dateError, setDateError] = useState(false);
 
   useEffect(() => {
+    if (!customDateRange) return;
+    setDateRange(customDateRange);
+    setDurationMode(null);
+    setShowCustomDateRange(true);
+    setIsExtendedRangeOpen(false);
+    setDateError(false);
+    setFromCalendarMonth(customDateRange.from);
+    setToCalendarMonth(customDateRange.to);
+  }, [customDateRange]);
+
+  useEffect(() => {
+    if (customDateRange) return;
     const nextRange = buildAirlinePresetRange(rangePreset);
     setDateRange(nextRange);
     setDurationMode(rangePreset);
@@ -299,7 +311,7 @@ export function AirlineView() {
       setFromCalendarMonth(nextRange.from);
       setToCalendarMonth(nextRange.to || nextRange.from);
     }
-  }, [rangePreset]);
+  }, [rangePreset, customDateRange]);
 
   const startDate = dateRange?.from ? formatDateInput(dateRange.from) : undefined;
   const endDate = dateRange?.to ? formatDateInput(dateRange.to) : undefined;
@@ -745,10 +757,11 @@ export function AirlineView() {
                         setDurationMode(null);
                         setDateError(false);
                         if (date) setFromCalendarMonth(date);
-                        setDateRange((prev) => ({
-                          from: date,
-                          to: prev?.to && date && prev.to < date ? date : prev?.to,
-                        }));
+                        const prevTo = dateRange?.to;
+                        const newTo = prevTo && date && prevTo < date ? date : prevTo;
+                        const nextRange = { from: date, to: newTo };
+                        setDateRange(nextRange);
+                        if (date && newTo) setCustomDateRange({ from: date, to: newTo });
                       }}
                       initialFocus
                     />
@@ -779,7 +792,9 @@ export function AirlineView() {
                         setDurationMode(null);
                         setDateError(false);
                         if (date) setToCalendarMonth(date);
-                        setDateRange((prev) => ({ from: prev?.from, to: date }));
+                        const nextRange = { from: dateRange?.from, to: date };
+                        setDateRange(nextRange);
+                        if (dateRange?.from && date) setCustomDateRange({ from: dateRange.from, to: date });
                       }}
                       disabled={(date) => (dateRange?.from ? date < dateRange.from : false)}
                       initialFocus

@@ -498,7 +498,7 @@ function getCountryFlowMapVisiblePoints(
 }
 
 export function CountryView() {
-  const { drillTo, selections, timeMode, rangePreset, setRangePreset } = useDrillDown();
+  const { drillTo, selections, timeMode, rangePreset, setRangePreset, customDateRange, setCustomDateRange } = useDrillDown();
   const country = selections.country || COUNTRIES.find(c => c.name === 'N. Macedonia') || COUNTRIES[0];
   const displayCountryName = resolveCountryDisplayName(country.name, country.countryCode);
   const countryQuery = (country.countryCode || country.name).trim();
@@ -533,6 +533,19 @@ export function CountryView() {
   const endDate = dateRange?.to ? formatLocalDateInput(dateRange.to) : undefined;
 
   useEffect(() => {
+    if (!customDateRange) return;
+    setDateRange(customDateRange);
+    setDurationMode(null);
+    setShowCustomDateRange(true);
+    setIsExtendedRangeOpen(false);
+    setDateError(false);
+    setFromCalendarMonth(customDateRange.from);
+    setToCalendarMonth(customDateRange.to);
+  }, [customDateRange]);
+
+  useEffect(() => {
+    if (customDateRange) return;
+
     if (rangePreset === 'all' && !dateBounds?.minDate) {
       return;
     }
@@ -548,7 +561,7 @@ export function CountryView() {
       setDateError,
       dateBounds,
     );
-  }, [rangePreset, dateBounds]);
+  }, [rangePreset, dateBounds, customDateRange]);
 
   useEffect(() => {
     let alive = true;
@@ -830,10 +843,13 @@ export function CountryView() {
                         setDurationMode(null);
                         setDateError(false);
                         if (date) setFromCalendarMonth(date);
-                        setDateRange((prev) => ({
-                          from: date,
-                          to: prev?.to && date && prev.to < date ? date : prev?.to,
-                        }));
+                        const prevTo = dateRange?.to;
+                        const newTo = prevTo && date && prevTo < date ? date : prevTo;
+                        const nextRange = { from: date, to: newTo };
+                        setDateRange(nextRange);
+                        if (date && newTo) {
+                          setCustomDateRange({ from: date, to: newTo });
+                        }
                       }}
                       initialFocus
                     />
@@ -869,7 +885,11 @@ export function CountryView() {
                         setDurationMode(null);
                         setDateError(false);
                         if (date) setToCalendarMonth(date);
-                        setDateRange((prev) => ({ from: prev?.from, to: date }));
+                        const nextRange = { from: dateRange?.from, to: date };
+                        setDateRange(nextRange);
+                        if (dateRange?.from && date) {
+                          setCustomDateRange({ from: dateRange.from, to: date });
+                        }
                       }}
                       disabled={(date) => (dateRange?.from ? date < dateRange.from : false)}
                       initialFocus

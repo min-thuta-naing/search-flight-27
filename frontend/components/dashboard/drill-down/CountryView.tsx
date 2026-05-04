@@ -155,6 +155,15 @@ function filterActiveAirports<T extends { flights: number }>(airports: T[]) {
   return airports.filter((airport) => airport.flights > 0);
 }
 
+function emojiFlagToCode(flag: string): string {
+  // แปลง emoji ธงเป็น country code เช่น 🇹🇭 → "th"
+  const codePoints = [...flag].map(char => char.codePointAt(0)! - 0x1F1E6);
+  const countryCode = String.fromCharCode(
+    codePoints[0] + 65,
+    codePoints[1] + 65
+  );
+  return countryCode.toLowerCase();
+}
 function usePositiveElementSize<T extends HTMLElement>() {
   const elementRef = useRef<T | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -736,15 +745,15 @@ export function CountryView() {
     {
       label: 'สนามบินที่มีการใช้งาน',
       value: displayAirports.length.toString(),
-      delta: 'ตามฐานข้อมูลล่าสุด',
+      delta: 'จากทั้งหมด ' + allAirports.length.toLocaleString() + ' สนามบิน',
       deltaType: 'neutral',
       growthColored: false,
       accentColor: KPI_ACCENT.airports,
     },
     {
       label: 'จุดหมายที่ให้บริการ',
-      value: `${totalRoutes.toLocaleString()} Airport${totalRoutes !== 1 ? 's' : ''}`,
-      delta: 'ครอบคลุมหลายภูมิภาค',
+      value: `${totalRoutes.toLocaleString()} ${totalRoutes !== 1 ? ' ' : ''}`,
+      delta: 'สนามบิน',
       deltaType: 'neutral',
       growthColored: false,
       accentColor: KPI_ACCENT.average,
@@ -790,10 +799,15 @@ export function CountryView() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
-          <h2 className="text-xl font-bold mb-1 break-words">{country.flag} {displayCountryName}</h2>
-          <p className="text-[15px] text-muted-foreground font-medium break-words">
+          <h2 className="text-xl font-extrabold text-left px-3 py-4 sm:text-2xl sm:px-5 sm:py-5 lg:text-3xl lg:p-7">
+                                        <img
+  src={`https://www.worldometers.info/images/flags/original/${emojiFlagToCode(country.flag)}.webp`}
+  alt={`${country.flag} flag`}
+  className="inline-block w-10 h-6"
+/> {displayCountryName}</h2>
+          {/* <p className="text-[15px] text-muted-foreground font-medium break-words">
             เลือกสนามบินใน {displayCountryName} เพื่อดูข้อมูลวิเคราะห์
-          </p>
+          </p> */}
         </div>
         <div className="min-w-0 w-full sm:w-auto sm:min-w-[420px]">
           <div className="mb-2 text-sm font-medium text-muted-foreground">ช่วงวันที่</div>
@@ -924,6 +938,7 @@ export function CountryView() {
           countryQuery={countryQuery}
           startDate={startDate}
           endDate={endDate}
+          topAirport={displayAirports[0] ?? allAirports[0] ?? null}
         />
         <InboundCountriesPanel countryName={displayCountryName} rows={inboundRows} />
       </div>
@@ -958,7 +973,7 @@ function AirportPieChart({ displayAirports }: { displayAirports: AirportInfo[] }
     .sort((a, b) => b.value - a.value);
 
   return (
-    <div className="bg-card border border-border rounded-[10px] p-6">
+    <div className="bg-card border border-border rounded-[10px] pl-4 pr-2 py-3">
       <div className="flex items-center justify-between gap-2 mb-4">
         <div className="text-[16px] font-bold">การกระจายปริมาณเที่ยวบินตามสนามบิน</div>
         <div className="text-xs text-muted-foreground font-medium">Top 5</div>
@@ -966,9 +981,9 @@ function AirportPieChart({ displayAirports }: { displayAirports: AirportInfo[] }
       <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
         {barData.map((airport) => (
           <span key={airport.iata} className="inline-flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: airport.color }} />
-            <span className="font-semibold">{airport.iata}</span>
-            <span>{airport.pct}%</span>
+            {/* <span className="w-2.5 h-2.5 rounded-full" style={{ background: airport.color }} /> */}
+            {/* <span className="font-semibold">{airport.iata}</span> */}
+            {/* <span>{airport.pct}%</span> */}
           </span>
         ))}
       </div>
@@ -1026,6 +1041,7 @@ function BusiestAirportsPanel({
   const [sortKey, setSortKey] = useState<'iata' | 'name' | 'flights' | 'routes' | 'airlines'>('flights');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [visibleCount, setVisibleCount] = useState(AIRPORT_TABLE_INITIAL_ROWS);
+  const [search, setSearch] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const loaderRef = useRef<HTMLDivElement | null>(null);
 
@@ -1053,8 +1069,14 @@ function BusiestAirportsPanel({
     });
   }, [airports, sortDirection, sortKey]);
 
-  const visibleRows = sorted.slice(0, visibleCount);
-  const hasMoreRows = visibleCount < sorted.length;
+  const filtered = useMemo(() => {
+    if (!search) return sorted;
+    const q = search.toLowerCase();
+    return sorted.filter((a) => a.iata.toLowerCase().includes(q) || a.name.toLowerCase().includes(q));
+  }, [sorted, search]);
+
+  const visibleRows = filtered.slice(0, visibleCount);
+  const hasMoreRows = visibleCount < filtered.length;
 
   const handleSort = (key: 'iata' | 'name' | 'flights' | 'routes' | 'airlines') => {
     if (sortKey === key) {
@@ -1071,8 +1093,8 @@ function BusiestAirportsPanel({
   };
 
   const loadMore = useCallback(() => {
-    setVisibleCount((current) => Math.min(current + AIRPORT_TABLE_STEP_ROWS, sorted.length));
-  }, [sorted.length]);
+    setVisibleCount((current) => Math.min(current + AIRPORT_TABLE_STEP_ROWS, filtered.length));
+  }, [filtered.length]);
 
   useEffect(() => {
     if (!hasMoreRows) return;
@@ -1088,11 +1110,21 @@ function BusiestAirportsPanel({
   }, [hasMoreRows, loadMore]);
 
   return (
-    <div className="bg-card border border-border rounded-[10px] p-4 lg:h-[400px] lg:flex lg:flex-col">
-      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+    <div className="bg-card border border-border rounded-[10px] p-4 lg:h-[361px] lg:flex lg:flex-col">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-[16px] font-bold">สนามบินที่มีเที่ยวบินสูงสุด</div>
-        <div className="text-xs text-muted-foreground">
-          แสดง {Math.min(visibleCount, sorted.length).toLocaleString()} / {sorted.length.toLocaleString()}
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            แสดง {Math.min(visibleCount, filtered.length).toLocaleString()} / {filtered.length.toLocaleString()}
+            {search ? ` (กรองจาก ${sorted.length.toLocaleString()})` : ''}
+          </span>
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setVisibleCount(AIRPORT_TABLE_INITIAL_ROWS); }}
+            placeholder="ค้นหา IATA หรือชื่อสนามบิน"
+            className="w-48 rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/10"
+          />
         </div>
       </div>
 
@@ -1226,7 +1258,7 @@ function InboundCountriesPanel({
     <div className="bg-card border border-border rounded-[10px] p-5 lg:h-[400px] lg:flex lg:flex-col">
       <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-[16px] font-bold break-words">
-          {'🛬'} Top city inbound — {countryName}
+          ประเทศที่บินเข้ามายัง {countryName} มากที่สุด
         </div>
         <div className="text-xs text-muted-foreground">อ้างอิง 5 อันดับล่าสุด</div>
       </div>
@@ -1239,7 +1271,7 @@ function InboundCountriesPanel({
                 <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
                 <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ประเทศ</th>
                 <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
-                <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ส่วนแบ่ง</th>
+                <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">อัตราส่วน</th>
               </tr>
             </thead>
             <tbody>
@@ -1258,8 +1290,14 @@ function InboundCountriesPanel({
                       <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
                       <td className="px-3 py-2.5">
                         <div className="flex items-center gap-2">
-                          <span className="text-base">{c.flag}</span>
-                          <span className="font-medium text-foreground">{c.name}</span>
+                          <span className="text-base"> 
+                            <img
+  src={`https://www.worldometers.info/images/flags/original/${emojiFlagToCode(c.flag)}.webp`}
+  alt={`${c.flag} flag`}
+  className="inline-block w-6 h-4"
+/>
+                          </span>
+                          <span className="font-medium text-foreground ">{c.name}</span>
                         </div>
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">
@@ -1284,19 +1322,41 @@ function AirlineMarketSharePanel({
   countryQuery,
   startDate,
   endDate,
+  topAirport,
 }: {
   countryName: string;
   countryQuery: string;
   startDate: string | undefined;
   endDate: string | undefined;
+  topAirport: AirportInfo | null;
 }) {
   const { drillTo } = useDrillDown();
   const [rows, setRows] = useState<DashboardCountryAirlineBreakdownResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(5);
+  const [sortKey, setSortKey] = useState<'name' | 'flights' | 'share'>('flights');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const loaderRef = useRef<HTMLDivElement | null>(null);
+
+  const handleSort = (key: 'name' | 'flights' | 'share') => {
+    if (sortKey === key) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortOrder(key === 'name' ? 'asc' : 'desc');
+    }
+  };
+
+  const sorted = useMemo(() => {
+    return [...rows].sort((a, b) => {
+      const dir = sortOrder === 'asc' ? 1 : -1;
+      if (sortKey === 'name') return dir * a.name.localeCompare(b.name);
+      if (sortKey === 'flights') return dir * (a.flights - b.flights);
+      return dir * (a.share - b.share);
+    });
+  }, [rows, sortKey, sortOrder]);
 
   useEffect(() => {
     if (!countryQuery || !startDate || !endDate) return;
@@ -1322,13 +1382,13 @@ function AirlineMarketSharePanel({
     return () => { alive = false; };
   }, [countryQuery, startDate, endDate]);
 
-  const max = rows[0]?.flights || 1;
-  const visibleAirlines = rows.slice(0, visibleCount);
-  const hasMoreRows = visibleCount < rows.length;
+  const max = Math.max(...rows.map((r) => r.flights), 1);
+  const visibleAirlines = sorted.slice(0, visibleCount);
+  const hasMoreRows = visibleCount < sorted.length;
 
   const loadMore = useCallback(() => {
-    setVisibleCount((current) => Math.min(current + 10, rows.length));
-  }, [rows.length]);
+    setVisibleCount((current) => Math.min(current + 10, sorted.length));
+  }, [sorted.length]);
 
   useEffect(() => {
     if (!hasMoreRows) return;
@@ -1347,7 +1407,7 @@ function AirlineMarketSharePanel({
     <div className="bg-card border border-border rounded-[10px] p-5 lg:h-[400px] lg:flex lg:flex-col">
       <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-[16px] font-bold break-words">
-          {'✈️'} Top Airlines Market Share — {countryName}
+          สายการบินที่ให้บริการใน {countryName}
         </div>
         <div className="text-xs text-muted-foreground">คลิกสายการบินเพื่อดูรายละเอียด</div>
       </div>
@@ -1367,10 +1427,22 @@ function AirlineMarketSharePanel({
               <thead>
                 <tr className="border-b border-border bg-muted/20">
                   <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
-                  <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">สายการบิน</th>
-                  <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
-                  <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">Bar score</th>
-                  <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ส่วนแบ่ง</th>
+                  <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">
+                    <button type="button" onClick={() => handleSort('name')} className="inline-flex items-center gap-1 hover:text-foreground">
+                      สายการบิน <span className="text-[11px]">{sortKey === 'name' ? (sortOrder === 'asc' ? '▲' : '▼') : '↕'}</span>
+                    </button>
+                  </th>
+                  <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">
+                    <button type="button" onClick={() => handleSort('flights')} className="inline-flex items-center gap-1 hover:text-foreground">
+                      เที่ยวบิน <span className="text-[11px]">{sortKey === 'flights' ? (sortOrder === 'asc' ? '▲' : '▼') : '↕'}</span>
+                    </button>
+                  </th>
+                  <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">Bar</th>
+                  <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">
+                    <button type="button" onClick={() => handleSort('share')} className="inline-flex items-center gap-1 hover:text-foreground">
+                      ส่วนแบ่ง <span className="text-[11px]">{sortKey === 'share' ? (sortOrder === 'asc' ? '▲' : '▼') : '↕'}</span>
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1390,12 +1462,12 @@ function AirlineMarketSharePanel({
                         role={canDrill ? 'button' : undefined}
                         tabIndex={canDrill ? 0 : undefined}
                         onClick={() => {
-                          if (canDrill) drillTo('airline', { airline: { id: airline.airlineId, name: airline.name } }, { jumpCut: false });
+                          if (canDrill) drillTo('airline', { airline: { id: airline.airlineId, name: airline.name }, ...(topAirport ? { airport: topAirport } : {}) });
                         }}
                         onKeyDown={(e) => {
                           if (canDrill && (e.key === 'Enter' || e.key === ' ')) {
                             e.preventDefault();
-                            drillTo('airline', { airline: { id: airline.airlineId, name: airline.name } }, { jumpCut: false });
+                            drillTo('airline', { airline: { id: airline.airlineId, name: airline.name }, ...(topAirport ? { airport: topAirport } : {}) });
                           }
                         }}
                         className={cn(

@@ -74,7 +74,15 @@ function resolveContinentWindowDays(preset: RangePreset) {
   if (preset === '365') return 365;
   return 3650;
 }
-
+function emojiFlagToCode(flag: string): string {
+  // แปลง emoji ธงเป็น country code เช่น 🇹🇭 → "th"
+  const codePoints = [...flag].map(char => char.codePointAt(0)! - 0x1F1E6);
+  const countryCode = String.fromCharCode(
+    codePoints[0] + 65,
+    codePoints[1] + 65
+  );
+  return countryCode.toLowerCase();
+}
 function resolveContinentDisplayMode(preset: RangePreset): ContinentDisplayMode {
   if (preset === 'focus' || preset === '7') return 'wow';
   if (preset === '30' || preset === '90' || preset === '180') return 'mom';
@@ -286,6 +294,7 @@ function ContinentPresetBar({
 
 export function ContinentView() {
   const { drillTo, selections, rangePreset, setRangePreset } = useDrillDown();
+  const [search, setSearch] = useState('');
   const continent = selections.continent || CONTINENTS[0];
   const [dashboardDateBounds, setDashboardDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
   const preset = rangePreset;
@@ -604,6 +613,9 @@ export function ContinentView() {
   const resolvedTopAirportRows = topAirportCacheHitKey === topAirportsQueryKey && topAirportRows ? topAirportRows : [];
   const resolvedTopRouteRankRows = topRouteRankCacheHitKey === topRoutesRankQueryKey && topRouteRankRows ? topRouteRankRows : [];
   const countries = detail?.countries ?? [];
+  const filteredCountries = search
+    ? countries.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
+    : countries;
   const totalFlightsValue = hasPayload && detail ? detail.totalFlights : continent.flights;
   const parsedCountSummary = parseContinentCountSummary(continent.airports);
   const airportCountFromSummary = parsedCountSummary.airportCount;
@@ -651,9 +663,9 @@ export function ContinentView() {
     },
     {
       label: 'ประเทศที่เปิดน่านฟ้า',
-      value: hasPayload && detail ? (detail.countryCount || '0') : countryCountFromSummary.toLocaleString(),
+      value: hasPayload && detail ? (detail.countryCount || '0' ) : countryCountFromSummary.toLocaleString(),
       delta: hasPayload
-        ? `แสดงรายละเอียด ${countries.length} ประเทศ`
+        ? ` ประเทศ `
         : `สรุปจาก ${airportCountFromSummary.toLocaleString()} สนามบิน`,
       deltaType: 'neutral',
       growthColored: false,
@@ -668,7 +680,7 @@ export function ContinentView() {
     {
       label: 'ประเทศที่คึกคักที่สุด',
       value: hasPayload && detail
-        ? `${detail.busiestCountry.flag} ${detail.busiestCountry.nameTh}`
+        ? ` ${detail.busiestCountry.nameTh}`
         : `${continent.icon} ${continent.name}`,
       delta: hasPayload && detail ? detail.busiestDelta : 'กำลังโหลดรายละเอียดจากฐานข้อมูล',
       deltaType: hasPayload ? busiestKpiTone : 'neutral',
@@ -682,9 +694,9 @@ export function ContinentView() {
         : {}),
     },
     {
-      label: 'เติบโตเร็วที่สุด',
+      label: 'เติบโตมากที่สุด',
       value: hasPayload && detail
-        ? `${detail.fastestGrowing.flag} ${detail.fastestGrowing.nameTh}`
+        ? `${detail.fastestGrowing.nameTh}`
         : `${continent.icon} ${continent.name}`,
       delta: hasPayload && detail ? detail.fastestDelta : 'กำลังโหลดรายละเอียดจากฐานข้อมูล',
       deltaType: hasPayload ? fastestKpiTone : 'neutral',
@@ -703,10 +715,10 @@ export function ContinentView() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0 flex-1">
-          <h2 className="text-xl font-bold mb-1 break-words">{continent.icon} {continent.name}</h2>
-          <p className="text-[15px] text-muted-foreground font-medium break-words">
+          <h2 className="text-xl font-extrabold text-left px-3 py-4 sm:text-2xl sm:px-5 sm:py-5 lg:text-3xl lg:p-7">ทวีป {continent.name}</h2>
+          {/* <p className="text-[15px] text-muted-foreground font-medium break-words">
             คลิกประเทศเพื่อดูสนามบินในภูมิภาค {continent.name} {'\u00B7'} ช่วงปัจจุบัน: {activePresetLabel}
-          </p>
+          </p> */}
         </div>
         <div className="min-w-0 w-full xl:w-auto xl:max-w-[48rem]">
           <div className="mb-2 text-sm font-medium text-muted-foreground">ช่วงวันที่</div>
@@ -737,8 +749,23 @@ export function ContinentView() {
         </div>
       </div>
 
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-muted-foreground">
+          {hasPayload && detail
+            ? `${filteredCountries.length.toLocaleString()}${search ? ` / ${countries.length.toLocaleString()}` : ''} ประเทศ`
+            : 'กำลังโหลด...'}
+        </div>
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="ค้นหาประเทศ"
+          className="w-full sm:w-52 rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/10"
+        />
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-        {hasPayload && detail ? countries.map((c) => {
+        {hasPayload && detail ? filteredCountries.length > 0 ? filteredCountries.map((c) => {
           const rowPct = parsePercentFromDelta(c.delta);
           const rowTone =
             rowPct != null
@@ -757,7 +784,13 @@ export function ContinentView() {
             }`}
           >
             <div className="flex items-center gap-2 mb-3 min-w-0">
-              <span className="text-2xl">{c.flag}</span>
+              <span className="text-2xl">
+                              <img
+                src={`https://www.worldometers.info/images/flags/original/${emojiFlagToCode(c.flag)}.webp`}
+                alt={`${c.flag} flag`}
+                className="inline-block w-6 h-4"
+              />
+              </span>
               <span className="text-[15px] font-semibold truncate">{c.name}</span>
               <span className="ml-auto bg-muted border border-border rounded-full text-[14px] py-0.5 px-2.5 text-muted-foreground font-medium whitespace-nowrap">
                 {c.airports} สนามบิน
@@ -775,7 +808,11 @@ export function ContinentView() {
             </div>
           </button>
         );
-        }) : Array.from({ length: 4 }).map((_, index) => (
+        }) : (
+          <div className="col-span-full py-10 text-center text-sm text-muted-foreground">
+            ไม่พบประเทศที่ตรงกับ &ldquo;{search}&rdquo;
+          </div>
+        ) : Array.from({ length: 4 }).map((_, index) => (
           <ContinentCountryRingCard key={index} />
         ))}
       </div>
@@ -869,7 +906,7 @@ function ContinentAverageTrendChart({ trends }: { trends: DashboardContinentTren
     <div className="bg-card border border-border rounded-[10px] p-5">
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="text-[16px] font-bold">ค่าเฉลี่ยเที่ยวบินขาเข้า-ขาออกตามช่วงเวลา — {trends.continent.label}</div>
+          <div className="text-[16px] font-bold">ค่าเฉลี่ยเที่ยวบิน เข้า - ออก ตามช่วงเวลาใน {trends.continent.label}</div>
           <div className="text-xs text-muted-foreground">โหมดปัจจุบัน: {modeDescription}</div>
         </div>
         <div className="inline-flex rounded-lg border border-border bg-muted/30 p-1">
@@ -973,7 +1010,7 @@ function ContinentTopRoutesPanel({
   return (
     <div className="bg-card border border-border rounded-[10px] p-5">
       <div className="text-[16px] font-bold mb-4">
-        {'🏆'} 5 อันดับเส้นทางตามจำนวนเที่ยวบิน {'\u2014'} {continentName}
+        {'🏆'} อันดับเส้นทางเที่ยวบินสูงสุดใน {continentName}
       </div>
       {rows.map((r, i) => {
         const pct = r.deltaPercent;

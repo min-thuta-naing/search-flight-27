@@ -1203,7 +1203,7 @@ function TopDestinationsPanel({ departures, arrivals, subtitle }: { departures: 
       <div key={r.city + i} className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2 py-2 border-b border-border/60 last:border-b-0">
         <div className="flex items-center gap-2">
           <span className="text-[14px] text-muted-foreground w-6 text-center shrink-0 font-bold">{i + 1}</span>
-          <span className="text-lg shrink-0">{r.flag}</span>
+          {/* <span className="text-lg shrink-0">{r.flag}</span> */}
           <div className="flex-1 min-w-0">
             <div className="text-[15px] font-bold truncate">{r.city} <span className="text-[11px] text-muted-foreground font-medium">{'\u00B7'} {r.country}</span></div>
           </div>

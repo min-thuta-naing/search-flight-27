@@ -15,7 +15,7 @@ export default function DashboardLayout({
   return (
     <div className="flex min-h-screen min-w-0 flex-col bg-background">
       <Header />
-      <main className="container mx-auto min-w-0 flex-1 px-4 py-6 sm:px-6">
+      <main className="container mx-auto min-w-0 flex-1 py-6 md:px-4 lg:px-6">
         {children}
       </main>
       <Footer />

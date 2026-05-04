@@ -56,7 +56,7 @@ import type { RangePreset } from './DrillDownDashboard';
 import type { AirportInfo, CountryData } from '@/types/dashboard';
 import { cn } from '@/lib/utils';
 
-const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'xl:h-[540px]';
+const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'lg:h-[540px]';
 const COUNTRY_DISPLAY_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
   ? new Intl.DisplayNames(['en'], { type: 'region' })
   : null;
@@ -777,12 +777,12 @@ export function WorldView() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div className="min-w-0 w-full flex-1">
-          <h2 className="text-xl font-bold mb-1">ภาพรวมเที่ยวบินทั่วโลก</h2>
-          <p className="text-sm text-muted-foreground">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between ">
+        <div className="min-w-0 w-full flex-1 flex items-center ">
+          <h2 className="text-xl font-extrabold text-left px-3 py-4 sm:text-2xl sm:px-5 sm:py-5 lg:text-3xl lg:p-7">ภาพรวมเที่ยวบินทั่วโลก</h2>
+          {/* <p className="text-sm text-muted-foreground">
             แสดงข้อมูลสำหรับ <strong>{summaryRangeText}</strong> {'\u00B7'} {summaryStatusText} {'\u00B7'} ช่วงปัจจุบัน: {activePresetLabel}
-          </p>
+          </p> */}
         </div>
         <div className="min-w-0 w-full xl:w-auto xl:max-w-[48rem]">
           <Label className="mb-2 text-sm font-medium text-muted-foreground">ช่วงวันที่ (Start - End)</Label>
@@ -1039,27 +1039,27 @@ export function WorldView() {
             })}
           </div>
 
-          <section className={`grid grid-cols-1 gap-4 xl:grid-cols-[7fr_3fr] xl:items-stretch ${COUNTRY_RANK_PANEL_HEIGHT_CLASS}`}>
-            <div className="order-2 xl:order-1 xl:h-full xl:min-h-0">
+          <section className={`grid grid-cols-1 gap-4 lg:grid-cols-[7fr_3fr] lg:items-stretch ${COUNTRY_RANK_PANEL_HEIGHT_CLASS}`}>
+            <div className="order-2 lg:order-1 lg:h-full lg:min-h-0">
               <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[10px] border border-border bg-card">
                 <div className="flex flex-col gap-1 border-b border-border px-4 py-4 sm:flex-row sm:items-end sm:justify-between sm:px-5">
                   <div>
                     <h3 className="text-[16px] font-bold">ภาพรวมทวีป</h3>
-                    <p className="text-sm text-muted-foreground">เรียงลำดับจาก backend ตามช่วงวันที่ที่เลือก</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
+                    {/* <p className="text-sm text-muted-foreground">เรียงลำดับจาก backend ตามช่วงวันที่ที่เลือก</p> */}
+                    {/* <p className="mt-1 text-xs text-muted-foreground">
                       ชุดข้อมูล `Other` ยังเก็บไว้ใน summary สำหรับ debug mapping แต่จะไม่แสดงในตารางนี้
-                    </p>
+                    </p> */}
                   </div>
-                  <span className="text-sm text-muted-foreground">ข้อมูลจัดอันดับจาก backend</span>
+                  {/* <span className="text-sm text-muted-foreground">ข้อมูลจัดอันดับจาก backend</span> */}
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
-                  <table className="w-full min-w-[760px] border-collapse text-sm">
+                  <table className="w-full min-w-[480px] border-collapse text-sm">
                     <thead>
                       <tr className="border-b border-border bg-muted/30">
-                        <th className="px-4 py-3 text-left font-bold text-muted-foreground">ชื่อทวีป</th>
-                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">จำนวนเส้นทางการบิน</th>
-                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">เที่ยวบินทั้งหมด</th>
-                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">ความเปลี่ยนแปลงจากช่วงที่เลือก</th>
+                        <th className="px-4 py-3 text-left font-bold text-muted-foreground">ทวีป</th>
+                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">เส้นทาง</th>
+                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">เที่ยวบิน</th>
+                        <th className="px-4 py-3 text-right font-bold text-muted-foreground">เปลี่ยนแปลง</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1081,34 +1081,37 @@ export function WorldView() {
                           return (
                             <tr
                               key={continentKey}
-                              className={`border-b border-border/60 last:border-b-0 transition-colors hover:bg-primary/[0.03] ${isBusiest ? 'bg-primary/[0.02]' : ''}`}
+                              className={`group cursor-pointer border-b border-border/60 last:border-b-0 transition-colors hover:bg-primary/[0.06] ${isBusiest ? 'bg-primary/[0.02]' : ''}`}
+                              onClick={() =>
+                                drillTo('continent', {
+                                  continent: {
+                                    name: continent.label,
+                                    icon: continent.icon,
+                                    airports: continent.airports,
+                                    flights: continent.flights,
+                                    delta: continent.delta,
+                                    highlight: isBusiest,
+                                    yoy: continent.deltaPercent,
+                                    yoyN: continent.deltaFlights,
+                                    mom: continent.deltaPercent,
+                                    momN: continent.deltaFlights,
+                                    wow: continent.deltaPercent,
+                                    wowN: continent.deltaFlights,
+                                  } as any,
+                                })
+                              }
                             >
-                              <td className="px-4 py-3">
-                                <button
-                                  type="button"
-                                  className="flex min-w-0 items-center gap-2 text-left"
-                                  onClick={() =>
-                                    drillTo('continent', {
-                                      continent: {
-                                        name: continent.label,
-                                        icon: continent.icon,
-                                        airports: continent.airports,
-                                        flights: continent.flights,
-                                        delta: continent.delta,
-                                        highlight: isBusiest,
-                                        yoy: continent.deltaPercent,
-                                        yoyN: continent.deltaFlights,
-                                        mom: continent.deltaPercent,
-                                        momN: continent.deltaFlights,
-                                        wow: continent.deltaPercent,
-                                        wowN: continent.deltaFlights,
-                                      } as any,
-                                    })
-                                  }
-                                >
+                              <td className="relative px-4 py-3">
+                                <div className="flex min-w-0 items-center gap-2">
                                   <span className="text-base sm:text-lg" aria-hidden="true">{continent.icon}</span>
                                   <span className="truncate font-semibold text-foreground">{continent.label}</span>
-                                </button>
+                                </div>
+                                <span
+                                  role="tooltip"
+                                  className="pointer-events-none absolute left-4 top-full z-20 mt-1 whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-md ring-1 ring-border opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+                                >
+                                  คลิกเพื่อดูรายละเอียดทวีปนี้
+                                </span>
                               </td>
                               <td className="px-4 py-3 text-right tabular-nums">{(continent.routeCount ?? continent.airportCount).toLocaleString()}</td>
                               <td className="px-4 py-3 text-right tabular-nums font-bold text-primary">{continent.flights.toLocaleString()}</td>
@@ -1127,14 +1130,14 @@ export function WorldView() {
                 </div>
               </div>
             </div>
-            <div className="order-1 xl:order-2 xl:h-full xl:min-h-0">
+            <div className="order-1 lg:order-2 lg:h-full lg:min-h-0">
               <CountryLookupPanel />
             </div>
           </section>
 
           {/* Airline Overview Panel */}
           <AirlineOverviewPanel />
-          <div className="grid grid-cols-1 xl:grid-cols-[2fr_2fr] gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <TopCountriesTable rows={topCountryRows} loading={topRanksLoading} onSelectCountry={handleDrillToCountry} />
             <TopAirportsTable rows={topAirportRows} loading={topRanksLoading} onSelectAirport={handleDrillToAirport} />
           </div>
@@ -1760,11 +1763,11 @@ function CountryLookupPanel() {
   const isLoading = loading;
 
   return (
-    <div className="flex h-[300px] min-h-0 flex-col overflow-hidden rounded-[10px] border border-border bg-card sm:h-[320px] xl:h-full">
+    <div className="flex h-[300px] min-h-0 flex-col overflow-hidden rounded-[10px] border border-border bg-card sm:h-[360px] lg:h-full">
       <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-4 sm:px-5">
         <div className="min-w-0">
           <h3 className="text-[16px] font-bold">รายชื่อประเทศ</h3>
-          <p className="text-sm text-muted-foreground">ค้นหาด้วย code หรือชื่อประเทศจากข้อมูลที่มีอยู่ในระบบ</p>
+          <p className="text-sm text-muted-foreground">ค้นหาด้วย code หรือชื่อประเทศ</p>
         </div>
         <span className="text-sm text-muted-foreground">
           {isLoading ? 'กำลังโหลด' : `${visibleCountries.length.toLocaleString()} รายการ`}

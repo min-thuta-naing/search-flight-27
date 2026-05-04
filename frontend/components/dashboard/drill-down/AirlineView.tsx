@@ -75,6 +75,11 @@ function AirlineCalendarCaption({ calendarMonth, displayIndex: _displayIndex, ..
   );
 }
 
+function emojiFlagToCode(flag: string): string {
+  const codePoints = [...flag].map((char) => char.codePointAt(0)! - 0x1f1e6);
+  return String.fromCharCode(codePoints[0] + 65, codePoints[1] + 65).toLowerCase();
+}
+
 // ─── date helpers ────────────────────────────────────────────────────────────
 
 const AIRLINE_PRESET_LABELS: Record<RangePreset, string> = {
@@ -155,7 +160,7 @@ function InfiniteAirportTable({
               </td>
               <td className="px-3 py-2.5">
                 <div className="flex items-center gap-1.5">
-                  <span>{row.flag}</span>
+                  <img src={`https://www.worldometers.info/images/flags/original/${emojiFlagToCode(row.flag)}.webp`} alt={`${row.flag} flag`} className="inline-block h-3.5 w-5 object-cover" />
                   <span className="text-sm text-foreground/80">{row.country}</span>
                 </div>
               </td>
@@ -217,7 +222,7 @@ function InfiniteCountryTable({
               <td className="px-3 py-2.5 text-xs font-semibold text-muted-foreground/70">{i + 1}</td>
               <td className="px-3 py-2.5">
                 <div className="flex items-center gap-1.5">
-                  <span>{row.flag}</span>
+                  <img src={`https://www.worldometers.info/images/flags/original/${emojiFlagToCode(row.flag)}.webp`} alt={`${row.flag} flag`} className="inline-block h-4 w-8 object-cover" />
                   <span className="font-medium text-foreground/90">{row.countryName}</span>
                 </div>
               </td>
@@ -558,7 +563,7 @@ export function AirlineView() {
         label: 'ประเทศที่ให้บริการ',
         value: detail.countryCount.toLocaleString(),
         delta: detail.topCountries[0]
-          ? `อันดับ 1: ${detail.topCountries[0].flag} ${detail.topCountries[0].countryName}`
+          ? `อันดับ 1: ${detail.topCountries[0].countryName}`
           : '-',
         deltaType: 'neutral',
         growthColored: false,
@@ -595,9 +600,9 @@ export function AirlineView() {
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         {/* Left: title + subtitle + back button */}
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground mb-1">
+          {/* <div className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground mb-1">
             Airline Drill-down
-          </div>
+          </div> */}
           <h2 className="text-xl font-bold break-words">{airlineName}</h2>
           <p className="text-[15px] text-muted-foreground mt-1">
             {queryScope.level === 'world' && 'ข้อมูลทั่วโลก'}
@@ -605,17 +610,7 @@ export function AirlineView() {
             {queryScope.level === 'country' && `ประเทศ: ${selections.country?.name ?? ''}`}
             {queryScope.level === 'airport' && `สนามบิน: ${selections.airport?.iata ?? ''} · ${selections.airport?.name ?? ''}`}
           </p>
-          <div className="mt-3">
-            <BackButton
-              label={
-                queryScope.level === 'world' ? 'กลับสู่ภาพรวมโลก'
-                : queryScope.level === 'continent' ? 'กลับสู่ทวีป'
-                : queryScope.level === 'country' ? 'กลับสู่ประเทศ'
-                : 'กลับสู่สนามบิน'
-              }
-              onClick={() => drillTo(queryScope.level)}
-            />
-          </div>
+
         </div>
 
         {/* Right: date range picker */}
@@ -948,8 +943,21 @@ export function AirlineView() {
               scrollRef={countryScrollRef}
             />
           </Panel>
+                    <div className="mt-3">
+            <BackButton
+              label={
+                queryScope.level === 'world' ? 'กลับสู่ภาพรวมโลก'
+                : queryScope.level === 'continent' ? 'กลับสู่ทวีป'
+                : queryScope.level === 'country' ? 'กลับสู่ประเทศ'
+                : 'กลับสู่สนามบิน'
+              }
+              onClick={() => drillTo(queryScope.level)}
+            />
+          </div>
         </div>
+        
       )}
     </div>
+    
   );
 }

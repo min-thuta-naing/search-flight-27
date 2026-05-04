@@ -120,12 +120,18 @@ function buildAirlinePrefillSelections(
 
 export type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';
 
+export interface DrillOptions {
+  /** When false, preserve the current navigation path instead of replacing it with the
+   *  airline's home base. Default true — jump cut is the standard airline drill behavior. */
+  jumpCut?: boolean;
+}
+
 interface DrillDownContextValue {
   level: DrillLevel;
   timeMode: TimeMode;
   rangePreset: RangePreset;
   queryScope: QueryScope;
-  drillTo: (level: DrillLevel, selection?: SelectionState) => void;
+  drillTo: (level: DrillLevel, selection?: SelectionState, options?: DrillOptions) => void;
   setTimeMode: (mode: TimeMode) => void;
   setRangePreset: (preset: RangePreset) => void;
   selections: SelectionState;
@@ -201,30 +207,26 @@ export function DrillDownDashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  const drillTo = useCallback((newLevel: DrillLevel, selection?: SelectionState) => {
+  const drillTo = useCallback((newLevel: DrillLevel, selection?: SelectionState, options?: DrillOptions) => {
     const merged = buildMergedSelections(selection);
 
     // Guard: nothing to do if level and selections are already identical.
     if (newLevel === levelRef.current && selectionsEqual(merged, selectionsRef.current)) return;
 
-    if (newLevel === 'airline' && merged.airline?.id) {
+    // Jump-cut: the default for airline drills. Fetches the airline's home base and replaces
+    // the current geo context. Pass { jumpCut: false } to preserve the navigation path instead.
+    if (options?.jumpCut !== false && newLevel === 'airline' && merged.airline?.id) {
       const requestSeq = ++airlinePrefillSeqRef.current;
-      // Freeze the active geo scope synchronously before the async home-base lookup.
-      // Using queryScopeRef (not re-deriving from merged) prevents stale sticky selections
-      // (e.g. an old airport from a previous branch) from leaking into the airline scope.
+      // Freeze the active geo scope synchronously so concurrent navigations don't corrupt it.
       const airlineScope = queryScopeRef.current;
 
       void (async () => {
         try {
           const homeBase = await getDashboardAirlineHomeBase({ airlineId: merged.airline!.id });
           if (requestSeq !== airlinePrefillSeqRef.current) return;
-
-          const prefilled = buildAirlinePrefillSelections(merged, homeBase);
-          commitDrill('airline', prefilled, airlineScope);
+          commitDrill('airline', buildAirlinePrefillSelections(merged, homeBase), airlineScope);
         } catch {
           if (requestSeq !== airlinePrefillSeqRef.current) return;
-          // Strip geo fields deeper than the frozen scope so stale airport/country from a
-          // previous branch don't appear in the status line. Scope is still the captured branch scope.
           commitDrill('airline', selectionsUpToScope(merged, airlineScope), airlineScope);
         }
       })();
@@ -232,6 +234,7 @@ export function DrillDownDashboard() {
       return;
     }
 
+    // Default: preserve the current navigation path as-is.
     commitDrill(newLevel, merged);
   }, [buildMergedSelections, commitDrill]);
 

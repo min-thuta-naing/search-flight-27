@@ -1390,12 +1390,12 @@ function AirlineMarketSharePanel({
                         role={canDrill ? 'button' : undefined}
                         tabIndex={canDrill ? 0 : undefined}
                         onClick={() => {
-                          if (canDrill) drillTo('airline', { airline: { id: airline.airlineId, name: airline.name } });
+                          if (canDrill) drillTo('airline', { airline: { id: airline.airlineId, name: airline.name } }, { jumpCut: false });
                         }}
                         onKeyDown={(e) => {
                           if (canDrill && (e.key === 'Enter' || e.key === ' ')) {
                             e.preventDefault();
-                            drillTo('airline', { airline: { id: airline.airlineId, name: airline.name } });
+                            drillTo('airline', { airline: { id: airline.airlineId, name: airline.name } }, { jumpCut: false });
                           }
                         }}
                         className={cn(

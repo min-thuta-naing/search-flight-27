@@ -1379,6 +1379,53 @@ export async function getDashboardCountryOverview(req: Request, res: Response, n
 }
 
 /**
+ * Get airline market share for a country (standalone, no full overview overhead)
+ * GET /api/statistics/dashboard-country-airline-market?country=TH&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+ */
+export async function getDashboardCountryAirlineMarket(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { country, date, window_days, start_date, end_date } = req.query;
+    const normalizedStartDate = normalizeQueryText(start_date);
+    const normalizedEndDate = normalizeQueryText(end_date);
+    const normalizedDate = normalizeQueryText(date);
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!country || typeof country !== 'string') {
+      res.status(400).json({ error: 'Missing country parameter', message: 'country is required' });
+      return;
+    }
+
+    if (!normalizedStartDate || !normalizedEndDate) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({ error: 'Invalid window_days parameter', message: 'window_days must be a number between 1 and 3650' });
+        return;
+      }
+    }
+
+    const normalizedQuery = {
+      ...req.query,
+      date: normalizedDate,
+      start_date: normalizedStartDate,
+      end_date: normalizedEndDate,
+    };
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-country-airline-market', normalizedQuery);
+    const rows = await getOrSetDashboardQueryCache(cacheKey, () =>
+      DashboardSummaryService.getCountryAirlineMarket({
+        country,
+        centerDateInput: normalizedDate,
+        windowDays,
+        startDateInput: normalizedStartDate,
+        endDateInput: normalizedEndDate,
+      })
+    );
+
+    res.json({ rows });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get country flow map data for drill-down dashboard
  * GET /api/statistics/dashboard-country-flow-map?country=Thailand&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
  */

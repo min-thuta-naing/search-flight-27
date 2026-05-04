@@ -1,4 +1,5 @@
 import { pool } from '../config/database';
+import { getContinentMeta } from '../utils/continentMapper';
 
 export interface Airport {
   id: number;
@@ -34,6 +35,9 @@ export interface AirportCountrySummary {
   country: string;
   country_code: string | null;
   airport_count: number;
+  continent_key: string;
+  continent_label: string;
+  continent_icon: string;
 }
 
 export class AirportModel {
@@ -212,7 +216,10 @@ export class AirportModel {
     `;
 
     const result = await pool.query(query);
-    const airportCountries = result.rows;
+    const airportCountries: AirportCountrySummary[] = (result.rows as Array<{ country: string; country_code: string | null; airport_count: number }>).map((row) => {
+      const meta = getContinentMeta(row.country_code, row.country);
+      return { ...row, continent_key: meta.key, continent_label: meta.label, continent_icon: meta.icon };
+    });
     const totalCountries = airportCountries.length;
     const totalAirports = airportCountries.reduce((acc, curr) => acc + curr.airport_count, 0);
 

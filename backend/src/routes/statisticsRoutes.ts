@@ -12,6 +12,7 @@ import {
   getDashboardContinentTrends,
   getDashboardTopRanks,
   getDashboardCountryOverview,
+  getDashboardCountryAirlineMarket,
   getDashboardCountryFlowMap,
   getDashboardAirportOverview,
   getDashboardAirportInsights,
@@ -68,6 +69,9 @@ router.get('/dashboard-top-ranks', getDashboardTopRanks);
 
 // Get country overview data for country drill-down dashboard
 router.get('/dashboard-country-overview', getDashboardCountryOverview);
+
+// Get airline market share for a country (standalone panel query)
+router.get('/dashboard-country-airline-market', getDashboardCountryAirlineMarket);
 
 // Get country flow map data for country drill-down dashboard
 router.get('/dashboard-country-flow-map', getDashboardCountryFlowMap);

@@ -210,6 +210,7 @@ export interface DashboardCountryInboundBreakdownResponse {
 }
 
 export interface DashboardCountryAirlineBreakdownResponse {
+  airlineId: number;
   name: string;
   flights: number;
   share: number;
@@ -990,6 +991,35 @@ export class StatisticsApi {
       start_date: startDate,
       end_date: endDate,
     }, { signal, timeoutMs });
+  }
+
+  /**
+   * Get airline market share rows for a country (standalone — does not fetch the full overview).
+   */
+  async getDashboardCountryAirlineMarket(
+    country: string,
+    options: DashboardQueryOptions = {},
+  ): Promise<{ rows: DashboardCountryAirlineBreakdownResponse[] }> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+      timeoutMs = 60000,
+    } = options;
+
+    return apiClient.get<{ rows: DashboardCountryAirlineBreakdownResponse[] }>(
+      '/statistics/dashboard-country-airline-market',
+      {
+        country,
+        date,
+        window_days: windowDays,
+        start_date: startDate,
+        end_date: endDate,
+      },
+      { signal, timeoutMs },
+    );
   }
 
   /**

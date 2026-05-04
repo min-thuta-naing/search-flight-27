@@ -144,6 +144,7 @@ export interface DashboardCountryInboundBreakdown {
 }
 
 export interface DashboardCountryAirlineBreakdown {
+  airlineId: number;
   name: string;
   flights: number;
   share: number;
@@ -3047,6 +3048,7 @@ export class DashboardSummaryService {
     })).filter((row) => row.name !== 'Other' && row.flights > 0);
 
     const airlineMarket = (airlineResult.rows as Array<{
+      airline_id: number;
       airline_name: string | null;
       flights: number;
       share: number;
@@ -3055,6 +3057,7 @@ export class DashboardSummaryService {
       const share = Number(row.share) || 0;
       const previousShare = Number(row.previous_share) || 0;
       return {
+        airlineId: Number(row.airline_id),
         name: (row.airline_name || 'Unknown Airline').trim(),
         flights: Number(row.flights) || 0,
         share,
@@ -3088,6 +3091,135 @@ export class DashboardSummaryService {
       airlineMarket,
       topAirline,
     };
+  }
+
+  static async getCountryAirlineMarket(
+    input: CountryOverviewInput,
+  ): Promise<DashboardCountryAirlineBreakdown[]> {
+    const countryInput = (input.country || '').trim();
+    if (!countryInput) throw new Error('country is required');
+
+    const { startDate, endDate, comparisonStartDate, comparisonEndDate } = resolveWorldRange(input);
+    const periodStart = formatDateForQuery(startDate);
+    const periodEnd = formatDateForQuery(endDate);
+    const comparisonStart = formatDateForQuery(comparisonStartDate);
+    const comparisonEnd = formatDateForQuery(comparisonEndDate);
+    const normalizedCode = countryInput.toUpperCase();
+
+    const airlineQuery = `
+      WITH country_airports AS (
+        SELECT DISTINCT UPPER(TRIM(code)) AS code
+        FROM airports
+        WHERE code IS NOT NULL
+          AND TRIM(code) <> ''
+          AND (
+            UPPER(TRIM(country_code)) = $1
+            OR UPPER(TRIM(country)) = $1
+            OR TRIM(country_name) ILIKE $2
+          )
+      ),
+      current_rows AS (
+        SELECT airline_id
+        FROM departure_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+          AND dep_airport IN (SELECT code FROM country_airports)
+        UNION ALL
+        SELECT airline_id
+        FROM departure_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+          AND arr_airport IN (SELECT code FROM country_airports)
+        UNION ALL
+        SELECT airline_id
+        FROM arrival_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+          AND dep_airport IN (SELECT code FROM country_airports)
+        UNION ALL
+        SELECT airline_id
+        FROM arrival_flight_paths
+        WHERE departure_date >= $3 AND departure_date <= $4
+          AND arr_airport IN (SELECT code FROM country_airports)
+      ),
+      current_agg AS (
+        SELECT airline_id, COUNT(*)::int AS flights
+        FROM current_rows
+        GROUP BY airline_id
+      ),
+      current_ranked AS (
+        SELECT airline_id, flights
+        FROM current_agg
+        ORDER BY flights DESC, airline_id ASC
+      ),
+      previous_rows AS (
+        SELECT airline_id
+        FROM departure_flight_paths
+        WHERE departure_date >= $5 AND departure_date <= $6
+          AND dep_airport IN (SELECT code FROM country_airports)
+        UNION ALL
+        SELECT airline_id
+        FROM departure_flight_paths
+        WHERE departure_date >= $5 AND departure_date <= $6
+          AND arr_airport IN (SELECT code FROM country_airports)
+        UNION ALL
+        SELECT airline_id
+        FROM arrival_flight_paths
+        WHERE departure_date >= $5 AND departure_date <= $6
+          AND dep_airport IN (SELECT code FROM country_airports)
+        UNION ALL
+        SELECT airline_id
+        FROM arrival_flight_paths
+        WHERE departure_date >= $5 AND departure_date <= $6
+          AND arr_airport IN (SELECT code FROM country_airports)
+      ),
+      previous_agg AS (
+        SELECT airline_id, COUNT(*)::int AS flights
+        FROM previous_rows
+        GROUP BY airline_id
+      ),
+      totals AS (
+        SELECT
+          (SELECT COALESCE(SUM(flights), 0)::int FROM current_agg) AS current_total,
+          (SELECT COALESCE(SUM(flights), 0)::int FROM previous_agg) AS previous_total
+      )
+      SELECT
+        tc.airline_id,
+        tc.flights,
+        COALESCE(pa.flights, 0)::int AS previous_flights,
+        COALESCE(al.name, CONCAT('Airline #', tc.airline_id::text)) AS airline_name,
+        CASE
+          WHEN totals.current_total > 0 THEN (tc.flights::numeric / totals.current_total::numeric) * 100
+          ELSE 0
+        END AS share,
+        CASE
+          WHEN totals.previous_total > 0 THEN (COALESCE(pa.flights, 0)::numeric / totals.previous_total::numeric) * 100
+          ELSE 0
+        END AS previous_share
+      FROM current_ranked tc
+      LEFT JOIN previous_agg pa ON pa.airline_id = tc.airline_id
+      LEFT JOIN airlines al ON al.id = tc.airline_id
+      CROSS JOIN totals
+      ORDER BY tc.flights DESC, tc.airline_id ASC
+    `;
+
+    const params = [normalizedCode, `%${countryInput}%`, periodStart, periodEnd, comparisonStart, comparisonEnd];
+    const result = await pool.query(airlineQuery, params);
+
+    return (result.rows as Array<{
+      airline_id: number;
+      airline_name: string | null;
+      flights: number;
+      share: number;
+      previous_share: number;
+    }>).map((row) => {
+      const share = Number(row.share) || 0;
+      const previousShare = Number(row.previous_share) || 0;
+      return {
+        airlineId: Number(row.airline_id),
+        name: (row.airline_name || 'Unknown Airline').trim(),
+        flights: Number(row.flights) || 0,
+        share,
+        delta: share - previousShare,
+      } satisfies DashboardCountryAirlineBreakdown;
+    }).filter((row) => row.flights > 0);
   }
 
   static async getCountryFlowMap(
@@ -4176,55 +4308,30 @@ export class DashboardSummaryService {
       return emptyPayload;
     }
 
+    // Match each table to the leading airport column that already has an index:
+    //   departure_flight_paths(dep_airport, departure_date)
+    //   arrival_flight_paths(arr_airport, arrival_date)
+    // getContinentAirportCodes() already returns normalized uppercase codes, so
+    // we can compare directly without UPPER(TRIM(...)) and keep the predicates index-friendly.
     const dayAverageQuery = `
       WITH flight_events AS (
         SELECT
-          departure_date::date AS flight_date,
+          departure_date AS flight_date,
           COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
-          CASE
-            WHEN dep_airport IS NOT NULL
-              AND TRIM(dep_airport) <> ''
-              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
-            THEN 1 ELSE 0
-          END AS outbound_count,
-          CASE
-            WHEN arr_airport IS NOT NULL
-              AND TRIM(arr_airport) <> ''
-              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
-            THEN 1 ELSE 0
-          END AS inbound_count
+          1 AS outbound_count,
+          0 AS inbound_count
         FROM departure_flight_paths
-        WHERE departure_date IS NOT NULL
-          AND (
-            (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
-            OR
-            (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
-          )
+        WHERE dep_airport = ANY($1::text[])
 
         UNION ALL
 
         SELECT
-          departure_date::date AS flight_date,
+          departure_date AS flight_date,
           COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
-          CASE
-            WHEN dep_airport IS NOT NULL
-              AND TRIM(dep_airport) <> ''
-              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
-            THEN 1 ELSE 0
-          END AS outbound_count,
-          CASE
-            WHEN arr_airport IS NOT NULL
-              AND TRIM(arr_airport) <> ''
-              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
-            THEN 1 ELSE 0
-          END AS inbound_count
+          0 AS outbound_count,
+          1 AS inbound_count
         FROM arrival_flight_paths
-        WHERE departure_date IS NOT NULL
-          AND (
-            (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
-            OR
-            (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
-          )
+        WHERE arr_airport = ANY($1::text[])
       ),
       day_span AS (
         SELECT GREATEST(COUNT(DISTINCT flight_date)::numeric, 1) AS days_count

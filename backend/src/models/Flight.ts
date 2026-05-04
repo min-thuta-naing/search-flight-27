@@ -228,6 +228,21 @@ export class FlightModel {
    * Get all airlines from database
    * Returns all airlines regardless of route
    */
+  static async getAirlineByCode(code: string): Promise<Airline | null> {
+    try {
+      const result = await pool.query(
+        'SELECT * FROM airlines WHERE code = $1 LIMIT 1',
+        [code.toUpperCase()],
+      );
+      return (result.rows[0] as Airline) ?? null;
+    } catch (error: any) {
+      const { logDatabaseError } = await import('../utils/errorLogger.js');
+      logDatabaseError('FlightModel.getAirlineByCode', error, { code });
+      if (error instanceof Error) throw error;
+      throw new Error(error?.message || error?.detail || JSON.stringify(error) || 'Database error: Failed to get airline');
+    }
+  }
+
   static async getAllAirlines(): Promise<Airline[]> {
     try {
       const query = `

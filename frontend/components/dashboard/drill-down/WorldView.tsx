@@ -240,6 +240,11 @@ function formatRangeLabel(range?: DateRange) {
   return `${from} – ${to}`;
 }
 
+function formatRangeLabelFromIso({ startDate, endDate }: { startDate: string; endDate: string }) {
+  const fmt = (iso: string) => iso.split('-').reverse().join('/');
+  return `${fmt(startDate)} – ${fmt(endDate)}`;
+}
+
 function parseContinentAirportCount(value: string) {
   const match = value.match(/([\d,]+)\s*สนามบิน/);
   return match ? Number(match[1].replace(/,/g, '')) : 0;
@@ -724,7 +729,11 @@ export function WorldView() {
     : summary
       ? 'ดึงจากฐานข้อมูล'
       : mockFallbackStatusText;
-  const summaryRangeText = isMounted ? formatRangeLabel(dateRange) : 'กำลังเลือกช่วงวันที่';
+  const summaryRangeText = isMounted
+    ? durationMode && durationMode !== 'all'
+      ? formatRangeLabelFromIso(buildPresetUtcQueryDates(durationMode as Exclude<RangePreset, 'all'>))
+      : formatRangeLabel(dateRange)
+    : 'กำลังเลือกช่วงวันที่';
   const activePresetLabel = durationMode ? RANGE_PRESET_LABELS[durationMode] : 'กำหนดเอง';
   const handleDrillToCountry = (row: TopCountryViewRow) => {
     const continentLabel = row.continentLabel || 'Other';

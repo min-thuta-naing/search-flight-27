@@ -28,6 +28,7 @@ import {
   type DashboardCountryFlowMapResponse,
 } from '@/lib/dashboard/services/drilldown';
 import { runDrillDownRequest } from '@/lib/dashboard/drill-down-cache';
+import { statisticsApi } from '@/lib/api/statistics-api';
 import type {
   DashboardCountryInboundBreakdownResponse,
   DashboardCountryAirlineBreakdownResponse,
@@ -506,7 +507,6 @@ export function CountryView() {
   const [allAirports, setAllAirports] = useState<AirportInfo[]>([]);
   const [displayAirports, setDisplayAirports] = useState<AirportInfo[]>([]);
   const [inboundRows, setInboundRows] = useState<DashboardCountryInboundBreakdownResponse[]>([]);
-  const [airlineMarketRows, setAirlineMarketRows] = useState<DashboardCountryAirlineBreakdownResponse[]>([]);
   const [topAirlineName, setTopAirlineName] = useState('');
   const [topAirlineSharePct, setTopAirlineSharePct] = useState<number | undefined>(undefined);
   const [countryFlights, setCountryFlights] = useState(country.flights);
@@ -615,10 +615,6 @@ export function CountryView() {
         setAllAirports(mappedAirports);
         setDisplayAirports(filterActiveAirports(mappedAirports));
         setInboundRows(payload.inbound);
-        setAirlineMarketRows(payload.airlineMarket.map((airline, idx) => ({
-          ...airline,
-          color: colors[idx % colors.length],
-        })));
         setTopAirlineName(payload.topAirline.name || '');
         setTopAirlineSharePct(payload.topAirline.sharePercent ?? undefined);
         setCountryFlights(payload.totals.flights);
@@ -633,7 +629,6 @@ export function CountryView() {
         setAllAirports([]);
         setDisplayAirports([]);
         setInboundRows([]);
-        setAirlineMarketRows([]);
         setTopAirlineName('');
         setTopAirlineSharePct(undefined);
         setCountryFlights(0);
@@ -904,7 +899,12 @@ export function CountryView() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        <AirlineMarketSharePanel countryName={displayCountryName} rows={airlineMarketRows} />
+        <AirlineMarketSharePanel
+          countryName={displayCountryName}
+          countryQuery={countryQuery}
+          startDate={startDate}
+          endDate={endDate}
+        />
         <InboundCountriesPanel countryName={displayCountryName} rows={inboundRows} />
       </div>
 
@@ -1261,26 +1261,54 @@ function InboundCountriesPanel({
 }
 function AirlineMarketSharePanel({
   countryName,
-  rows,
+  countryQuery,
+  startDate,
+  endDate,
 }: {
   countryName: string;
-  rows: DashboardCountryAirlineBreakdownResponse[];
+  countryQuery: string;
+  startDate: string | undefined;
+  endDate: string | undefined;
 }) {
+  const { drillTo } = useDrillDown();
+  const [rows, setRows] = useState<DashboardCountryAirlineBreakdownResponse[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(5);
-  const airlines = rows;
-  const max = airlines[0]?.flights || 1;
-  const visibleAirlines = airlines.slice(0, visibleCount);
-  const hasMoreRows = visibleCount < airlines.length;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const loaderRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    if (!countryQuery || !startDate || !endDate) return;
+    let alive = true;
+    setLoading(true);
+    setError(null);
     setVisibleCount(5);
-  }, [rows]);
+
+    statisticsApi
+      .getDashboardCountryAirlineMarket(countryQuery, { startDate, endDate, timeoutMs: 60000 })
+      .then((data) => {
+        if (!alive) return;
+        setRows(data.rows);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setRows([]);
+        setError('ไม่สามารถโหลดข้อมูลสายการบินได้');
+        setLoading(false);
+      });
+
+    return () => { alive = false; };
+  }, [countryQuery, startDate, endDate]);
+
+  const max = rows[0]?.flights || 1;
+  const visibleAirlines = rows.slice(0, visibleCount);
+  const hasMoreRows = visibleCount < rows.length;
 
   const loadMore = useCallback(() => {
-    setVisibleCount((current) => Math.min(current + 10, airlines.length));
-  }, [airlines.length]);
+    setVisibleCount((current) => Math.min(current + 10, rows.length));
+  }, [rows.length]);
 
   useEffect(() => {
     if (!hasMoreRows) return;
@@ -1301,53 +1329,81 @@ function AirlineMarketSharePanel({
         <div className="text-[16px] font-bold break-words">
           {'✈️'} Top Airlines Market Share — {countryName}
         </div>
-        <div className="text-xs text-muted-foreground">นับเฉพาะเที่ยวบินจากต่างประเทศ</div>
+        <div className="text-xs text-muted-foreground">คลิกสายการบินเพื่อดูรายละเอียด</div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-border/70">
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
-          <table className="w-full min-w-[620px] border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-border bg-muted/20">
-              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
-              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">สายการบิน</th>
-              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
-              <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">Bar score</th>
-              <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ส่วนแบ่ง</th>
-            </tr>
-          </thead>
-          <tbody>
-            {airlines.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                  ไม่พบข้อมูลสายการบิน
-                </td>
-              </tr>
-            ) : (
-              visibleAirlines.map((airline: DashboardCountryAirlineBreakdownResponse, i: number) => {
-                const barW = (airline.flights / max * 100).toFixed(0);
-                return (
-                  <tr key={airline.name} className="border-b border-border/60 last:border-b-0 hover:bg-primary/[0.03]">
-                    <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
-                    <td className="px-3 py-2.5 font-medium text-foreground">{airline.name}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{airline.flights.toLocaleString()}</td>
-                    <td className="px-3 py-2.5">
-                      <div className="h-2 w-28 rounded-full bg-muted overflow-hidden">
-                        <div className="h-full rounded-full bg-primary" style={{ width: `${barW}%` }} />
-                      </div>
+        {loading ? (
+          <div className="flex flex-1 items-center justify-center py-10">
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          </div>
+        ) : error ? (
+          <div className="flex flex-1 items-center justify-center px-4 py-10 text-center text-sm text-muted-foreground">
+            {error}
+          </div>
+        ) : (
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
+            <table className="w-full min-w-[620px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/20">
+                  <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">#</th>
+                  <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">สายการบิน</th>
+                  <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">เที่ยวบิน</th>
+                  <th className="px-3 py-2.5 text-left text-[12px] font-bold uppercase tracking-wide text-muted-foreground">Bar score</th>
+                  <th className="px-3 py-2.5 text-right text-[12px] font-bold uppercase tracking-wide text-muted-foreground">ส่วนแบ่ง</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                      ไม่พบข้อมูลสายการบิน
                     </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground font-bold">{airline.share.toFixed(1)}%</td>
                   </tr>
-                );
-              })
+                ) : (
+                  visibleAirlines.map((airline: DashboardCountryAirlineBreakdownResponse, i: number) => {
+                    const barW = ((airline.flights / max) * 100).toFixed(0);
+                    const canDrill = Boolean(airline.airlineId);
+                    return (
+                      <tr
+                        key={airline.airlineId ?? `${i}-${airline.name}`}
+                        role={canDrill ? 'button' : undefined}
+                        tabIndex={canDrill ? 0 : undefined}
+                        onClick={() => {
+                          if (canDrill) drillTo('airline', { airline: { id: airline.airlineId, name: airline.name } });
+                        }}
+                        onKeyDown={(e) => {
+                          if (canDrill && (e.key === 'Enter' || e.key === ' ')) {
+                            e.preventDefault();
+                            drillTo('airline', { airline: { id: airline.airlineId, name: airline.name } });
+                          }
+                        }}
+                        className={cn(
+                          'border-b border-border/60 last:border-b-0',
+                          canDrill ? 'cursor-pointer hover:bg-primary/[0.06]' : 'hover:bg-primary/[0.03]',
+                        )}
+                      >
+                        <td className="px-3 py-2.5 font-bold text-muted-foreground">{i + 1}</td>
+                        <td className="px-3 py-2.5 font-medium text-foreground">{airline.name}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums font-bold text-primary">{airline.flights.toLocaleString()}</td>
+                        <td className="px-3 py-2.5">
+                          <div className="h-2 w-28 rounded-full bg-muted overflow-hidden">
+                            <div className="h-full rounded-full bg-primary" style={{ width: `${barW}%` }} />
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground font-bold">{airline.share.toFixed(1)}%</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+            <div ref={loaderRef} style={{ height: 1 }} />
+            {!hasMoreRows && visibleAirlines.length > 0 && (
+              <div className="py-3 text-center text-muted-foreground text-sm">แสดงข้อมูลครบแล้ว</div>
             )}
-          </tbody>
-          </table>
-          <div ref={loaderRef} style={{ height: 1 }} />
-          {!hasMoreRows && visibleAirlines.length > 0 && (
-            <div className="py-3 text-center text-muted-foreground text-sm">แสดงข้อมูลครบแล้ว</div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

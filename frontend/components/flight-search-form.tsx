@@ -30,7 +30,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { THAI_AIRLINES } from '@/services/data/constants'
 import { statisticsApi } from '@/lib/api/statistics-api'
 import { DestinationSelect } from './destination-select'
 

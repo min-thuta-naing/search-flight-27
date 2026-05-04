@@ -49,8 +49,7 @@ export async function getAirlineByCode(
     }
 
     // Get airline from database
-    const airlines = await FlightModel.getAllAirlines();
-    const airline = airlines.find(a => a.code.toUpperCase() === code.toUpperCase());
+    const airline = await FlightModel.getAirlineByCode(code);
 
     if (!airline) {
       res.status(404).json({

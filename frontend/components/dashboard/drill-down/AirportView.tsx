@@ -934,7 +934,7 @@ function TrendSparkChart(
               <span style={{ color: getSeriesTone('arr').lineColorCss }} className="font-bold">{'\u25CF'} ขาเข้า</span>
             </>
           )}
-          <span style={{ color: 'hsl(0 84% 55%)' }} className="font-bold">{'——'} ยกเลิก</span>
+          {/* <span style={{ color: 'hsl(0 84% 55%)' }} className="font-bold">{'——'} ยกเลิก</span> */}
           <span style={{ color: 'var(--chart-current)' }} className="font-bold">
             {'\u25CF'} เดือนนี้
             {currentPeriodDetail ? ` \u00B7 ${currentPeriodDetail}` : ''}

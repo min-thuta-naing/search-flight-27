@@ -4147,10 +4147,12 @@ export class DashboardSummaryService {
           UPPER(TRIM(cr.to_airport)) AS to_code,
           COUNT(*)::int AS flights
         FROM current_rows cr
-        JOIN continent_airports from_codes ON UPPER(TRIM(cr.from_airport)) = from_codes.airport_code
-        JOIN continent_airports to_codes ON UPPER(TRIM(cr.to_airport)) = to_codes.airport_code
         WHERE cr.from_airport IS NOT NULL AND TRIM(cr.from_airport) <> ''
           AND cr.to_airport IS NOT NULL AND TRIM(cr.to_airport) <> ''
+          AND (
+            UPPER(TRIM(cr.from_airport)) = ANY(SELECT airport_code FROM continent_airports)
+            OR UPPER(TRIM(cr.to_airport)) = ANY(SELECT airport_code FROM continent_airports)
+          )
         GROUP BY UPPER(TRIM(cr.from_airport)), UPPER(TRIM(cr.to_airport))
       ),
       top_current AS (
@@ -4262,7 +4264,7 @@ export class DashboardSummaryService {
     input: ContinentTrendAveragesInput,
   ): Promise<DashboardContinentTrendsResponse> {
     const continentMeta = resolveContinentMetaFromInput(input.continent);
-    const cacheKey = `${continentMeta.key}|v4`;
+    const cacheKey = `${continentMeta.key}|v6`;
 
     const cached = continentTrendsCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -4330,8 +4332,30 @@ export class DashboardSummaryService {
           COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
           0 AS outbound_count,
           1 AS inbound_count
+        FROM departure_flight_paths
+        WHERE arr_airport = ANY($1::text[])
+          AND (dep_airport IS NULL OR dep_airport <> ALL($1::text[]))
+
+        UNION ALL
+
+        SELECT
+          departure_date AS flight_date,
+          COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
+          0 AS outbound_count,
+          1 AS inbound_count
         FROM arrival_flight_paths
         WHERE arr_airport = ANY($1::text[])
+
+        UNION ALL
+
+        SELECT
+          departure_date AS flight_date,
+          COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
+          1 AS outbound_count,
+          0 AS inbound_count
+        FROM arrival_flight_paths
+        WHERE dep_airport = ANY($1::text[])
+          AND (arr_airport IS NULL OR arr_airport <> ALL($1::text[]))
       ),
       day_span AS (
         SELECT GREATEST(COUNT(DISTINCT flight_date)::numeric, 1) AS days_count
@@ -4535,8 +4559,8 @@ export class DashboardSummaryService {
     let dayMessage: string | null = departureTimeAvailable ? null : 'ข้อมูลยังไม่พร้อมให้บริการ';
 
     let monthRows: Array<Record<string, any>> = [];
-    const monthStatus: 'ready' | 'unavailable' = 'unavailable';
-    const monthMessage: string | null = 'ข้อมูลยังไม่พร้อมให้บริการ';
+    let monthStatus: 'ready' | 'unavailable' = 'unavailable';
+    let monthMessage: string | null = null;
 
     if (departureTimeAvailable) {
       try {
@@ -4546,6 +4570,20 @@ export class DashboardSummaryService {
         dayStatus = 'unavailable';
         dayMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
       }
+    }
+
+    try {
+      const dateTypes = await getFlightPathColumnTypes('departure_date');
+      const useTextQuery = dateTypes.some((t) => t === 'text' || t === 'character varying');
+      const monthResult = await pool.query(
+        useTextQuery ? monthAverageQueryTextDate : monthAverageQueryTypedDate,
+        [continentAirportCodes],
+      );
+      monthRows = monthResult.rows as Array<Record<string, any>>;
+      monthStatus = 'ready';
+    } catch {
+      monthStatus = 'unavailable';
+      monthMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
     }
 
     const monthLabels = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -4605,7 +4643,7 @@ export class DashboardSummaryService {
           mode: 'month',
           status: monthStatus,
           message: monthMessage,
-          points: [],
+          points: monthStatus === 'ready' ? monthPoints : [],
         },
         year: {
           mode: 'year',

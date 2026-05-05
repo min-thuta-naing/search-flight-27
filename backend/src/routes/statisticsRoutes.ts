@@ -28,6 +28,7 @@ import {
   getDashboardAirlineDestCountries,
   getDashboardAirlineHomeBase,
   clearDashboardCache,
+  triggerDashboardCacheRefresh,
   getDashboardDateBounds,
   getDashboardCacheStatus,
 } from '../controllers/statisticsController';
@@ -123,6 +124,9 @@ router.get('/dashboard-cache/status', getDashboardCacheStatus);
 
 // Clear dashboard query cache manually
 router.post('/dashboard-cache/clear', clearDashboardCache);
+
+// Trigger dashboard cache refresh (preload) in the background
+router.post('/dashboard-cache/refresh', triggerDashboardCacheRefresh);
 
 export default router;
 

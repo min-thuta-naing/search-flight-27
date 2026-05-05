@@ -860,6 +860,35 @@ export async function refreshDashboardQueryCacheSnapshot(options?: {
 }
 
 /**
+ * Trigger dashboard cache refresh (preload) in the background
+ * POST /api/statistics/dashboard-cache/refresh
+ */
+export async function triggerDashboardCacheRefresh(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (dashboardPreloadStatus.phase === 'running') {
+    res.status(409).json({ success: false, message: 'Preload already in progress', preload: { ...dashboardPreloadStatus } });
+    return;
+  }
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const clearFirst = body.clearFirst !== false;
+    const fullPreload = body.fullPreload === true;
+    const preset = (body.preset as DashboardPreloadPreset | undefined) ?? 'focus';
+    const preloadPresetData = body.preloadPresetData !== false;
+    const preloadCountryOverview = body.preloadCountryOverview !== false;
+    const countryBatchSize = typeof body.countryBatchSize === 'number' ? body.countryBatchSize : undefined;
+    const maxCountryRssMb = typeof body.maxCountryRssMb === 'number' ? body.maxCountryRssMb : undefined;
+
+    res.json({ success: true, message: 'Dashboard cache refresh triggered', clearFirst, fullPreload, preset });
+
+    refreshDashboardQueryCacheSnapshot({ clearFirst, fullPreload, preset, preloadPresetData, preloadCountryOverview, countryBatchSize, maxCountryRssMb }).catch((err) =>
+      console.error('[dashboard-preload] HTTP-triggered refresh failed:', err)
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Clear shared dashboard query cache manually
  * POST /api/statistics/dashboard-cache/clear
  */

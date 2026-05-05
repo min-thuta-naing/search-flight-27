@@ -339,6 +339,8 @@ export function ContinentView() {
     return getContinentTopRouteRanksCacheState(topRoutesRankQueryKey).value ? topRoutesRankQueryKey : null;
   });
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [trendsFailed, setTrendsFailed] = useState(false);
+  const [topRoutesFailed, setTopRoutesFailed] = useState(false);
   const coreReady = continentPayload != null && payloadCacheKey === coreCacheKey;
 
   useEffect(() => {
@@ -440,6 +442,7 @@ export function ContinentView() {
       setTrendCacheHitKey(null);
     }
 
+    setTrendsFailed(false);
     const loadTrends = async () => {
       try {
         const payload = await runDrillDownRequest(
@@ -454,6 +457,7 @@ export function ContinentView() {
         setTrendCacheHitKey(trendCacheKey);
       } catch (error) {
         if (!alive) return;
+        setTrendsFailed(true);
         setDetailError(error instanceof Error ? error.message : 'ไม่สามารถโหลดแนวโน้มทวีปได้');
       }
     };
@@ -567,6 +571,7 @@ export function ContinentView() {
       setTopRouteRankCacheHitKey(null);
     }
 
+    setTopRoutesFailed(false);
     const loadTopRoutesRank = async () => {
       try {
         const payload: ContinentTopRoutesPayload = await runDrillDownRequest(
@@ -595,6 +600,8 @@ export function ContinentView() {
       } catch {
         if (!alive) return;
         setTopRouteRankRows([]);
+        setTopRoutesFailed(true);
+        setTopRouteRankCacheHitKey(topRoutesRankQueryKey);
       }
     };
 
@@ -735,13 +742,17 @@ export function ContinentView() {
       <KPIRow items={kpis} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        {trends ? (
+        {trendsFailed ? (
+          <ContinentPanelNoData title="แนวโน้ม" message="ไม่สามารถโหลดข้อมูลแนวโน้มได้" />
+        ) : trends ? (
           <ContinentAverageTrendChart trends={trends} />
         ) : (
           <ContinentPanelRingLoader title="แนวโน้ม" />
         )}
         <div>
-          {topRouteRankCacheHitKey === topRoutesRankQueryKey ? (
+          {topRoutesFailed ? (
+            <ContinentPanelNoData title="5 อันดับเส้นทาง" message="ไม่สามารถโหลดข้อมูลเส้นทางได้" />
+          ) : topRouteRankCacheHitKey === topRoutesRankQueryKey ? (
             <ContinentTopRoutesPanel rows={resolvedTopRouteRankRows} timeMode={continentTimeMode} />
           ) : (
             <ContinentPanelRingLoader title="5 อันดับเส้นทาง" />
@@ -851,6 +862,17 @@ function ContinentKpiRingLoader() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function ContinentPanelNoData({ title, message }: { title: string; message?: string }) {
+  return (
+    <div className="bg-card border border-border rounded-[10px] p-5">
+      <div className="text-[16px] font-bold mb-4">{title}</div>
+      <div className="flex h-[220px] items-center justify-center rounded-[10px] border border-border/70 bg-muted/20">
+        <span className="text-sm text-muted-foreground">{message ?? 'ไม่พบข้อมูลสำหรับช่วงเวลานี้'}</span>
+      </div>
     </div>
   );
 }
@@ -1010,9 +1032,13 @@ function ContinentTopRoutesPanel({
   return (
     <div className="bg-card border border-border rounded-[10px] p-5">
       <div className="text-[16px] font-bold mb-4">
-        {'🏆'} อันดับเส้นทางเที่ยวบินสูงสุดใน {continentName}
+       อันดับเส้นทางเที่ยวบินสูงสุดใน {continentName}
       </div>
-      {rows.map((r, i) => {
+      {rows.length === 0 ? (
+        <div className="flex h-[180px] items-center justify-center text-sm text-muted-foreground">
+          ไม่พบข้อมูลเส้นทางสำหรับช่วงเวลานี้
+        </div>
+      ) : rows.map((r, i) => {
         const pct = r.deltaPercent;
         const num = r.deltaFlights;
         return (
@@ -1090,9 +1116,9 @@ function ContinentTopAirportTable({
           </tbody>
         </table>
       </div>
-      <div className="mt-2 text-xs text-muted-foreground">
+      {/* <div className="mt-2 text-xs text-muted-foreground">
         หมายเหตุ: ตารางนี้ดึงจาก endpoint Top Airport ของทวีปโดยตรงตามช่วงวันที่ที่เลือก
-      </div>
+      </div> */}
     </div>
   );
 }

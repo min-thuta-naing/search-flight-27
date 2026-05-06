@@ -566,7 +566,7 @@ const CONTINENT_TOP_AIRPORTS_CACHE_TTL_MS = 5 * 60 * 1000;
 const continentTopAirportsCache = new Map<string, { expiresAt: number; payload: DashboardContinentTopAirportsResponse }>();
 const CONTINENT_TOP_ROUTES_CACHE_TTL_MS = 5 * 60 * 1000;
 const continentTopRoutesCache = new Map<string, { expiresAt: number; payload: DashboardContinentTopRoutesResponse }>();
-const CONTINENT_TRENDS_CACHE_TTL_MS = 5 * 60 * 1000;
+const CONTINENT_TRENDS_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours — trends are historical aggregates
 const continentTrendsCache = new Map<string, { expiresAt: number; payload: DashboardContinentTrendsResponse }>();
 const CONTINENT_AIRPORT_CODES_CACHE_TTL_MS = 60 * 60 * 1000;
 const continentAirportCodesCache = new Map<string, { expiresAt: number; codes: string[] }>();
@@ -4264,7 +4264,7 @@ export class DashboardSummaryService {
     input: ContinentTrendAveragesInput,
   ): Promise<DashboardContinentTrendsResponse> {
     const continentMeta = resolveContinentMetaFromInput(input.continent);
-    const cacheKey = `${continentMeta.key}|v6`;
+    const cacheKey = `${continentMeta.key}|v8`;
 
     const cached = continentTrendsCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -4315,150 +4315,113 @@ export class DashboardSummaryService {
     //   arrival_flight_paths(arr_airport, arrival_date)
     // getContinentAirportCodes() already returns normalized uppercase codes, so
     // we can compare directly without UPPER(TRIM(...)) and keep the predicates index-friendly.
-    const dayAverageQuery = `
-      WITH flight_events AS (
+    // Each typed-date sub-query targets exactly one table via its best index:
+    //   departure_flight_paths(dep_airport, departure_date)  → outbound
+    //   arrival_flight_paths(departure_date, arr_airport)    → inbound
+    // They run on separate pool connections so the DB executes them in parallel.
+
+    const dayDepQueryTyped = `
+      WITH raw AS (
         SELECT
           departure_date AS flight_date,
-          COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
-          1 AS outbound_count,
-          0 AS inbound_count
+          FLOOR(COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) / 4.0)::int AS bucket_idx
         FROM departure_flight_paths
         WHERE dep_airport = ANY($1::text[])
-
-        UNION ALL
-
-        SELECT
-          departure_date AS flight_date,
-          COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
-          0 AS outbound_count,
-          1 AS inbound_count
-        FROM departure_flight_paths
-        WHERE arr_airport = ANY($1::text[])
-          AND (dep_airport IS NULL OR dep_airport <> ALL($1::text[]))
-
-        UNION ALL
-
-        SELECT
-          departure_date AS flight_date,
-          COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
-          0 AS outbound_count,
-          1 AS inbound_count
-        FROM arrival_flight_paths
-        WHERE arr_airport = ANY($1::text[])
-
-        UNION ALL
-
-        SELECT
-          departure_date AS flight_date,
-          COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) AS hour_num,
-          1 AS outbound_count,
-          0 AS inbound_count
-        FROM arrival_flight_paths
-        WHERE dep_airport = ANY($1::text[])
-          AND (arr_airport IS NULL OR arr_airport <> ALL($1::text[]))
+          AND departure_date >= CURRENT_DATE - INTERVAL '90 days'
       ),
-      day_span AS (
-        SELECT GREATEST(COUNT(DISTINCT flight_date)::numeric, 1) AS days_count
-        FROM flight_events
-      ),
-      bucketed AS (
-        SELECT
-          FLOOR(hour_num / 4.0)::int AS bucket_idx,
-          SUM(inbound_count)::numeric AS inbound_total,
-          SUM(outbound_count)::numeric AS outbound_total
-        FROM flight_events
-        GROUP BY FLOOR(hour_num / 4.0)::int
-      ),
-      bucket_grid AS (
-        SELECT generate_series(0, 5)::int AS bucket_idx
-      )
+      day_count AS (SELECT GREATEST(COUNT(DISTINCT flight_date)::numeric, 1) AS n FROM raw),
+      bucketed AS (SELECT bucket_idx, COUNT(*)::numeric AS cnt FROM raw GROUP BY bucket_idx)
       SELECT
+        bg.bucket_idx,
         LPAD((bg.bucket_idx * 4)::text, 2, '0') || ':00 - ' || LPAD(((bg.bucket_idx + 1) * 4)::text, 2, '0') || ':00' AS hour_bucket,
-        ROUND(COALESCE(b.inbound_total, 0) / ds.days_count, 2)::float AS inbound_avg,
-        ROUND(COALESCE(b.outbound_total, 0) / ds.days_count, 2)::float AS outbound_avg
-      FROM bucket_grid bg
-      CROSS JOIN day_span ds
+        ROUND(COALESCE(b.cnt, 0) / dc.n, 2)::float AS outbound_avg,
+        0::float AS inbound_avg
+      FROM generate_series(0, 5) AS bg(bucket_idx)
+      CROSS JOIN day_count dc
       LEFT JOIN bucketed b ON b.bucket_idx = bg.bucket_idx
-      ORDER BY bg.bucket_idx ASC
+      ORDER BY bg.bucket_idx
     `;
 
-    const monthAverageQueryTypedDate = `
-      WITH flight_events AS (
+    const dayArrQueryTyped = `
+      WITH raw AS (
         SELECT
-          EXTRACT(YEAR FROM departure_date)::int AS year_num,
-          EXTRACT(MONTH FROM departure_date)::int AS month_num,
-          CASE
-            WHEN dep_airport IS NOT NULL
-              AND TRIM(dep_airport) <> ''
-              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
-            THEN 1 ELSE 0
-          END::numeric AS outbound_total,
-          CASE
-            WHEN arr_airport IS NOT NULL
-              AND TRIM(arr_airport) <> ''
-              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
-            THEN 1 ELSE 0
-          END::numeric AS inbound_total
-        FROM departure_flight_paths
-        WHERE departure_date IS NOT NULL
-          AND (
-            (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
-            OR
-            (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
-          )
-
-        UNION ALL
-
-        SELECT
-          EXTRACT(YEAR FROM departure_date)::int AS year_num,
-          EXTRACT(MONTH FROM departure_date)::int AS month_num,
-          CASE
-            WHEN dep_airport IS NOT NULL
-              AND TRIM(dep_airport) <> ''
-              AND UPPER(TRIM(dep_airport)) = ANY($1::text[])
-            THEN 1 ELSE 0
-          END::numeric AS outbound_total,
-          CASE
-            WHEN arr_airport IS NOT NULL
-              AND TRIM(arr_airport) <> ''
-              AND UPPER(TRIM(arr_airport)) = ANY($1::text[])
-            THEN 1 ELSE 0
-          END::numeric AS inbound_total
+          departure_date AS flight_date,
+          FLOOR(COALESCE(EXTRACT(HOUR FROM departure_time)::int, 0) / 4.0)::int AS bucket_idx
         FROM arrival_flight_paths
-        WHERE departure_date IS NOT NULL
-          AND (
-            (dep_airport IS NOT NULL AND TRIM(dep_airport) <> '' AND UPPER(TRIM(dep_airport)) = ANY($1::text[]))
-            OR
-            (arr_airport IS NOT NULL AND TRIM(arr_airport) <> '' AND UPPER(TRIM(arr_airport)) = ANY($1::text[]))
-          )
+        WHERE arr_airport = ANY($1::text[])
+          AND departure_date >= CURRENT_DATE - INTERVAL '90 days'
       ),
-      monthly_totals AS (
+      day_count AS (SELECT GREATEST(COUNT(DISTINCT flight_date)::numeric, 1) AS n FROM raw),
+      bucketed AS (SELECT bucket_idx, COUNT(*)::numeric AS cnt FROM raw GROUP BY bucket_idx)
+      SELECT
+        bg.bucket_idx,
+        LPAD((bg.bucket_idx * 4)::text, 2, '0') || ':00 - ' || LPAD(((bg.bucket_idx + 1) * 4)::text, 2, '0') || ':00' AS hour_bucket,
+        0::float AS outbound_avg,
+        ROUND(COALESCE(b.cnt, 0) / dc.n, 2)::float AS inbound_avg
+      FROM generate_series(0, 5) AS bg(bucket_idx)
+      CROSS JOIN day_count dc
+      LEFT JOIN bucketed b ON b.bucket_idx = bg.bucket_idx
+      ORDER BY bg.bucket_idx
+    `;
+
+    const monthDepQueryTyped = `
+      WITH MATERIALIZED raw AS (
         SELECT
-          year_num,
-          month_num,
-          SUM(inbound_total)::numeric AS inbound_total,
-          SUM(outbound_total)::numeric AS outbound_total
-        FROM flight_events
+          dep_airport,
+          EXTRACT(YEAR FROM departure_date)::int AS year_num,
+          EXTRACT(MONTH FROM departure_date)::int AS month_num
+        FROM departure_flight_paths
+        WHERE departure_date >= CURRENT_DATE - INTERVAL '24 months'
+          AND dep_airport IS NOT NULL
+      ),
+      filtered_totals AS (
+        SELECT year_num, month_num, COUNT(*)::numeric AS cnt
+        FROM raw
+        WHERE dep_airport = ANY($1::text[])
         GROUP BY year_num, month_num
       ),
       month_avg AS (
-        SELECT
-          month_num,
-          ROUND(AVG(inbound_total), 2)::float AS inbound_avg,
-          ROUND(AVG(outbound_total), 2)::float AS outbound_avg
-        FROM monthly_totals
-        GROUP BY month_num
+        SELECT month_num, ROUND(AVG(cnt), 2)::float AS outbound_avg
+        FROM filtered_totals GROUP BY month_num
       ),
-      month_grid AS (
-        SELECT generate_series(1, 12)::int AS month_num
-      )
+      month_grid AS (SELECT generate_series(1, 12)::int AS month_num)
       SELECT
         mg.month_num,
-        ROUND(COALESCE(ma.inbound_avg, 0), 2)::float AS inbound_avg,
-        ROUND(COALESCE(ma.outbound_avg, 0), 2)::float AS outbound_avg
+        ROUND(COALESCE(ma.outbound_avg, 0), 2)::float AS outbound_avg,
+        0::float AS inbound_avg
       FROM month_grid mg
       LEFT JOIN month_avg ma ON ma.month_num = mg.month_num
-      ORDER BY mg.month_num ASC
+      ORDER BY mg.month_num
+    `;
+
+    const monthArrQueryTyped = `
+      WITH MATERIALIZED raw AS (
+        SELECT
+          arr_airport,
+          EXTRACT(YEAR FROM departure_date)::int AS year_num,
+          EXTRACT(MONTH FROM departure_date)::int AS month_num
+        FROM arrival_flight_paths
+        WHERE departure_date >= CURRENT_DATE - INTERVAL '24 months'
+          AND arr_airport IS NOT NULL
+      ),
+      filtered_totals AS (
+        SELECT year_num, month_num, COUNT(*)::numeric AS cnt
+        FROM raw
+        WHERE arr_airport = ANY($1::text[])
+        GROUP BY year_num, month_num
+      ),
+      month_avg AS (
+        SELECT month_num, ROUND(AVG(cnt), 2)::float AS inbound_avg
+        FROM filtered_totals GROUP BY month_num
+      ),
+      month_grid AS (SELECT generate_series(1, 12)::int AS month_num)
+      SELECT
+        mg.month_num,
+        0::float AS outbound_avg,
+        ROUND(COALESCE(ma.inbound_avg, 0), 2)::float AS inbound_avg
+      FROM month_grid mg
+      LEFT JOIN month_avg ma ON ma.month_num = mg.month_num
+      ORDER BY mg.month_num
     `;
 
     const monthAverageQueryTextDate = `
@@ -4469,6 +4432,7 @@ export class DashboardSummaryService {
           arr_airport
         FROM departure_flight_paths
         WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
+          AND departure_date::text >= TO_CHAR(CURRENT_DATE - INTERVAL '36 months', 'YYYY-MM-DD')
       ),
       arrival_events AS (
         SELECT
@@ -4477,6 +4441,7 @@ export class DashboardSummaryService {
           arr_airport
         FROM arrival_flight_paths
         WHERE departure_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
+          AND departure_date::text >= TO_CHAR(CURRENT_DATE - INTERVAL '36 months', 'YYYY-MM-DD')
       ),
       flight_events AS (
         SELECT
@@ -4552,36 +4517,76 @@ export class DashboardSummaryService {
       ORDER BY mg.month_num ASC
     `;
 
-    const departureTimeAvailable = await hasFlightPathColumn('departure_time');
+    const [departureTimeAvailable, dateTypes] = await Promise.all([
+      hasFlightPathColumn('departure_time'),
+      getFlightPathColumnTypes('departure_date'),
+    ]);
+    const useTextQuery = dateTypes.some((t) => t === 'text' || t === 'character varying');
+
+    const emptyRowSet = { rows: [] as Array<Record<string, any>> };
+
+    // 4 typed-date queries run in parallel on separate pool connections.
+    // Text-date fallback is a single combined query (rare path).
+    const [dayDepOutcome, dayArrOutcome, monthDepOutcome, monthArrOutcome, monthTextOutcome] =
+      await Promise.allSettled([
+        departureTimeAvailable && !useTextQuery
+          ? pool.query(dayDepQueryTyped, [continentAirportCodes])
+          : Promise.resolve(emptyRowSet),
+        departureTimeAvailable && !useTextQuery
+          ? pool.query(dayArrQueryTyped, [continentAirportCodes])
+          : Promise.resolve(emptyRowSet),
+        !useTextQuery
+          ? pool.query(monthDepQueryTyped, [continentAirportCodes])
+          : Promise.resolve(emptyRowSet),
+        !useTextQuery
+          ? pool.query(monthArrQueryTyped, [continentAirportCodes])
+          : Promise.resolve(emptyRowSet),
+        useTextQuery
+          ? pool.query(monthAverageQueryTextDate, [continentAirportCodes])
+          : Promise.resolve(emptyRowSet),
+      ]);
 
     let dayRows: Array<Record<string, any>> = [];
     let dayStatus: 'ready' | 'unavailable' = departureTimeAvailable ? 'ready' : 'unavailable';
     let dayMessage: string | null = departureTimeAvailable ? null : 'ข้อมูลยังไม่พร้อมให้บริการ';
 
-    let monthRows: Array<Record<string, any>> = [];
-    let monthStatus: 'ready' | 'unavailable' = 'unavailable';
-    let monthMessage: string | null = null;
-
-    if (departureTimeAvailable) {
-      try {
-        const dayResult = await pool.query(dayAverageQuery, [continentAirportCodes]);
-        dayRows = dayResult.rows as Array<Record<string, any>>;
-      } catch {
+    if (departureTimeAvailable && !useTextQuery) {
+      if (dayDepOutcome.status === 'fulfilled' && dayArrOutcome.status === 'fulfilled') {
+        const depRows = dayDepOutcome.value.rows as Array<Record<string, any>>;
+        const arrRows = dayArrOutcome.value.rows as Array<Record<string, any>>;
+        dayRows = depRows.map((depRow, i) => ({
+          hour_bucket: String(depRow.hour_bucket || '00:00 - 04:00'),
+          outbound_avg: Number(depRow.outbound_avg) || 0,
+          inbound_avg: Number(arrRows[i]?.inbound_avg) || 0,
+        }));
+      } else {
         dayStatus = 'unavailable';
         dayMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
       }
     }
 
-    try {
-      const dateTypes = await getFlightPathColumnTypes('departure_date');
-      const useTextQuery = dateTypes.some((t) => t === 'text' || t === 'character varying');
-      const monthResult = await pool.query(
-        useTextQuery ? monthAverageQueryTextDate : monthAverageQueryTypedDate,
-        [continentAirportCodes],
-      );
-      monthRows = monthResult.rows as Array<Record<string, any>>;
+    let monthRows: Array<Record<string, any>> = [];
+    let monthStatus: 'ready' | 'unavailable' = 'unavailable';
+    let monthMessage: string | null = null;
+
+    if (useTextQuery) {
+      if (monthTextOutcome.status === 'fulfilled') {
+        monthRows = monthTextOutcome.value.rows as Array<Record<string, any>>;
+        monthStatus = 'ready';
+      } else {
+        monthStatus = 'unavailable';
+        monthMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
+      }
+    } else if (monthDepOutcome.status === 'fulfilled' && monthArrOutcome.status === 'fulfilled') {
+      const depRows = monthDepOutcome.value.rows as Array<Record<string, any>>;
+      const arrRows = monthArrOutcome.value.rows as Array<Record<string, any>>;
+      monthRows = depRows.map((depRow, i) => ({
+        month_num: Number(depRow.month_num),
+        outbound_avg: Number(depRow.outbound_avg) || 0,
+        inbound_avg: Number(arrRows[i]?.inbound_avg) || 0,
+      }));
       monthStatus = 'ready';
-    } catch {
+    } else {
       monthStatus = 'unavailable';
       monthMessage = 'ข้อมูลยังไม่พร้อมให้บริการ';
     }

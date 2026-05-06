@@ -542,9 +542,15 @@ async function getOrSetDashboardQueryCache<T>(key: string, factory: () => Promis
   return request;
 }
 
+const DASHBOARD_PRELOAD_CONTINENTS = [
+  'Europe', 'Asia', 'North America', 'South America',
+  'Africa', 'Middle East', 'Oceania', 'Caribbean', 'Central America',
+] as const;
+
 export async function warmDashboardCachesOnStartup(options?: {
   preloadPresetData?: boolean;
   preloadCountryOverview?: boolean;
+  preloadContinentEndpoints?: boolean;
   countryBatchSize?: number;
   maxCountryRssMb?: number;
   cacheMode?: PreloadCacheMode;
@@ -553,6 +559,7 @@ export async function warmDashboardCachesOnStartup(options?: {
   let failed = 0;
   const preloadPresetData = options?.preloadPresetData ?? true;
   const preloadCountryOverview = options?.preloadCountryOverview ?? true;
+  const preloadContinentEndpoints = options?.preloadContinentEndpoints ?? true;
   const countryBatchSize = normalizeCountryBatchSize(options?.countryBatchSize, 15);
   const maxCountryRssMb = normalizeRssLimitMb(options?.maxCountryRssMb, 1024);
   const cacheMode = options?.cacheMode ?? 'override';
@@ -650,6 +657,84 @@ export async function warmDashboardCachesOnStartup(options?: {
       console.log('[dashboard-preload] country preload disabled; skipping country warmup');
     }
 
+    if (preloadContinentEndpoints) {
+      const now2 = new Date();
+      const utcToday2 = new Date(Date.UTC(now2.getUTCFullYear(), now2.getUTCMonth(), now2.getUTCDate()));
+      const { startDate: focusStart, endDate: focusEnd } = buildPresetDateRange('focus', bounds.minDate, bounds.recommendedEndDate, utcToday2);
+      const continentQuery = {
+        window_days: '15',
+        start_date: focusStart,
+        end_date: focusEnd,
+      } as Request['query'];
+
+      console.log(`[dashboard-preload] continent preload start; range=${focusStart}->${focusEnd}; continents=${DASHBOARD_PRELOAD_CONTINENTS.length}`);
+
+      for (const continentName of DASHBOARD_PRELOAD_CONTINENTS) {
+        const continentTasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
+          {
+            scope: 'dashboard-continent-detail',
+            run: () => DashboardSummaryService.getContinentDetail({
+              continent: continentName,
+              startDateInput: focusStart,
+              endDateInput: focusEnd,
+              includeCore: true,
+              includeSeasonal: false,
+              includeTopRoutes: false,
+            }),
+          },
+          {
+            scope: 'dashboard-top-airports-continent',
+            run: () => DashboardSummaryService.getContinentTopAirports({
+              continent: continentName,
+              startDateInput: focusStart,
+              endDateInput: focusEnd,
+              limit: 10,
+            }),
+          },
+          {
+            scope: 'dashboard-top-routes-continent',
+            run: () => DashboardSummaryService.getContinentTopRoutes({
+              continent: continentName,
+              startDateInput: focusStart,
+              endDateInput: focusEnd,
+              limit: 5,
+            }),
+          },
+          {
+            scope: 'dashboard-continent-trends',
+            run: () => DashboardSummaryService.getContinentTrendAverages({ continent: continentName }),
+          },
+        ];
+
+        for (const task of continentTasks) {
+          attempted += 1;
+          setDashboardPreloadStatus({ attempted, failed });
+          try {
+            const cKey = buildDashboardQueryCacheKey(task.scope, {
+              ...continentQuery,
+              continent: continentName,
+              ...(task.scope === 'dashboard-continent-detail' ? { include_core: 'true', include_seasonal: 'false', include_top_routes: 'false' } : {}),
+              ...(task.scope === 'dashboard-top-airports-continent' ? { limit: '10' } : {}),
+              ...(task.scope === 'dashboard-top-routes-continent' ? { limit: '5' } : {}),
+              ...(task.scope === 'dashboard-continent-trends' ? { window_days: '', start_date: '', end_date: '' } : {}),
+            } as Request['query']);
+            await getOrSetDashboardQueryCache(cKey, task.run);
+            console.log(`[dashboard-preload] continent ${continentName} ${task.scope} done`);
+          } catch {
+            failed += 1;
+            setDashboardPreloadStatus({ attempted, failed });
+            console.warn(`[dashboard-preload] continent ${continentName} ${task.scope} failed`);
+          }
+        }
+      }
+
+      await waitForDashboardCacheWrites();
+      const cleared2 = clearDashboardMemoryCache();
+      console.log(`[dashboard-preload] continent preload done; attempted=${DASHBOARD_PRELOAD_CONTINENTS.length * 4}; memory-cleared=${cleared2.totalCleared}`);
+    } else {
+      console.log('[dashboard-preload] continent preload disabled; skipping');
+    }
+
     finishDashboardPreload('completed', attempted, failed);
     console.log(`[dashboard-preload] completed in ${dashboardPreloadStatus.durationMinutes.toFixed(2)} min; attempted=${attempted}; failed=${failed}; dumped-to=${DASHBOARD_CACHE_FILE}`);
     return { attempted, failed, presetPreloadEnabled: preloadPresetData, countryPreloadEnabled: preloadCountryOverview };
@@ -667,6 +752,7 @@ export async function refreshDashboardQueryCacheSnapshot(options?: {
   preloadPresetData?: boolean;
   cacheMode?: PreloadCacheMode;
   preloadCountryOverview?: boolean;
+  preloadContinentEndpoints?: boolean;
   countryBatchSize?: number;
   maxCountryRssMb?: number;
 }) {
@@ -676,6 +762,7 @@ export async function refreshDashboardQueryCacheSnapshot(options?: {
   const preloadPresetData = options?.preloadPresetData ?? true;
   const cacheMode = options?.cacheMode ?? (clearFirst ? 'override' : 'append');
   const preloadCountryOverview = options?.preloadCountryOverview ?? true;
+  const preloadContinentEndpoints = options?.preloadContinentEndpoints ?? true;
   const countryBatchSize = normalizeCountryBatchSize(options?.countryBatchSize, 15);
   const maxCountryRssMb = normalizeRssLimitMb(options?.maxCountryRssMb, 2048);
   const effectiveClearFirst = cacheMode === 'override' ? true : clearFirst;
@@ -723,6 +810,7 @@ export async function refreshDashboardQueryCacheSnapshot(options?: {
     const fullPreloadResult = await warmDashboardCachesOnStartup({
       preloadPresetData,
       preloadCountryOverview,
+      preloadContinentEndpoints,
       countryBatchSize,
       maxCountryRssMb,
       cacheMode,
@@ -875,12 +963,13 @@ export async function triggerDashboardCacheRefresh(req: Request, res: Response, 
     const preset = (body.preset as DashboardPreloadPreset | undefined) ?? 'focus';
     const preloadPresetData = body.preloadPresetData !== false;
     const preloadCountryOverview = body.preloadCountryOverview !== false;
+    const preloadContinentEndpoints = body.preloadContinentEndpoints !== false;
     const countryBatchSize = typeof body.countryBatchSize === 'number' ? body.countryBatchSize : undefined;
     const maxCountryRssMb = typeof body.maxCountryRssMb === 'number' ? body.maxCountryRssMb : undefined;
 
     res.json({ success: true, message: 'Dashboard cache refresh triggered', clearFirst, fullPreload, preset });
 
-    refreshDashboardQueryCacheSnapshot({ clearFirst, fullPreload, preset, preloadPresetData, preloadCountryOverview, countryBatchSize, maxCountryRssMb }).catch((err) =>
+    refreshDashboardQueryCacheSnapshot({ clearFirst, fullPreload, preset, preloadPresetData, preloadCountryOverview, preloadContinentEndpoints, countryBatchSize, maxCountryRssMb }).catch((err) =>
       console.error('[dashboard-preload] HTTP-triggered refresh failed:', err)
     );
   } catch (error) {

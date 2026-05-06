@@ -492,10 +492,6 @@ export function ContinentView() {
   }, [topRoutesRankQueryKey]);
 
   useEffect(() => {
-    if (!coreReady) {
-      return;
-    }
-
     let alive = true;
     const cacheState = getContinentTopAirportsCacheState(topAirportsQueryKey);
     const cached = cacheState.value;
@@ -548,13 +544,9 @@ export function ContinentView() {
     return () => {
       alive = false;
     };
-  }, [continent.name, continentWindowDays, coreReady, topAirportsQueryKey, hasExplicitRange, startDate, endDate]);
+  }, [continent.name, continentWindowDays, topAirportsQueryKey, hasExplicitRange, startDate, endDate]);
 
   useEffect(() => {
-    if (!coreReady) {
-      return;
-    }
-
     let alive = true;
     const cacheState = getContinentTopRouteRanksCacheState(topRoutesRankQueryKey);
     const cached = cacheState.value;
@@ -610,7 +602,7 @@ export function ContinentView() {
     return () => {
       alive = false;
     };
-  }, [continent.name, continentWindowDays, coreReady, topRoutesRankQueryKey, hasExplicitRange, startDate, endDate]);
+  }, [continent.name, continentWindowDays, topRoutesRankQueryKey, hasExplicitRange, startDate, endDate]);
 
   const payload = continentPayload;
   const hasPayload = coreReady;

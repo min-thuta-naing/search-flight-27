@@ -1140,30 +1140,40 @@ export class DashboardSummaryService {
     const comparisonStart = formatDateForQuery(comparisonStartDate);
     const comparisonEnd = formatDateForQuery(comparisonEndDate);
 
-    const totalFlightsQuery = `
-      WITH flight_rows AS (
-        SELECT dep_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT arr_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT dep_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT arr_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
+    // Single scan for current period: computes total_flights, active_airports, and continent breakdown together
+    const currentPeriodQuery = `
+      WITH flight_agg AS MATERIALIZED (
+        SELECT airport_code, COUNT(*) AS cnt
+        FROM (
+          SELECT v.airport_code
+          FROM departure_flight_paths dfp
+          CROSS JOIN LATERAL (VALUES (dfp.dep_airport), (dfp.arr_airport)) AS v(airport_code)
+          WHERE dfp.departure_date >= $1 AND dfp.departure_date <= $2
+          UNION ALL
+          SELECT v.airport_code
+          FROM arrival_flight_paths afp
+          CROSS JOIN LATERAL (VALUES (afp.dep_airport), (afp.arr_airport)) AS v(airport_code)
+          WHERE afp.departure_date >= $1 AND afp.departure_date <= $2
+        ) raw
+        GROUP BY airport_code
+      ),
+      totals AS (
+        SELECT
+          SUM(cnt)::int AS total_flights,
+          COUNT(CASE WHEN airport_code IS NOT NULL AND airport_code <> '' THEN 1 END)::int AS active_airports
+        FROM flight_agg
       )
       SELECT
-        (SELECT COUNT(*)::int FROM flight_rows) AS total_flights,
-        (SELECT COUNT(DISTINCT airport_code)::int
-         FROM flight_rows
-         WHERE airport_code IS NOT NULL AND airport_code <> ''
-        ) AS active_airports
+        t.total_flights,
+        t.active_airports,
+        a.country_code,
+        COALESCE(a.country_name, a.country, a.code) AS country_name,
+        SUM(fa.cnt)::int AS flights
+      FROM flight_agg fa
+      CROSS JOIN totals t
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = fa.airport_code
+      WHERE fa.airport_code IS NOT NULL AND fa.airport_code <> ''
+      GROUP BY t.total_flights, t.active_airports, a.country_code, COALESCE(a.country_name, a.country, a.code)
     `;
 
     const airportsQuery = `
@@ -1175,72 +1185,70 @@ export class DashboardSummaryService {
     `;
 
     const routesQuery = `
+      WITH airport_country AS (
+        SELECT UPPER(TRIM(code)) AS code, country_code, COALESCE(country_name, country, code) AS country_name
+        FROM airports
+        WHERE code IS NOT NULL AND TRIM(code) <> ''
+      )
       SELECT
-        a.country_code,
-        COALESCE(a.country_name, a.country, a.code) AS country_name,
-        flight_rows.route_id
+        ac.country_code,
+        ac.country_name,
+        fr.route_id
       FROM (
-        SELECT route_id, dep_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
+        SELECT route_id, v.airport_code
+        FROM departure_flight_paths dfp
+        CROSS JOIN LATERAL (VALUES (dfp.dep_airport), (dfp.arr_airport)) AS v(airport_code)
+        WHERE dfp.departure_date >= $1 AND dfp.departure_date <= $2
         UNION ALL
-        SELECT route_id, arr_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT route_id, dep_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT route_id, arr_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-      ) flight_rows
-      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
+        SELECT route_id, v.airport_code
+        FROM arrival_flight_paths afp
+        CROSS JOIN LATERAL (VALUES (afp.dep_airport), (afp.arr_airport)) AS v(airport_code)
+        WHERE afp.departure_date >= $1 AND afp.departure_date <= $2
+      ) fr
+      LEFT JOIN airport_country ac ON ac.code = fr.airport_code
     `;
 
-    const continentQuery = `
+    const previousContinentQuery = `
+      WITH flight_agg AS MATERIALIZED (
+        SELECT airport_code, COUNT(*) AS cnt
+        FROM (
+          SELECT v.airport_code
+          FROM departure_flight_paths dfp
+          CROSS JOIN LATERAL (VALUES (dfp.dep_airport), (dfp.arr_airport)) AS v(airport_code)
+          WHERE dfp.departure_date >= $1 AND dfp.departure_date <= $2
+          UNION ALL
+          SELECT v.airport_code
+          FROM arrival_flight_paths afp
+          CROSS JOIN LATERAL (VALUES (afp.dep_airport), (afp.arr_airport)) AS v(airport_code)
+          WHERE afp.departure_date >= $1 AND afp.departure_date <= $2
+        ) raw
+        WHERE airport_code IS NOT NULL AND airport_code <> ''
+        GROUP BY airport_code
+      )
       SELECT
         a.country_code,
         COALESCE(a.country_name, a.country, a.code) AS country_name,
-        COUNT(*)::int AS flights
-      FROM (
-        SELECT dep_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT arr_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT dep_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT arr_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-      ) flight_rows
-      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
+        SUM(fa.cnt)::int AS flights
+      FROM flight_agg fa
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = fa.airport_code
       GROUP BY a.country_code, COALESCE(a.country_name, a.country, a.code)
     `;
 
-    const [summaryResult, currentContinentResult, previousContinentResult, airportsResult, routesResult] = await Promise.all([
-      pool.query(totalFlightsQuery, [periodStart, periodEnd]),
-      pool.query(continentQuery, [periodStart, periodEnd]),
-      pool.query(continentQuery, [comparisonStart, comparisonEnd]),
+    const [currentPeriodResult, previousContinentResult, airportsResult, routesResult] = await Promise.all([
+      pool.query(currentPeriodQuery, [periodStart, periodEnd]),
+      pool.query(previousContinentQuery, [comparisonStart, comparisonEnd]),
       pool.query(airportsQuery),
       pool.query(routesQuery, [periodStart, periodEnd]),
     ]);
 
-    const totalFlights = Number(summaryResult.rows[0]?.total_flights) || 0;
-    const activeAirports = Number(summaryResult.rows[0]?.active_airports) || 0;
+    const totalFlights = Number(currentPeriodResult.rows[0]?.total_flights) || 0;
+    const activeAirports = Number(currentPeriodResult.rows[0]?.active_airports) || 0;
     const averageFlightsPerDay = Math.round(totalFlights / (windowDays * 2 + 1));
     const airportMap = sumAirportRows(airportsResult.rows);
     const routeMap = sumRouteRows(routesResult.rows);
 
     const continentBreakdown = mergeCurrentAndPrevious(
-      currentContinentResult.rows,
+      currentPeriodResult.rows,
       previousContinentResult.rows,
     ).map((row) => {
       const airportSummary = airportMap.get(row.key);
@@ -1301,28 +1309,28 @@ export class DashboardSummaryService {
     `;
 
     const continentQuery = `
+      WITH flight_agg AS MATERIALIZED (
+        SELECT airport_code, COUNT(*) AS cnt
+        FROM (
+          SELECT v.airport_code
+          FROM departure_flight_paths dfp
+          CROSS JOIN LATERAL (VALUES (dfp.dep_airport), (dfp.arr_airport)) AS v(airport_code)
+          WHERE dfp.departure_date >= $1 AND dfp.departure_date <= $2
+          UNION ALL
+          SELECT v.airport_code
+          FROM arrival_flight_paths afp
+          CROSS JOIN LATERAL (VALUES (afp.dep_airport), (afp.arr_airport)) AS v(airport_code)
+          WHERE afp.departure_date >= $1 AND afp.departure_date <= $2
+        ) raw
+        WHERE airport_code IS NOT NULL AND airport_code <> ''
+        GROUP BY airport_code
+      )
       SELECT
         a.country_code,
         COALESCE(a.country_name, a.country, a.code) AS country_name,
-        COUNT(*)::int AS flights
-      FROM (
-        SELECT dep_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT arr_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT dep_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT arr_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-      ) flight_rows
-      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(flight_rows.airport_code))
+        SUM(fa.cnt)::int AS flights
+      FROM flight_agg fa
+      LEFT JOIN airports a ON UPPER(TRIM(a.code)) = fa.airport_code
       GROUP BY a.country_code, COALESCE(a.country_name, a.country, a.code)
     `;
 
@@ -3954,65 +3962,54 @@ export class DashboardSummaryService {
       };
     }
 
+    // Filter pushed into WHERE so (dep_airport,departure_date) and
+    // (departure_date,arr_airport) indexes are used directly — O(C_w) not O(F_w).
+    // UPPER/TRIM removed from flight-table side (codes are already normalized);
+    // kept only on the small airports reference table (O(G) not O(F_w)).
     const topAirportQuery = `
-      WITH continent_airports AS (
-        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
-        FROM airports
-        WHERE UPPER(TRIM(code)) = ANY($3::text[])
-      ),
-      current_rows AS (
+      WITH current_rows AS (
         SELECT dep_airport AS airport_code, 1 AS dep_count, 0 AS arr_count
         FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
+        WHERE dep_airport = ANY($3::text[])
+          AND departure_date >= $1 AND departure_date <= $2
+
         UNION ALL
-        SELECT arr_airport AS airport_code, 0 AS dep_count, 1 AS arr_count
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT dep_airport AS airport_code, 1 AS dep_count, 0 AS arr_count
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
+
         SELECT arr_airport AS airport_code, 0 AS dep_count, 1 AS arr_count
         FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
+        WHERE arr_airport = ANY($3::text[])
+          AND departure_date >= $1 AND departure_date <= $2
       ),
       previous_rows AS (
         SELECT dep_airport AS airport_code
         FROM departure_flight_paths
-        WHERE departure_date >= $4 AND departure_date <= $5
+        WHERE dep_airport = ANY($3::text[])
+          AND departure_date >= $4 AND departure_date <= $5
+
         UNION ALL
-        SELECT arr_airport AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $4 AND departure_date <= $5
-        UNION ALL
-        SELECT dep_airport AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $4 AND departure_date <= $5
-        UNION ALL
+
         SELECT arr_airport AS airport_code
         FROM arrival_flight_paths
-        WHERE departure_date >= $4 AND departure_date <= $5
+        WHERE arr_airport = ANY($3::text[])
+          AND departure_date >= $4 AND departure_date <= $5
       ),
       current_agg AS (
         SELECT
-          UPPER(TRIM(cr.airport_code)) AS airport_code,
+          cr.airport_code,
           COUNT(*)::int AS flights,
           SUM(cr.dep_count)::int AS departure_flights,
           SUM(cr.arr_count)::int AS arrival_flights
         FROM current_rows cr
-        JOIN continent_airports ca ON UPPER(TRIM(cr.airport_code)) = ca.airport_code
-        WHERE cr.airport_code IS NOT NULL AND TRIM(cr.airport_code) <> ''
-        GROUP BY UPPER(TRIM(cr.airport_code))
+        WHERE cr.airport_code IS NOT NULL AND cr.airport_code <> ''
+        GROUP BY cr.airport_code
       ),
       previous_agg AS (
         SELECT
-          UPPER(TRIM(pr.airport_code)) AS airport_code,
+          pr.airport_code,
           COUNT(*)::int AS flights
         FROM previous_rows pr
-        JOIN continent_airports ca ON UPPER(TRIM(pr.airport_code)) = ca.airport_code
-        WHERE pr.airport_code IS NOT NULL AND TRIM(pr.airport_code) <> ''
-        GROUP BY UPPER(TRIM(pr.airport_code))
+        WHERE pr.airport_code IS NOT NULL AND pr.airport_code <> ''
+        GROUP BY pr.airport_code
       )
       SELECT
         current_agg.airport_code,
@@ -4127,33 +4124,28 @@ export class DashboardSummaryService {
     }
 
     const topRoutesQuery = `
-      WITH continent_airports AS (
-        SELECT DISTINCT UPPER(TRIM(code)) AS airport_code
-        FROM airports
-        WHERE UPPER(TRIM(code)) = ANY($3::text[])
-      ),
-      current_rows AS (
+      WITH current_rows AS (
         SELECT dep_airport AS from_airport, arr_airport AS to_airport
         FROM departure_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
+          AND dep_airport IS NOT NULL AND dep_airport <> ''
+          AND arr_airport IS NOT NULL AND arr_airport <> ''
+          AND (dep_airport = ANY($3::text[]) OR arr_airport = ANY($3::text[]))
         UNION ALL
         SELECT dep_airport AS from_airport, arr_airport AS to_airport
         FROM arrival_flight_paths
         WHERE departure_date >= $1 AND departure_date <= $2
+          AND dep_airport IS NOT NULL AND dep_airport <> ''
+          AND arr_airport IS NOT NULL AND arr_airport <> ''
+          AND (dep_airport = ANY($3::text[]) OR arr_airport = ANY($3::text[]))
       ),
       current_agg AS (
         SELECT
-          UPPER(TRIM(cr.from_airport)) AS from_code,
-          UPPER(TRIM(cr.to_airport)) AS to_code,
+          cr.from_airport AS from_code,
+          cr.to_airport AS to_code,
           COUNT(*)::int AS flights
         FROM current_rows cr
-        WHERE cr.from_airport IS NOT NULL AND TRIM(cr.from_airport) <> ''
-          AND cr.to_airport IS NOT NULL AND TRIM(cr.to_airport) <> ''
-          AND (
-            UPPER(TRIM(cr.from_airport)) = ANY(SELECT airport_code FROM continent_airports)
-            OR UPPER(TRIM(cr.to_airport)) = ANY(SELECT airport_code FROM continent_airports)
-          )
-        GROUP BY UPPER(TRIM(cr.from_airport)), UPPER(TRIM(cr.to_airport))
+        GROUP BY cr.from_airport, cr.to_airport
       ),
       top_current AS (
         SELECT from_code, to_code, flights
@@ -4165,21 +4157,23 @@ export class DashboardSummaryService {
         SELECT dep_airport AS from_airport, arr_airport AS to_airport
         FROM departure_flight_paths
         WHERE departure_date >= $4 AND departure_date <= $5
+          AND (dep_airport = ANY($3::text[]) OR arr_airport = ANY($3::text[]))
         UNION ALL
         SELECT dep_airport AS from_airport, arr_airport AS to_airport
         FROM arrival_flight_paths
         WHERE departure_date >= $4 AND departure_date <= $5
+          AND (dep_airport = ANY($3::text[]) OR arr_airport = ANY($3::text[]))
       ),
       previous_agg AS (
         SELECT
-          UPPER(TRIM(pr.from_airport)) AS from_code,
-          UPPER(TRIM(pr.to_airport)) AS to_code,
+          pr.from_airport AS from_code,
+          pr.to_airport AS to_code,
           COUNT(*)::int AS flights
         FROM previous_rows pr
         JOIN top_current tc
-          ON UPPER(TRIM(pr.from_airport)) = tc.from_code
-         AND UPPER(TRIM(pr.to_airport)) = tc.to_code
-        GROUP BY UPPER(TRIM(pr.from_airport)), UPPER(TRIM(pr.to_airport))
+          ON pr.from_airport = tc.from_code
+         AND pr.to_airport = tc.to_code
+        GROUP BY pr.from_airport, pr.to_airport
       )
       SELECT
         tc.from_code,
@@ -4264,7 +4258,7 @@ export class DashboardSummaryService {
     input: ContinentTrendAveragesInput,
   ): Promise<DashboardContinentTrendsResponse> {
     const continentMeta = resolveContinentMetaFromInput(input.continent);
-    const cacheKey = `${continentMeta.key}|v8`;
+    const cacheKey = `${continentMeta.key}|v10`;
 
     const cached = continentTrendsCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -4365,29 +4359,24 @@ export class DashboardSummaryService {
     `;
 
     const monthDepQueryTyped = `
-      WITH MATERIALIZED raw AS (
+      WITH filtered_totals AS (
         SELECT
-          dep_airport,
           EXTRACT(YEAR FROM departure_date)::int AS year_num,
-          EXTRACT(MONTH FROM departure_date)::int AS month_num
+          EXTRACT(MONTH FROM departure_date)::int AS month_num,
+          COUNT(*) AS cnt
         FROM departure_flight_paths
-        WHERE departure_date >= CURRENT_DATE - INTERVAL '24 months'
-          AND dep_airport IS NOT NULL
-      ),
-      filtered_totals AS (
-        SELECT year_num, month_num, COUNT(*)::numeric AS cnt
-        FROM raw
         WHERE dep_airport = ANY($1::text[])
+          AND departure_date >= CURRENT_DATE - INTERVAL '24 months'
         GROUP BY year_num, month_num
       ),
       month_avg AS (
-        SELECT month_num, ROUND(AVG(cnt), 2)::float AS outbound_avg
+        SELECT month_num, ROUND(AVG(cnt)::numeric, 2) AS outbound_avg
         FROM filtered_totals GROUP BY month_num
       ),
       month_grid AS (SELECT generate_series(1, 12)::int AS month_num)
       SELECT
         mg.month_num,
-        ROUND(COALESCE(ma.outbound_avg, 0), 2)::float AS outbound_avg,
+        ROUND(COALESCE(ma.outbound_avg, 0)::numeric, 2)::float AS outbound_avg,
         0::float AS inbound_avg
       FROM month_grid mg
       LEFT JOIN month_avg ma ON ma.month_num = mg.month_num
@@ -4395,30 +4384,25 @@ export class DashboardSummaryService {
     `;
 
     const monthArrQueryTyped = `
-      WITH MATERIALIZED raw AS (
+      WITH filtered_totals AS (
         SELECT
-          arr_airport,
           EXTRACT(YEAR FROM departure_date)::int AS year_num,
-          EXTRACT(MONTH FROM departure_date)::int AS month_num
+          EXTRACT(MONTH FROM departure_date)::int AS month_num,
+          COUNT(*) AS cnt
         FROM arrival_flight_paths
-        WHERE departure_date >= CURRENT_DATE - INTERVAL '24 months'
-          AND arr_airport IS NOT NULL
-      ),
-      filtered_totals AS (
-        SELECT year_num, month_num, COUNT(*)::numeric AS cnt
-        FROM raw
         WHERE arr_airport = ANY($1::text[])
+          AND departure_date >= CURRENT_DATE - INTERVAL '24 months'
         GROUP BY year_num, month_num
       ),
       month_avg AS (
-        SELECT month_num, ROUND(AVG(cnt), 2)::float AS inbound_avg
+        SELECT month_num, ROUND(AVG(cnt)::numeric, 2) AS inbound_avg
         FROM filtered_totals GROUP BY month_num
       ),
       month_grid AS (SELECT generate_series(1, 12)::int AS month_num)
       SELECT
         mg.month_num,
         0::float AS outbound_avg,
-        ROUND(COALESCE(ma.inbound_avg, 0), 2)::float AS inbound_avg
+        ROUND(COALESCE(ma.inbound_avg, 0)::numeric, 2)::float AS inbound_avg
       FROM month_grid mg
       LEFT JOIN month_avg ma ON ma.month_num = mg.month_num
       ORDER BY mg.month_num

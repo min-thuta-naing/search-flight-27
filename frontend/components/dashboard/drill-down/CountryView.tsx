@@ -407,10 +407,6 @@ function formatCountryFlowMapCount(value: number) {
   return new Intl.NumberFormat('en-US').format(value);
 }
 
-function clampCountryFlowMapViewportValue(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
 function normalizeCountryFlowMapLongitude(longitude: number) {
   return ((((longitude + 180) % 360) + 360) % 360) - 180;
 }
@@ -452,43 +448,6 @@ function mapCountryFlowMapPlotPoints(
     }));
 }
 
-function buildCountryFlowMapViewport(
-  points: CountryFlowMapPlotPoint[],
-  selectedLatitude: number,
-  selectedLongitude: number,
-) {
-  const latitudes = [selectedLatitude, ...points.map((point) => point.latitude as number)];
-  const longitudes = [selectedLongitude, ...points.map((point) => point.plotLongitude)];
-
-  const minLatitude = Math.min(...latitudes);
-  const maxLatitude = Math.max(...latitudes);
-  const minLongitude = Math.min(...longitudes);
-  const maxLongitude = Math.max(...longitudes);
-
-  const latitudeSpan = Math.max(10, maxLatitude - minLatitude);
-  const longitudeSpan = Math.max(16, maxLongitude - minLongitude);
-
-  const latitudePadding = Math.min(18, Math.max(6, latitudeSpan * 0.28));
-  const longitudePadding = Math.min(26, Math.max(8, longitudeSpan * 0.24));
-  const rightSideBoost = Math.min(22, Math.max(6, longitudeSpan * 0.2));
-  const centerWestBias = Math.min(14, Math.max(2.5, longitudeSpan * 0.12));
-
-  const latRangeMin = clampCountryFlowMapViewportValue(minLatitude - latitudePadding, -82, 84);
-  const latRangeMax = clampCountryFlowMapViewportValue(maxLatitude + latitudePadding, -82, 84);
-  const lonRangeMin = minLongitude - longitudePadding;
-  const lonRangeMax = maxLongitude + longitudePadding + rightSideBoost;
-
-  const centerLatitude = clampCountryFlowMapViewportValue((latRangeMin + latRangeMax) / 2, -82, 84);
-  const centerLongitude = normalizeCountryFlowMapLongitude(((lonRangeMin + lonRangeMax) / 2) - centerWestBias);
-  const spanForScale = Math.max(18, latRangeMax - latRangeMin, lonRangeMax - lonRangeMin);
-  const projectionScale = clampCountryFlowMapViewportValue(205 / spanForScale, 0.85, 4.8);
-
-  return {
-    centerLatitude,
-    centerLongitude,
-    projectionScale,
-  };
-}
 
 function getCountryFlowMapVisiblePoints(
   points: DashboardCountryFlowMapPointResponse[],
@@ -1607,14 +1566,14 @@ function CountryFlowMapPanel({
           </div>
         </div>
       ) : error ? (
-        <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center">
+        <div className="flex h-[500px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center lg:h-[580px]">
           <div className="space-y-2">
             <div className="text-sm font-semibold text-foreground">Flow map is unavailable</div>
             <div className="text-sm text-muted-foreground">{error}</div>
           </div>
         </div>
       ) : (
-        <div className="flex h-[430px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center">
+        <div className="flex h-[500px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center lg:h-[580px]">
           <div className="space-y-2">
             <div className="text-sm font-semibold text-foreground">No flow map data</div>
             <div className="text-sm text-muted-foreground">Try a different date range or refresh the view.</div>
@@ -1636,8 +1595,6 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
   const plotlyRef = useRef<any>(null);
   const {
     elementRef: mapContainerRef,
-    width: mapWidth,
-    height: mapHeight,
     isReady: isMapContainerReady,
   } = usePositiveElementSize<HTMLDivElement>();
 
@@ -1683,11 +1640,23 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
 
   const inboundSizes = inboundPoints.map((point) => Math.max(8, Math.min(20, 8 + (point.flights / maxFlights) * 12)));
   const outboundSizes = outboundPoints.map((point) => Math.max(8, Math.min(20, 8 + (point.flights / maxFlights) * 12)));
-  const viewport = buildCountryFlowMapViewport(
-    [...inboundPoints, ...outboundPoints],
-    selectedLatitude,
-    selectedLongitude,
-  );
+
+  const flatMapBounds = useMemo(() => {
+    const allPoints = [...inboundPoints, ...outboundPoints];
+    if (allPoints.length === 0) {
+      return { xRange: [-180, 180] as [number, number], yRange: [-75, 75] as [number, number] };
+    }
+    const lons = [selectedLongitude, ...allPoints.map((p) => p.plotLongitude)];
+    const lats = [selectedLatitude, ...allPoints.map((p) => p.latitude as number)];
+    const lonSpan = Math.max(...lons) - Math.min(...lons);
+    const latSpan = Math.max(...lats) - Math.min(...lats);
+    const lonPad = Math.max(20, lonSpan * 0.18);
+    const latPad = Math.max(12, latSpan * 0.18);
+    return {
+      xRange: [Math.max(-180, Math.min(...lons) - lonPad), Math.min(180, Math.max(...lons) + lonPad)] as [number, number],
+      yRange: [Math.max(-90, Math.min(...lats) - latPad), Math.min(90, Math.max(...lats) + latPad)] as [number, number],
+    };
+  }, [inboundPoints, outboundPoints, selectedLatitude, selectedLongitude]);
 
   const traces = useMemo(() => ([
     {
@@ -1787,21 +1756,24 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
   ]);
 
   const plotLayout = useMemo(() => ({
-    autosize: false,
-    width: mapWidth,
-    height: mapHeight,
+    autosize: true,
     margin: { t: 0, r: 0, b: 0, l: 0 },
     paper_bgcolor: 'rgba(0,0,0,0)',
     plot_bgcolor: 'rgba(0,0,0,0)',
-    uirevision: 'country-flow-map',
+    uirevision: `${data.country.code || data.country.name}-${mode}`,
     geo: {
       projection: {
-        type: 'natural earth',
-        scale: viewport.projectionScale,
+        type: 'equirectangular',
       },
-      center: {
-        lat: viewport.centerLatitude,
-        lon: viewport.centerLongitude,
+      lonaxis: {
+        range: flatMapBounds.xRange,
+        showgrid: true,
+        gridcolor: 'rgba(148, 163, 184, 0.18)',
+      },
+      lataxis: {
+        range: flatMapBounds.yRange,
+        showgrid: true,
+        gridcolor: 'rgba(148, 163, 184, 0.18)',
       },
       showland: true,
       landcolor: '#1e293b',
@@ -1814,28 +1786,20 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
       showcoastlines: true,
       coastlinecolor: 'rgba(148, 163, 184, 0.45)',
       bgcolor: 'rgba(0,0,0,0)',
-      lataxis: {
-        showgrid: true,
-        gridcolor: 'rgba(148, 163, 184, 0.18)',
-      },
-      lonaxis: {
-        showgrid: true,
-        gridcolor: 'rgba(148, 163, 184, 0.18)',
-      },
+      showframe: false,
     },
   }), [
-    mapHeight,
-    mapWidth,
-    viewport.centerLatitude,
-    viewport.centerLongitude,
-    viewport.projectionScale,
+    data.country.code,
+    data.country.name,
+    flatMapBounds,
+    mode,
   ]);
 
   const plotConfig = useMemo(() => ({
     displayModeBar: false,
-    responsive: false,
-    scrollZoom: false,
-    doubleClick: false,
+    responsive: true,
+    scrollZoom: true,
+    doubleClick: 'reset' as const,
     showTips: false,
   }), []);
 
@@ -1890,7 +1854,7 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
   }, []);
 
   return (
-    <div ref={mapContainerRef} className="h-[430px] w-full min-w-0">
+    <div ref={mapContainerRef} className="h-[500px] w-full min-w-0 lg:h-[580px]">
       {isMapContainerReady ? (
         <div ref={graphDivRef} className="h-full w-full" />
       ) : (

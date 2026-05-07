@@ -109,11 +109,14 @@ function formatDateInput(date: Date) {
 
 // ─── sub-components ──────────────────────────────────────────────────────────
 
-function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+function Panel({ title, subtitle, action, children }: { title: string; subtitle?: string; action?: ReactNode; children: ReactNode }) {
   return (
     <div className="rounded-xl border border-border bg-card p-5 shadow-sm transition-shadow duration-200 hover:shadow-md">
       <div className="mb-4 space-y-0.5">
-        <div className="text-[15px] font-semibold tracking-tight">{title}</div>
+        <div className="flex items-center gap-2">
+          <div className="text-[15px] font-semibold tracking-tight">{title}</div>
+          {action}
+        </div>
         {subtitle && <div className="text-[12px] text-muted-foreground">{subtitle}</div>}
       </div>
       {children}
@@ -399,6 +402,7 @@ export function AirlineView() {
       })
       .catch(() => { setOriginLoading(false); });
   }, [airline?.id, queryScope.level, queryScope.value, originLoading, originHasMore, originLoaded, startDate, endDate]);
+
 
   useEffect(() => {
     if (!originHasMore || originLoading) return;
@@ -839,7 +843,10 @@ export function AirlineView() {
 
       {/* Row 2: Origin Airports | Destination Airports */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <Panel title="Origin Airports" subtitle={`สนามบินต้นทางของ ${airlineName}`}>
+        <Panel
+          title="Origin Airports"
+          subtitle={`สนามบินต้นทางของ ${airlineName}`}
+        >
           <InfiniteAirportTable
             rows={originRows}
             loading={originLoading}

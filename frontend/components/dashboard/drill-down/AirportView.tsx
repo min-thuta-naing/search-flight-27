@@ -1303,7 +1303,7 @@ function HourDistributionPanel({ hourlyDistribution }: { hourlyDistribution: { d
         แกน X แสดงเวลาในแต่ละชั่วโมง (00:00 - 23:00) {'\u00B7'} ข้อมูลรายปี
       </div>
       <div className="h-[250px] -ml-2">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height={250}>
           <BarChart data={chartData} margin={{ top: 6, right: 10, left: 8, bottom: 22 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-border" />
             <XAxis

@@ -381,17 +381,23 @@ export function WorldView() {
     }
 
     const activePresetWindowDays = durationMode ? PRELOADED_PRESET_WINDOW_DAYS[durationMode] : undefined;
-    const isPreloadedPresetMode = !!activePresetWindowDays;
+    const isPreloadedPresetMode = !!activePresetWindowDays || durationMode === 'all';
     const startDate = formatLocalDateInput(dateRange.from);
     const endDate = formatLocalDateInput(dateRange.to || dateRange.from);
     const cacheKey = isPreloadedPresetMode
       ? `preset:${durationMode}`
       : `${startDate}__${endDate}`;
     // Preset mode: use UTC-based dates to match the backend preload's buildPresetDateRange().
+    // 'all' preset: bounds dates are stored as UTC midnight — use ISO slice to avoid local-timezone off-by-one.
     // Non-preset mode: use local-date strings from the date picker as-is.
-    const queryOptions = isPreloadedPresetMode && durationMode && durationMode !== 'all'
-      ? buildPresetUtcQueryDates(durationMode as Exclude<RangePreset, 'all'>)
-      : { startDate, endDate };
+    const queryOptions = durationMode === 'all'
+      ? {
+          startDate: dateRange.from.toISOString().slice(0, 10),
+          endDate: (dateRange.to || dateRange.from).toISOString().slice(0, 10),
+        }
+      : isPreloadedPresetMode && durationMode
+        ? buildPresetUtcQueryDates(durationMode as Exclude<RangePreset, 'all'>)
+        : { startDate, endDate };
     const summaryCacheState = getWorldSummaryCacheState(cacheKey);
     const topRanksCacheState = getWorldTopRanksCacheState(cacheKey);
     const topDestinationsCacheState = getWorldTopDestinationsCacheState(cacheKey);

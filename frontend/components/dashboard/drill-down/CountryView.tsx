@@ -1593,6 +1593,8 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
 }) {
   const graphDivRef = useRef<HTMLDivElement | null>(null);
   const plotlyRef = useRef<any>(null);
+  const listenersAttachedRef = useRef(false);
+  const selectedCountryNameRef = useRef(data.country.name);
   const {
     elementRef: mapContainerRef,
     isReady: isMapContainerReady,
@@ -1608,6 +1610,7 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
   ), [data.country.longitude, data.outbound.points, mode]);
   const selectedLatitude = data.country.latitude ?? 15;
   const selectedLongitude = data.country.longitude ?? 0;
+  selectedCountryNameRef.current = data.country.name;
 
   const allFlights = [
     ...inboundPoints.map((point) => point.flights),
@@ -1688,6 +1691,7 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
       mode: 'markers',
       lon: inboundPoints.map((point) => point.plotLongitude),
       lat: inboundPoints.map((point) => point.latitude),
+      customdata: inboundPoints.map((point) => point.countryName),
       text: inboundPoints.map((point) => `${point.countryName}: ${formatCountryFlowMapCount(point.flights)} flights (${point.pct.toFixed(1)}%)`),
       hovertemplate: '%{text}<extra>Inbound</extra>',
       marker: {
@@ -1706,6 +1710,7 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
       mode: 'markers',
       lon: outboundPoints.map((point) => point.plotLongitude),
       lat: outboundPoints.map((point) => point.latitude),
+      customdata: outboundPoints.map((point) => point.countryName),
       text: outboundPoints.map((point) => `${point.countryName}: ${formatCountryFlowMapCount(point.flights)} flights (${point.pct.toFixed(1)}%)`),
       hovertemplate: '%{text}<extra>Outbound</extra>',
       marker: {
@@ -1739,6 +1744,19 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
           color: '#ffffff',
         },
       },
+      showlegend: false,
+    },
+    // Choropleth highlight trace — always last (index 5). Populated via restyle on hover.
+    {
+      type: 'choropleth',
+      locations: [] as string[],
+      z: [] as number[],
+      locationmode: 'country names',
+      colorscale: [[0, 'rgba(250, 204, 21, 0.22)'], [1, 'rgba(250, 204, 21, 0.22)']],
+      zmin: 0,
+      zmax: 1,
+      showscale: false,
+      hoverinfo: 'skip',
       showlegend: false,
     },
   ]), [
@@ -1809,6 +1827,9 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
     let cancelled = false;
     const target = graphDivRef.current;
 
+    const SELECTED_MARKER_TRACE_INDEX = 4;
+    const HIGHLIGHT_TRACE_INDEX = 5;
+
     const renderPlot = async () => {
       try {
         if (!plotlyRef.current) {
@@ -1823,6 +1844,26 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
         ).catch(() => {
           // Ignore transient Plotly lifecycle races during rapid state updates.
         });
+
+        if (!listenersAttachedRef.current) {
+          listenersAttachedRef.current = true;
+          (target as any).on('plotly_hover', (eventData: any) => {
+            const pt = eventData?.points?.[0];
+            if (!plotlyRef.current) return;
+            const countryName = (pt?.customdata as string | undefined)
+              ?? (pt?.curveNumber === SELECTED_MARKER_TRACE_INDEX ? selectedCountryNameRef.current : undefined);
+            if (!countryName) return;
+            void Promise.resolve(
+              plotlyRef.current.restyle(target, { locations: [[countryName]], z: [[1]] }, [HIGHLIGHT_TRACE_INDEX]),
+            ).catch(() => {});
+          });
+          (target as any).on('plotly_unhover', () => {
+            if (!plotlyRef.current) return;
+            void Promise.resolve(
+              plotlyRef.current.restyle(target, { locations: [[]], z: [[]] }, [HIGHLIGHT_TRACE_INDEX]),
+            ).catch(() => {});
+          });
+        }
       } catch {
         // Ignore dynamic import/render failures to avoid uncaught promise noise.
       }
@@ -1842,6 +1883,7 @@ const CountryFlowMapSvg = memo(function CountryFlowMapSvg({
 
   useEffect(() => {
     return () => {
+      listenersAttachedRef.current = false;
       const target = graphDivRef.current;
       if (!target || !plotlyRef.current) return;
 

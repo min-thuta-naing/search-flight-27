@@ -830,22 +830,6 @@ function buildCountryFlowMapDirectionQuery(direction: 'inbound' | 'outbound') {
           OR TRIM(country_name) ILIKE $2
         )
     ),
-    country_centroids AS (
-      SELECT
-        COALESCE(country_code, country_name, country, 'Other') AS country_key,
-        COALESCE(country_code, country, NULL) AS country_code,
-        COALESCE(country_name, country, 'Other') AS country_name,
-        AVG(latitude)::float AS latitude,
-        AVG(longitude)::float AS longitude,
-        COUNT(*)::int AS airport_count
-      FROM airports
-      WHERE latitude IS NOT NULL
-        AND longitude IS NOT NULL
-      GROUP BY
-        COALESCE(country_code, country_name, country, 'Other'),
-        COALESCE(country_code, country, NULL),
-        COALESCE(country_name, country, 'Other')
-    ),
     current_rows AS (
       SELECT ${counterpartAirportColumn} AS counterpart_airport
       FROM departure_flight_paths
@@ -871,6 +855,36 @@ function buildCountryFlowMapDirectionQuery(direction: 'inbound' | 'outbound') {
       WHERE departure_date >= $5 AND departure_date <= $6
         AND ${selectedAirportColumn} IN (SELECT code FROM country_airports)
         AND ${counterpartAirportColumn} NOT IN (SELECT code FROM country_airports)
+    ),
+    country_centroids AS (
+      SELECT DISTINCT ON (sub.country_key)
+        sub.country_key,
+        sub.country_code,
+        sub.country_name,
+        sub.latitude,
+        sub.longitude,
+        sub.airport_count
+      FROM (
+        SELECT
+          COALESCE(a.country_code, a.country_name, a.country, 'Other') AS country_key,
+          COALESCE(a.country_code, a.country, NULL)                     AS country_code,
+          COALESCE(a.country_name, a.country, 'Other')                  AS country_name,
+          a.latitude::float  AS latitude,
+          a.longitude::float AS longitude,
+          COUNT(*)::int      AS flight_count,
+          COUNT(*) OVER (
+            PARTITION BY COALESCE(a.country_code, a.country_name, a.country, 'Other')
+          )::int AS airport_count
+        FROM current_rows cr
+        JOIN airports a ON UPPER(TRIM(a.code)) = UPPER(TRIM(cr.counterpart_airport))
+        WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL
+        GROUP BY
+          COALESCE(a.country_code, a.country_name, a.country, 'Other'),
+          COALESCE(a.country_code, a.country, NULL),
+          COALESCE(a.country_name, a.country, 'Other'),
+          a.code, a.latitude, a.longitude
+      ) sub
+      ORDER BY sub.country_key, sub.flight_count DESC
     ),
     current_agg AS (
       SELECT
@@ -3258,15 +3272,31 @@ export class DashboardSummaryService {
             OR UPPER(TRIM(country)) = $1
             OR TRIM(country_name) ILIKE $2
           )
+      ),
+      country_meta AS (
+        SELECT
+          COUNT(*)::int AS airport_count,
+          COALESCE(MAX(country_code), MAX(country), NULL) AS country_code,
+          COALESCE(MAX(country_name), MAX(country), 'Other') AS country_name
+        FROM airports
+        WHERE code IN (SELECT code FROM country_airports)
+      ),
+      best_airport AS (
+        SELECT latitude::float AS latitude, longitude::float AS longitude
+        FROM airports
+        WHERE code IN (SELECT code FROM country_airports)
+          AND latitude IS NOT NULL AND longitude IS NOT NULL
+        ORDER BY code ASC
+        LIMIT 1
       )
       SELECT
-        COUNT(*)::int AS airport_count,
-        ROUND(AVG(latitude)::numeric, 6)::float AS latitude,
-        ROUND(AVG(longitude)::numeric, 6)::float AS longitude,
-        COALESCE(MAX(country_code), MAX(country), NULL) AS country_code,
-        COALESCE(MAX(country_name), MAX(country), 'Other') AS country_name
-      FROM airports
-      WHERE code IN (SELECT code FROM country_airports)
+        m.airport_count,
+        b.latitude,
+        b.longitude,
+        m.country_code,
+        m.country_name
+      FROM country_meta m
+      LEFT JOIN best_airport b ON TRUE
     `;
 
     const inboundQuery = buildCountryFlowMapDirectionQuery('inbound');

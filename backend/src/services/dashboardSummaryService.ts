@@ -2756,6 +2756,7 @@ export class DashboardSummaryService {
     const comparisonStart = formatDateForQuery(comparisonStartDate);
     const comparisonEnd = formatDateForQuery(comparisonEndDate);
     const normalizedCode = countryInput.toUpperCase();
+    const namePattern = normalizedCode.length <= 3 ? countryInput : `%${countryInput}%`;
 
     const countryScopeQuery = `
       WITH country_airports AS (
@@ -3018,8 +3019,8 @@ export class DashboardSummaryService {
       ORDER BY tc.flights DESC, tc.airline_id ASC
     `;
 
-    const baseParams = [normalizedCode, `%${countryInput}%`, periodStart, periodEnd];
-    const comparisonParams = [normalizedCode, `%${countryInput}%`, periodStart, periodEnd, comparisonStart, comparisonEnd];
+    const baseParams = [normalizedCode, namePattern, periodStart, periodEnd];
+    const comparisonParams = [normalizedCode, namePattern, periodStart, periodEnd, comparisonStart, comparisonEnd];
 
     const [countryScopeResult, airportsResult, inboundResult, airlineResult] = await Promise.all([
       pool.query(countryScopeQuery, comparisonParams),
@@ -3127,6 +3128,7 @@ export class DashboardSummaryService {
     const comparisonStart = formatDateForQuery(comparisonStartDate);
     const comparisonEnd = formatDateForQuery(comparisonEndDate);
     const normalizedCode = countryInput.toUpperCase();
+    const namePattern = normalizedCode.length <= 3 ? countryInput : `%${countryInput}%`;
 
     const airlineQuery = `
       WITH country_airports AS (
@@ -3222,7 +3224,7 @@ export class DashboardSummaryService {
       ORDER BY tc.flights DESC, tc.airline_id ASC
     `;
 
-    const params = [normalizedCode, `%${countryInput}%`, periodStart, periodEnd, comparisonStart, comparisonEnd];
+    const params = [normalizedCode, namePattern, periodStart, periodEnd, comparisonStart, comparisonEnd];
     const result = await pool.query(airlineQuery, params);
 
     return (result.rows as Array<{
@@ -3259,7 +3261,7 @@ export class DashboardSummaryService {
     const comparisonStart = formatDateForQuery(comparisonStartDate);
     const comparisonEnd = formatDateForQuery(comparisonEndDate);
     const normalizedCode = countryInput.toUpperCase();
-    const namePattern = `%${countryInput}%`;
+    const namePattern = normalizedCode.length <= 3 ? countryInput : `%${countryInput}%`;
 
     const countryMetaQuery = `
       WITH country_airports AS (

@@ -60,6 +60,9 @@ const COUNTRY_RANK_PANEL_HEIGHT_CLASS = 'lg:h-[540px]';
 const COUNTRY_DISPLAY_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
   ? new Intl.DisplayNames(['en'], { type: 'region' })
   : null;
+const COUNTRY_DISPLAY_NAMES_TH = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
+  ? new Intl.DisplayNames(['th'], { type: 'region' })
+  : null;
 const COUNTRY_DISPLAY_ALIASES: Record<string, string> = {
   CD: 'Kinshasa',
 };
@@ -1231,11 +1234,20 @@ function resolveCountryDisplayName(name: string, countryCode?: string | null) {
     return alias;
   }
 
-  const lookupCode = normalizedCode || (/^[A-Z0-9]{2,3}$/.test(normalizedName.toUpperCase()) ? normalizedName.toUpperCase() : '');
+  // Only use the code as a lookup key if it actually looks like an ISO region code (2–3 chars).
+  // The backend may fall back to storing the country name in the country_code column, which would
+  // cause Intl.DisplayNames.of() to throw RangeError for values like "THAILAND".
+  const codeIsIsoLike = /^[A-Z0-9]{2,3}$/.test(normalizedCode);
+  const lookupCode = (codeIsIsoLike ? normalizedCode : '') ||
+    (/^[A-Z0-9]{2,3}$/.test(normalizedName.toUpperCase()) ? normalizedName.toUpperCase() : '');
   if (lookupCode && COUNTRY_DISPLAY_NAMES) {
-    const displayName = COUNTRY_DISPLAY_NAMES.of(lookupCode);
-    if (displayName && displayName !== lookupCode) {
-      return displayName;
+    try {
+      const displayName = COUNTRY_DISPLAY_NAMES.of(lookupCode);
+      if (displayName && displayName !== lookupCode) {
+        return displayName;
+      }
+    } catch {
+      // Invalid region code — fall through to raw name
     }
   }
 
@@ -1263,16 +1275,19 @@ function buildCountryDrillTarget(
   continentLabel?: string,
   continentIcon?: string,
 ) {
-  const displayName = resolveCountryDisplayName(countryName, countryCode);
+  // Reject sentinel '--' and full-name fallbacks (e.g. "THAILAND") — only real ISO codes pass.
+  // If validCode is null, CountryView falls back to querying by country.name instead.
+  const validCode = /^[A-Z]{2,3}$/.test(countryCode) ? countryCode : null;
+  const displayName = resolveCountryDisplayName(countryName, validCode);
   const resolvedContinentLabel = continentLabel || 'Other';
   const resolvedContinentIcon = continentIcon || '🌐';
 
   return {
     continent: toContinentSelection(resolvedContinentLabel, resolvedContinentIcon) as any,
     country: {
-      flag: flagFromCountryCode(countryCode),
+      flag: flagFromCountryCode(validCode),
       name: displayName,
-      countryCode,
+      countryCode: validCode,
       airports: 0,
       flights: 0,
       delta: '0.0%',
@@ -1318,12 +1333,8 @@ function formatAirportDisplayName(name: string) {
 
 function isCodeLikeQuery(query: string) {
   const compactQuery = query.replace(/\s+/g, '');
-  return (
-    compactQuery.length >= 2 &&
-    compactQuery.length <= 3 &&
-    compactQuery === compactQuery.toUpperCase() &&
-    /^[A-Z0-9]+$/.test(compactQuery)
-  );
+  // 2–3 latin-alphanumeric chars regardless of case (e.g. "th", "TH", "us", "US")
+  return compactQuery.length >= 2 && compactQuery.length <= 3 && /^[A-Za-z0-9]+$/.test(compactQuery);
 }
 
 function applyPresetRange(
@@ -1734,24 +1745,45 @@ function CountryLookupPanel() {
 
   const visibleCountries = useMemo(() => {
     const normalizedQuery = query.trim();
-    const rows = [...airportCountries].sort((a, b) => a.country.localeCompare(b.country, 'en', { sensitivity: 'base' }));
+    const rows = [...airportCountries].sort((a, b) => {
+      const nameA = a.country ?? '';
+      const nameB = b.country ?? '';
+      return nameA.localeCompare(nameB, 'en', { sensitivity: 'base' });
+    });
 
     if (!normalizedQuery) {
       return rows;
     }
 
     const compactQuery = normalizedQuery.replace(/\s+/g, '');
+    const upperCompact = compactQuery.toUpperCase();
+    const lowerQuery = normalizedQuery.toLowerCase();
     const codeSearch = isCodeLikeQuery(normalizedQuery);
 
     return rows.filter((country) => {
-      const code = (country.country_code || '').toUpperCase();
-      const name = country.country.toLowerCase();
+      const code = (country.country_code ?? '').trim().toUpperCase();
+      // country_code is a valid ISO code only when it's 2–3 uppercase letters; the backend
+      // may fall back to the country name string when the actual code is missing.
+      const isValidIsoCode = /^[A-Z]{2,3}$/.test(code);
+      const rawName = (country.country ?? '').toLowerCase();
+      const displayName = resolveCountryDisplayName(country.country ?? '', country.country_code).toLowerCase();
+      const thaiName = (isValidIsoCode && COUNTRY_DISPLAY_NAMES_TH
+        ? COUNTRY_DISPLAY_NAMES_TH.of(code) ?? ''
+        : ''
+      ).toLowerCase();
 
       if (codeSearch) {
-        return code.includes(compactQuery.toUpperCase());
+        // Exact or prefix code match; name prefix as fallback for rows with missing/non-ISO code.
+        const codeMatch = isValidIsoCode && (code === upperCompact || code.startsWith(upperCompact));
+        const namePrefixMatch = rawName.startsWith(lowerQuery) || displayName.startsWith(lowerQuery);
+        return codeMatch || namePrefixMatch;
       }
 
-      return name.includes(normalizedQuery.toLowerCase());
+      return (
+        rawName.includes(lowerQuery) ||
+        displayName.includes(lowerQuery) ||
+        (thaiName.length > 0 && thaiName.includes(lowerQuery))
+      );
     });
   }, [airportCountries, query]);
 

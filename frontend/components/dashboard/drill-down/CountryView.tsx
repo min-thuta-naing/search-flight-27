@@ -236,11 +236,17 @@ function resolveCountryDisplayName(name: string, countryCode?: string | null) {
     return alias;
   }
 
-  const lookupCode = normalizedCode || (/^[A-Z0-9]{2,3}$/.test(normalizedName.toUpperCase()) ? normalizedName.toUpperCase() : '');
+  const codeIsIsoLike = /^[A-Z0-9]{2,3}$/.test(normalizedCode);
+  const lookupCode = (codeIsIsoLike ? normalizedCode : '') ||
+    (/^[A-Z0-9]{2,3}$/.test(normalizedName.toUpperCase()) ? normalizedName.toUpperCase() : '');
   if (lookupCode && COUNTRY_DISPLAY_NAMES) {
-    const displayName = COUNTRY_DISPLAY_NAMES.of(lookupCode);
-    if (displayName && displayName !== lookupCode) {
-      return displayName;
+    try {
+      const displayName = COUNTRY_DISPLAY_NAMES.of(lookupCode);
+      if (displayName && displayName !== lookupCode) {
+        return displayName;
+      }
+    } catch {
+      // Invalid region code — fall through to raw name
     }
   }
 

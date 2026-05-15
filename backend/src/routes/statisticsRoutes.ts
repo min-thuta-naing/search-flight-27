@@ -20,6 +20,7 @@ import {
   getDashboardTopCountries,
   getDashboardTopAirports,
   getDashboardTopDestinations,
+  getDashboardWorldSnapshot,
   getDashboardAirlines,
   getDashboardAirlineDetail,
   getDashboardAirlineTrend,
@@ -94,6 +95,9 @@ router.get('/dashboard-top-airports', getDashboardTopAirports);
 
 // Get top destinations for the world dashboard
 router.get('/dashboard-top-destinations', getDashboardTopDestinations);
+
+// Consolidated world snapshot — summary + top-ranks + top-destinations in a single request
+router.get('/dashboard-world-snapshot', getDashboardWorldSnapshot);
 
 // Get paginated airline overview for the dashboard airlines panel
 router.get('/dashboard-airlines', getDashboardAirlines);

@@ -7,6 +7,7 @@ import { serverConfig } from './config/server';
 import { initializeTimescaleDB } from './config/database';
 import routes from './routes';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
+import { queryMonitoringMiddleware } from './middleware/queryMonitoringMiddleware';
 import { schedulerService } from './preload/scheduler';
 import { schedulerService as botSchedulerService } from './services/schedulerService';
 import {
@@ -76,6 +77,9 @@ const limiter = rateLimit({
 
 // Apply general rate limit to all API routes (after the specific one)
 app.use('/api/', limiter);
+
+// Performance monitoring — log every request duration, warn on slow ones
+app.use(queryMonitoringMiddleware);
 
 // Routes
 app.use('/api', routes);

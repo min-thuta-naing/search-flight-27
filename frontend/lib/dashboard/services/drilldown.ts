@@ -27,6 +27,7 @@ export type {
   DashboardTopCountriesResponse,
   DashboardTopAirportsResponse,
   DashboardTopDestinationsResponse,
+  DashboardWorldSnapshotResponse,
 } from '@/lib/api/statistics-api';
 import {
   ROUTES,
@@ -135,6 +136,12 @@ export async function getDashboardTopDestinations(
   options?: Parameters<typeof statisticsApi.getDashboardTopDestinations>[0],
 ) {
   return statisticsApi.getDashboardTopDestinations(options);
+}
+
+export async function getDashboardWorldSnapshot(
+  options?: Parameters<typeof statisticsApi.getDashboardWorldSnapshot>[0],
+) {
+  return statisticsApi.getDashboardWorldSnapshot(options);
 }
 
 // ── Country level ──

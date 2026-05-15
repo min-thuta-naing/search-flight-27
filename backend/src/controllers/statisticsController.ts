@@ -23,6 +23,21 @@ type DashboardCacheSnapshot = {
 };
 
 const dashboardQueryInFlight = new Map<string, Promise<unknown>>();
+// Fast in-memory cache to avoid disk I/O on hot reads. Loaded once at startup.
+const fastDashboardCache = new Map<string, DashboardCacheEntry>();
+
+async function loadDashboardCacheSnapshotToMemory(): Promise<void> {
+  try {
+    const entries = await readDashboardQueryCacheSnapshot();
+    Object.keys(entries).forEach((k) => fastDashboardCache.set(k, entries[k]));
+    console.log(`[statisticsController] loaded ${fastDashboardCache.size} dashboard cache entries into memory`);
+  } catch (err) {
+    console.warn('[statisticsController] failed to load dashboard cache snapshot into memory', err);
+  }
+}
+
+// Initialize in background
+void loadDashboardCacheSnapshotToMemory();
 const DASHBOARD_PRELOAD_PRESETS = ['all', 'focus', '7', '30', '90', '180', '365'] as const;
 const DASHBOARD_CACHE_DIR = join(tmpdir(), 'search-flight-27');
 const DASHBOARD_CACHE_FILE = join(DASHBOARD_CACHE_DIR, 'dashboard-query-cache.json');
@@ -193,6 +208,7 @@ async function clearDashboardQueryCacheStore() {
   const cacheEntries = Object.keys(entries).length;
   const inFlightEntries = dashboardQueryInFlight.size;
   dashboardQueryInFlight.clear();
+  fastDashboardCache.clear();
   await rm(DASHBOARD_CACHE_FILE, { force: true });
 
   return {
@@ -256,6 +272,37 @@ function buildDashboardQueryCacheKey(scope: string, query: Request['query']): st
     `include_seasonal=${toQueryValue(query.include_seasonal)}`,
     `include_top_routes=${toQueryValue(query.include_top_routes)}`,
   ].filter((part): part is string => part !== null).join('|');
+}
+
+// Mirrors dashboardSummaryService.buildInclusiveRange so the cache key produced here
+// always uses explicit start/end dates — matching what preload stores — even when the
+// caller only supplied window_days.
+function resolveQueryDates(query: Request['query']): { start_date: string; end_date: string } {
+  if (typeof query.start_date === 'string' && query.start_date !== '' &&
+      typeof query.end_date === 'string' && query.end_date !== '') {
+    return { start_date: query.start_date, end_date: query.end_date };
+  }
+
+  const windowDays = typeof query.window_days === 'string'
+    ? (Number.parseInt(query.window_days, 10) || 15)
+    : 15;
+  const safeWindow = Math.max(1, Math.min(windowDays, 3650));
+
+  let centerDate: Date;
+  if (typeof query.date === 'string' && query.date !== '') {
+    const parsed = new Date(`${query.date.split('T')[0]}T00:00:00.000Z`);
+    centerDate = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  } else {
+    centerDate = new Date();
+  }
+
+  const today = new Date(Date.UTC(centerDate.getUTCFullYear(), centerDate.getUTCMonth(), centerDate.getUTCDate()));
+  const start = new Date(today);
+  start.setUTCDate(start.getUTCDate() - safeWindow);
+  const end = new Date(today);
+  end.setUTCDate(end.getUTCDate() + safeWindow);
+
+  return { start_date: formatDateForKey(start), end_date: formatDateForKey(end) };
 }
 
 function formatDateForKey(date: Date): string {
@@ -394,23 +441,66 @@ async function preloadCountryOverviewsForRange(options: {
 }) {
   const { startDate, endDate, countryBatchSize, maxCountryRssMb, cacheMode } = options;
   console.log(
-    `[dashboard-preload] country preload start; mode=${cacheMode}; range=${startDate}->${endDate}; batchSize=${countryBatchSize}; rssLimit=${maxCountryRssMb}MB`
+    `[dashboard-preload] country preload start (bulk); mode=${cacheMode}; range=${startDate}->${endDate}; rssLimit=${maxCountryRssMb}MB`
   );
   const countryNames = await getAllCountryNames();
 
-  let attempted = 0;
   let failed = 0;
-  let batches = 0;
-  let stoppedByRss = false;
-  let cacheAliasWrites = 0;
   const failedCountries: Array<{ country: string; error: string }> = [];
 
-  for (let index = 0; index < countryNames.length; index += countryBatchSize) {
-    const batch = countryNames.slice(index, index + countryBatchSize);
-    batches += 1;
+  const startMs = Date.now();
+  let bulkResult: Map<string, import('../services/dashboardSummaryService').DashboardCountryOverviewResponse>;
+  try {
+    bulkResult = await DashboardSummaryService.getBulkCountryOverviews(countryNames, {
+      windowDays: 15,
+      startDateInput: startDate,
+      endDateInput: endDate,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[dashboard-preload] bulk country query failed: ${errorMessage}`);
+    return {
+      attempted: 0,
+      failed: countryNames.length,
+      countries: countryNames.length,
+      countryBatchSize: countryNames.length,
+      batches: 1,
+      maxCountryRssMb,
+      stoppedByRss: false,
+      cacheAliasWrites: 0,
+      source: 'database-active-countries' as const,
+      failedCountries: [{ country: 'ALL', error: errorMessage }],
+    };
+  }
+  const bulkDurationMs = Date.now() - startMs;
+  console.log(`[dashboard-preload] bulk country queries done in ${bulkDurationMs}ms; countries=${bulkResult.size}`);
 
-    const batchResults = await Promise.all(
-      batch.map(async (countryName) => {
+  // Write each country payload to the cache in batches so we can guard RSS growth.
+  // The bulk DB query already ran for all countries; batching applies only to cache writes.
+  let cacheAliasWrites = 0;
+  let stoppedByRss = false;
+  let completedBatches = 0;
+
+  const batchSize = Math.max(1, countryBatchSize);
+  for (let batchStart = 0; batchStart < countryNames.length; batchStart += batchSize) {
+    const batch = countryNames.slice(batchStart, batchStart + batchSize);
+    const batchIndex = Math.floor(batchStart / batchSize) + 1;
+    const totalBatches = Math.ceil(countryNames.length / batchSize);
+    console.log(
+      `[dashboard-preload] writing cache batch ${batchIndex}/${totalBatches} (countries ${batchStart + 1}-${batchStart + batch.length})`
+    );
+
+    for (const countryName of batch) {
+      const payload = bulkResult.get(countryName);
+      if (!payload) {
+        failed += 1;
+        if (failedCountries.length < 20) {
+          failedCountries.push({ country: countryName, error: 'no data returned from bulk query' });
+        }
+        continue;
+      }
+
+      try {
         const queryWithWindow = {
           country: countryName,
           window_days: '15',
@@ -424,64 +514,52 @@ async function preloadCountryOverviewsForRange(options: {
           end_date: endDate,
         } as Request['query'];
 
-        try {
-          const cacheKeyWithWindow = buildDashboardQueryCacheKey('dashboard-country-overview', queryWithWindow);
-          const payload = await getOrSetDashboardQueryCache(cacheKeyWithWindow, () =>
-            DashboardSummaryService.getCountryOverview({
-              country: countryName,
-              windowDays: 15,
-              startDateInput: startDate,
-              endDateInput: endDate,
-            })
-          );
+        const cacheKeyWithWindow = buildDashboardQueryCacheKey('dashboard-country-overview', queryWithWindow);
+        const cacheKeyWithoutWindow = buildDashboardQueryCacheKey('dashboard-country-overview', queryWithoutWindow);
 
-          // Mirror to the key shape used by endpoint calls that pass only start/end (no window_days).
-          const cacheKeyWithoutWindow = buildDashboardQueryCacheKey('dashboard-country-overview', queryWithoutWindow);
-          if (cacheKeyWithoutWindow !== cacheKeyWithWindow) {
-            await writeDashboardQueryCache(cacheKeyWithoutWindow, payload);
-          }
-
-          return { ok: true as const, country: countryName };
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          return { ok: false as const, country: countryName, error: errorMessage };
+        await writeDashboardQueryCache(cacheKeyWithWindow, payload);
+        if (cacheKeyWithoutWindow !== cacheKeyWithWindow) {
+          await writeDashboardQueryCache(cacheKeyWithoutWindow, payload);
         }
-      })
-    );
-
-    attempted += batch.length;
-    const batchFailures = batchResults.filter((result) => !result.ok);
-    failed += batchFailures.length;
-    cacheAliasWrites += batch.length - batchFailures.length;
-
-    for (const failure of batchFailures) {
-      if (failedCountries.length >= 20) {
-        break;
+        cacheAliasWrites += 1;
+      } catch (error) {
+        failed += 1;
+        if (failedCountries.length < 20) {
+          failedCountries.push({ country: countryName, error: error instanceof Error ? error.message : String(error) });
+        }
       }
-      failedCountries.push({ country: failure.country, error: failure.error });
     }
 
-    await waitForDashboardCacheWrites();
-    const cleared = clearDashboardMemoryCache();
+    completedBatches += 1;
 
+    // Flush pending writes and check RSS before proceeding to the next batch
+    await waitForDashboardCacheWrites();
     const currentRssMb = getProcessRssMb();
     console.log(
-      `[dashboard-preload] country batch ${batches} done; mode=${cacheMode}; countries=${batch.length}; memory-cleared=${cleared.totalCleared}; rss=${currentRssMb}MB; limit=${maxCountryRssMb}MB`
+      `[dashboard-preload] batch ${batchIndex}/${totalBatches} done; rss=${currentRssMb}MB; limit=${maxCountryRssMb}MB`
     );
 
-    if (currentRssMb >= maxCountryRssMb) {
+    if (currentRssMb > maxCountryRssMb && batchStart + batchSize < countryNames.length) {
+      console.warn(
+        `[dashboard-preload] RSS ${currentRssMb}MB exceeds limit ${maxCountryRssMb}MB — stopping after batch ${batchIndex}`
+      );
       stoppedByRss = true;
-      console.log(`[dashboard-preload] country preload stopped by RSS guard at ${currentRssMb}MB`);
       break;
     }
   }
 
+  const cleared = clearDashboardMemoryCache();
+  const finalRssMb = getProcessRssMb();
+  console.log(
+    `[dashboard-preload] country cache writes done; written=${cacheAliasWrites}; failed=${failed}; memory-cleared=${cleared.totalCleared}; rss=${finalRssMb}MB`
+  );
+
   return {
-    attempted,
+    attempted: countryNames.length,
     failed,
     countries: countryNames.length,
-    countryBatchSize,
-    batches,
+    countryBatchSize: batchSize,
+    batches: completedBatches,
     maxCountryRssMb,
     stoppedByRss,
     cacheAliasWrites,
@@ -491,6 +569,17 @@ async function preloadCountryOverviewsForRange(options: {
 }
 
 async function readDashboardQueryCache<T>(key: string): Promise<T | null> {
+  // Fast path: check in-memory snapshot first
+  const fast = fastDashboardCache.get(key);
+  if (fast) {
+    if (fast.expiresAt <= Date.now()) {
+      fastDashboardCache.delete(key);
+      return null;
+    }
+    return fast.value as T;
+  }
+
+  // Fallback: read from disk snapshot and populate fast cache
   const entries = await readDashboardQueryCacheSnapshot();
   const cached = entries[key];
 
@@ -504,16 +593,30 @@ async function readDashboardQueryCache<T>(key: string): Promise<T | null> {
     return null;
   }
 
+  // Populate in-memory cache for faster subsequent reads
+  try {
+    fastDashboardCache.set(key, cached);
+  } catch {
+    // ignore memory set errors
+  }
+
   return cached.value as T;
 }
 
 async function writeDashboardQueryCache<T>(key: string, value: T): Promise<void> {
+  // Calculate once so fast cache and disk cache share the same expiry timestamp
+  const expiresAt = Date.now() + DASHBOARD_QUERY_CACHE_TTL_MS;
+
+  // Update fast in-memory cache immediately to avoid read-after-write disk latency
+  try {
+    fastDashboardCache.set(key, { value, expiresAt });
+  } catch {
+    // ignore memory set errors
+  }
+
   await queueDashboardCacheWrite(async () => {
     const entries = await readDashboardQueryCacheSnapshot();
-    entries[key] = {
-      value,
-      expiresAt: Date.now() + DASHBOARD_QUERY_CACHE_TTL_MS,
-    };
+    entries[key] = { value, expiresAt };
     await writeDashboardQueryCacheSnapshot(entries);
   });
 }
@@ -1013,7 +1116,7 @@ export async function getDashboardCacheStatus(req: Request, res: Response, next:
       preload: { ...dashboardPreloadStatus },
       totalEntries:
         queryCache.cacheEntries + queryCache.inFlightEntries +
-        Object.values(memoryCache).reduce((sum, count) => sum + count, 0),
+        Object.values(memoryCache).reduce((sum, stats) => sum + stats.size, 0),
     });
   } catch (error) {
     next(error);
@@ -1225,16 +1328,25 @@ export async function getDashboardSummary(req: Request, res: Response, next: Nex
       }
     }
 
-    const cacheKey = buildDashboardQueryCacheKey('dashboard-summary', req.query);
-    const summary = await getOrSetDashboardQueryCache(cacheKey, () =>
-      DashboardSummaryService.getWorldSummary({
-        centerDateInput: typeof date === 'string' ? date : undefined,
-        windowDays,
-        startDateInput: typeof start_date === 'string' ? start_date : undefined,
-        endDateInput: typeof end_date === 'string' ? end_date : undefined,
-      })
-    );
+    const { start_date: resolvedStart, end_date: resolvedEnd } = resolveQueryDates(req.query);
+    const normalizedQuery = { ...req.query, start_date: resolvedStart, end_date: resolvedEnd };
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-summary', normalizedQuery);
+    const startMs = Date.now();
+    const fastEntry = fastDashboardCache.get(cacheKey);
+    const fastHit = fastEntry !== undefined && fastEntry.expiresAt > Date.now();
+    const summary = fastHit
+      ? fastEntry.value
+      : await getOrSetDashboardQueryCache(cacheKey, () =>
+          DashboardSummaryService.getWorldSummary({
+            centerDateInput: typeof date === 'string' ? date : undefined,
+            windowDays,
+            startDateInput: resolvedStart,
+            endDateInput: resolvedEnd,
+          })
+        );
 
+    const duration = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-summary', durationMs: duration, fastHit }));
     res.json(summary);
   } catch (error) {
     next(error);
@@ -1260,16 +1372,25 @@ export async function getDashboardContinents(req: Request, res: Response, next: 
       }
     }
 
-    const cacheKey = buildDashboardQueryCacheKey('dashboard-continents', req.query);
-    const continents = await getOrSetDashboardQueryCache(cacheKey, () =>
-      DashboardSummaryService.getWorldContinentCards({
-        centerDateInput: typeof date === 'string' ? date : undefined,
-        windowDays,
-        startDateInput: typeof start_date === 'string' ? start_date : undefined,
-        endDateInput: typeof end_date === 'string' ? end_date : undefined,
-      })
-    );
+    const { start_date: resolvedStart, end_date: resolvedEnd } = resolveQueryDates(req.query);
+    const normalizedQuery = { ...req.query, start_date: resolvedStart, end_date: resolvedEnd };
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-continents', normalizedQuery);
+    const startMs = Date.now();
+    const fastEntry = fastDashboardCache.get(cacheKey);
+    const fastHit = fastEntry !== undefined && fastEntry.expiresAt > Date.now();
+    const continents = fastHit
+      ? fastEntry.value
+      : await getOrSetDashboardQueryCache(cacheKey, () =>
+          DashboardSummaryService.getWorldContinentCards({
+            centerDateInput: typeof date === 'string' ? date : undefined,
+            windowDays,
+            startDateInput: resolvedStart,
+            endDateInput: resolvedEnd,
+          })
+        );
 
+    const duration = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-continents', durationMs: duration, fastHit }));
     res.json(continents);
   } catch (error) {
     next(error);
@@ -1480,16 +1601,23 @@ export async function getDashboardCountryOverview(req: Request, res: Response, n
       end_date: normalizedEndDate,
     };
     const cacheKey = buildDashboardQueryCacheKey('dashboard-country-overview', normalizedQuery);
-    const overview = await getOrSetDashboardQueryCache(cacheKey, () =>
-      DashboardSummaryService.getCountryOverview({
-        country,
-        centerDateInput: normalizedDate,
-        windowDays,
-        startDateInput: normalizedStartDate,
-        endDateInput: normalizedEndDate,
-      })
-    );
+    const startMs = Date.now();
+    const fastEntry = fastDashboardCache.get(cacheKey);
+    const fastHit = fastEntry !== undefined && fastEntry.expiresAt > Date.now();
+    const overview = fastHit
+      ? fastEntry.value
+      : await getOrSetDashboardQueryCache(cacheKey, () =>
+          DashboardSummaryService.getCountryOverview({
+            country,
+            centerDateInput: normalizedDate,
+            windowDays,
+            startDateInput: normalizedStartDate,
+            endDateInput: normalizedEndDate,
+          })
+        );
 
+    const duration = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-country-overview', durationMs: duration, fastHit }));
     res.json(overview);
   } catch (error) {
     next(error);
@@ -1636,16 +1764,23 @@ export async function getDashboardAirportOverview(req: Request, res: Response, n
       ...req.query,
       airport: airportCode,
     });
-    const overview = await getOrSetDashboardQueryCache(cacheKey, () =>
-      DashboardSummaryService.getAirportOverview({
-        airportCode,
-        centerDateInput: typeof date === 'string' ? date : undefined,
-        windowDays,
-        startDateInput: typeof start_date === 'string' ? start_date : undefined,
-        endDateInput: typeof end_date === 'string' ? end_date : undefined,
-      })
-    );
+    const startMs = Date.now();
+    const fastEntry = fastDashboardCache.get(cacheKey);
+    const fastHit = fastEntry !== undefined && fastEntry.expiresAt > Date.now();
+    const overview = fastHit
+      ? fastEntry.value
+      : await getOrSetDashboardQueryCache(cacheKey, () =>
+          DashboardSummaryService.getAirportOverview({
+            airportCode,
+            centerDateInput: typeof date === 'string' ? date : undefined,
+            windowDays,
+            startDateInput: typeof start_date === 'string' ? start_date : undefined,
+            endDateInput: typeof end_date === 'string' ? end_date : undefined,
+          })
+        );
 
+    const duration = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-airport-overview', durationMs: duration, fastHit }));
     res.json(overview);
   } catch (error) {
     next(error);
@@ -1773,16 +1908,25 @@ export async function getDashboardTopRanks(req: Request, res: Response, next: Ne
       }
     }
 
-    const cacheKey = buildDashboardQueryCacheKey('dashboard-top-ranks', req.query);
-    const topRanks = await getOrSetDashboardQueryCache(cacheKey, () =>
-      DashboardSummaryService.getWorldTopRanks({
-        centerDateInput: typeof date === 'string' ? date : undefined,
-        windowDays,
-        startDateInput: typeof start_date === 'string' ? start_date : undefined,
-        endDateInput: typeof end_date === 'string' ? end_date : undefined,
-      })
-    );
+    const { start_date: resolvedStart, end_date: resolvedEnd } = resolveQueryDates(req.query);
+    const normalizedQuery = { ...req.query, start_date: resolvedStart, end_date: resolvedEnd };
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-top-ranks', normalizedQuery);
+    const startMs = Date.now();
+    const fastEntry = fastDashboardCache.get(cacheKey);
+    const fastHit = fastEntry !== undefined && fastEntry.expiresAt > Date.now();
+    const topRanks = fastHit
+      ? fastEntry.value
+      : await getOrSetDashboardQueryCache(cacheKey, () =>
+          DashboardSummaryService.getWorldTopRanks({
+            centerDateInput: typeof date === 'string' ? date : undefined,
+            windowDays,
+            startDateInput: resolvedStart,
+            endDateInput: resolvedEnd,
+          })
+        );
 
+    const duration = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-top-ranks', durationMs: duration, fastHit }));
     res.json(topRanks);
   } catch (error) {
     next(error);
@@ -1808,16 +1952,25 @@ export async function getDashboardTopCountries(req: Request, res: Response, next
       }
     }
 
-    const cacheKey = buildDashboardQueryCacheKey('dashboard-top-countries', req.query);
-    const countries = await getOrSetDashboardQueryCache(cacheKey, () =>
-      DashboardSummaryService.getWorldTopCountries({
-        centerDateInput: typeof date === 'string' ? date : undefined,
-        windowDays,
-        startDateInput: typeof start_date === 'string' ? start_date : undefined,
-        endDateInput: typeof end_date === 'string' ? end_date : undefined,
-      })
-    );
+    const { start_date: resolvedStart, end_date: resolvedEnd } = resolveQueryDates(req.query);
+    const normalizedQuery = { ...req.query, start_date: resolvedStart, end_date: resolvedEnd };
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-top-countries', normalizedQuery);
+    const startMs = Date.now();
+    const fastEntry = fastDashboardCache.get(cacheKey);
+    const fastHit = fastEntry !== undefined && fastEntry.expiresAt > Date.now();
+    const countries = fastHit
+      ? fastEntry.value
+      : await getOrSetDashboardQueryCache(cacheKey, () =>
+          DashboardSummaryService.getWorldTopCountries({
+            centerDateInput: typeof date === 'string' ? date : undefined,
+            windowDays,
+            startDateInput: resolvedStart,
+            endDateInput: resolvedEnd,
+          })
+        );
 
+    const duration = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-top-countries', durationMs: duration, fastHit }));
     res.json(countries);
   } catch (error) {
     next(error);
@@ -1843,16 +1996,25 @@ export async function getDashboardTopAirports(req: Request, res: Response, next:
       }
     }
 
-    const cacheKey = buildDashboardQueryCacheKey('dashboard-top-airports', req.query);
-    const airports = await getOrSetDashboardQueryCache(cacheKey, () =>
-      DashboardSummaryService.getWorldTopAirports({
-        centerDateInput: typeof date === 'string' ? date : undefined,
-        windowDays,
-        startDateInput: typeof start_date === 'string' ? start_date : undefined,
-        endDateInput: typeof end_date === 'string' ? end_date : undefined,
-      })
-    );
+    const { start_date: resolvedStart, end_date: resolvedEnd } = resolveQueryDates(req.query);
+    const normalizedQuery = { ...req.query, start_date: resolvedStart, end_date: resolvedEnd };
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-top-airports', normalizedQuery);
+    const startMs = Date.now();
+    const fastEntry = fastDashboardCache.get(cacheKey);
+    const fastHit = fastEntry !== undefined && fastEntry.expiresAt > Date.now();
+    const airports = fastHit
+      ? fastEntry.value
+      : await getOrSetDashboardQueryCache(cacheKey, () =>
+          DashboardSummaryService.getWorldTopAirports({
+            centerDateInput: typeof date === 'string' ? date : undefined,
+            windowDays,
+            startDateInput: resolvedStart,
+            endDateInput: resolvedEnd,
+          })
+        );
 
+    const duration = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-top-airports', durationMs: duration, fastHit }));
     res.json(airports);
   } catch (error) {
     next(error);
@@ -2553,17 +2715,76 @@ export async function getDashboardTopDestinations(req: Request, res: Response, n
       }
     }
 
-    const cacheKey = buildDashboardQueryCacheKey('dashboard-top-destinations', req.query);
-    const destinations = await getOrSetDashboardQueryCache(cacheKey, () =>
-      DashboardSummaryService.getWorldTopDestinations({
-        centerDateInput: typeof date === 'string' ? date : undefined,
-        windowDays,
-        startDateInput: typeof start_date === 'string' ? start_date : undefined,
-        endDateInput: typeof end_date === 'string' ? end_date : undefined,
-      })
-    );
+    const { start_date: resolvedStart, end_date: resolvedEnd } = resolveQueryDates(req.query);
+    const normalizedQuery = { ...req.query, start_date: resolvedStart, end_date: resolvedEnd };
+    const cacheKey = buildDashboardQueryCacheKey('dashboard-top-destinations', normalizedQuery);
+    const startMs = Date.now();
+    const fastEntry = fastDashboardCache.get(cacheKey);
+    const fastHit = fastEntry !== undefined && fastEntry.expiresAt > Date.now();
+    const destinations = fastHit
+      ? fastEntry.value
+      : await getOrSetDashboardQueryCache(cacheKey, () =>
+          DashboardSummaryService.getWorldTopDestinations({
+            centerDateInput: typeof date === 'string' ? date : undefined,
+            windowDays,
+            startDateInput: resolvedStart,
+            endDateInput: resolvedEnd,
+          })
+        );
 
+    const duration = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-top-destinations', durationMs: duration, fastHit }));
     res.json(destinations);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Consolidated world snapshot — fetches summary, top-ranks, and top-destinations in one request.
+ * Reuses the same per-scope cache keys as the individual endpoints so prewarmed data is served immediately.
+ * GET /api/statistics/dashboard-world-snapshot?date=YYYY-MM-DD&window_days=15
+ */
+export async function getDashboardWorldSnapshot(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date, window_days, start_date, end_date } = req.query;
+    const windowDays = typeof window_days === 'string' ? Number.parseInt(window_days, 10) : 15;
+
+    if (!start_date || !end_date) {
+      if (Number.isNaN(windowDays) || windowDays < 1 || windowDays > 3650) {
+        res.status(400).json({
+          error: 'Invalid window_days parameter',
+          message: 'window_days must be a number between 1 and 3650',
+        });
+        return;
+      }
+    }
+
+    const { start_date: resolvedStart, end_date: resolvedEnd } = resolveQueryDates(req.query);
+    const normalizedQuery = { ...req.query, start_date: resolvedStart, end_date: resolvedEnd };
+
+    const queryInput = {
+      centerDateInput: typeof date === 'string' ? date : undefined,
+      windowDays,
+      startDateInput: resolvedStart,
+      endDateInput: resolvedEnd,
+    };
+
+    const summaryKey = buildDashboardQueryCacheKey('dashboard-summary', normalizedQuery);
+    const topRanksKey = buildDashboardQueryCacheKey('dashboard-top-ranks', normalizedQuery);
+    const topDestinationsKey = buildDashboardQueryCacheKey('dashboard-top-destinations', normalizedQuery);
+
+    const startMs = Date.now();
+    const [summary, topRanks, topDestinations] = await Promise.all([
+      getOrSetDashboardQueryCache(summaryKey, () => DashboardSummaryService.getWorldSummary(queryInput)),
+      getOrSetDashboardQueryCache(topRanksKey, () => DashboardSummaryService.getWorldTopRanks(queryInput)),
+      getOrSetDashboardQueryCache(topDestinationsKey, () => DashboardSummaryService.getWorldTopDestinations(queryInput)),
+    ]);
+
+    const durationMs = Date.now() - startMs;
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-world-snapshot', durationMs }));
+
+    res.json({ summary, topRanks, topDestinations });
   } catch (error) {
     next(error);
   }

@@ -30,6 +30,7 @@ import {
   getDashboardTopCountries,
   getDashboardTopAirports,
   getDashboardTopDestinations,
+  getDashboardWorldSnapshot,
   type DashboardDateBoundsResponse,
   type DashboardSummaryResponse,
   type DashboardTopRanksResponse,
@@ -258,6 +259,119 @@ function parseContinentCountryCount(value: string) {
   return match ? Number(match[1].replace(/,/g, '')) : 0;
 }
 
+async function fetchWorldDataIndividually(opts: {
+  mounted: () => boolean;
+  cacheKey: string;
+  queryOptions: Parameters<typeof getDashboardSummary>[0];
+  shouldRefreshSummary: boolean;
+  shouldRefreshTopRanks: boolean;
+  shouldRefreshTopDestinations: boolean;
+  cachedTopRanks: DashboardTopRanksResponse | null | undefined;
+  setSummary: (v: DashboardSummaryResponse | null) => void;
+  setTopRanks: (v: DashboardTopRanksResponse | null) => void;
+  setTopDestinations: (v: DashboardTopDestinationsResponse | null) => void;
+  setLoading: (v: boolean) => void;
+  setTopRanksLoading: (v: boolean) => void;
+  setTopDestinationsLoading: (v: boolean) => void;
+}) {
+  const {
+    mounted, cacheKey, queryOptions,
+    shouldRefreshSummary, shouldRefreshTopRanks, shouldRefreshTopDestinations,
+    cachedTopRanks,
+    setSummary, setTopRanks, setTopDestinations,
+    setLoading, setTopRanksLoading, setTopDestinationsLoading,
+  } = opts;
+
+  if (shouldRefreshSummary) {
+    console.debug('[WorldView] calling dashboard-summary', { cacheKey, queryOptions });
+    try {
+      const summaryData = await runDrillDownRequest(
+        `world:summary:${cacheKey}`,
+        () => getDashboardSummary(queryOptions),
+      );
+      if (!mounted()) return;
+      setWorldSummaryCache(cacheKey, summaryData);
+      setSummary(summaryData);
+    } catch (error) {
+      console.warn('[WorldView] Failed to load dashboard data from API.', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      if (!mounted()) return;
+      setSummary(null);
+    } finally {
+      if (mounted()) setLoading(false);
+    }
+  } else {
+    setLoading(false);
+  }
+
+  if (shouldRefreshTopRanks) {
+    console.debug('[WorldView] calling dashboard-top-ranks', { cacheKey, queryOptions });
+    try {
+      const topRanksData = await runDrillDownRequest(
+        `world:top-ranks:${cacheKey}`,
+        () => getDashboardTopRanks(queryOptions),
+      );
+      if (!mounted()) return;
+      setWorldTopRanksCache(cacheKey, topRanksData);
+      setTopRanks(topRanksData);
+    } catch (error) {
+      console.warn('[WorldView] Failed to load top ranks from API, attempting fallback.', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      if (!mounted()) return;
+      try {
+        const [countriesData, airportsData] = await Promise.all([
+          runDrillDownRequest(`world:top-countries:${cacheKey}`, () => getDashboardTopCountries(queryOptions)),
+          runDrillDownRequest(`world:top-airports:${cacheKey}`, () => getDashboardTopAirports(queryOptions)),
+        ]);
+        if (!mounted()) return;
+        const mergedTopRanks: DashboardTopRanksResponse = {
+          centerDate: countriesData.centerDate,
+          windowDays: countriesData.windowDays,
+          periodStart: countriesData.periodStart,
+          periodEnd: countriesData.periodEnd,
+          comparisonStart: countriesData.comparisonStart,
+          comparisonEnd: countriesData.comparisonEnd,
+          countries: countriesData.countries,
+          airports: airportsData.airports,
+        };
+        setWorldTopRanksCache(cacheKey, mergedTopRanks);
+        setTopRanks(mergedTopRanks);
+      } catch (fallbackError) {
+        console.warn('[WorldView] Failed fallback top countries/airports API.', {
+          message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        });
+        if (!mounted()) return;
+        if (!cachedTopRanks) setTopRanks(null);
+      }
+    } finally {
+      if (mounted()) setTopRanksLoading(false);
+    }
+  }
+
+  if (shouldRefreshTopDestinations) {
+    console.debug('[WorldView] calling dashboard-top-destinations', { cacheKey, queryOptions });
+    try {
+      const topDestinationsData = await runDrillDownRequest(
+        `world:top-destinations:${cacheKey}`,
+        () => getDashboardTopDestinations(queryOptions),
+      );
+      if (!mounted()) return;
+      setWorldTopDestinationsCache(cacheKey, topDestinationsData);
+      setTopDestinations(topDestinationsData);
+    } catch (error) {
+      console.warn('[WorldView] Failed to load top destinations from API.', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      if (!mounted()) return;
+      setTopDestinations(null);
+    } finally {
+      if (mounted()) setTopDestinationsLoading(false);
+    }
+  }
+}
+
 export function WorldView() {
   const { drillTo, timeMode, rangePreset, setRangePreset, customDateRange, setCustomDateRange } = useDrillDown();
   const [hydratedNow, setHydratedNow] = useState<Date | null>(null);
@@ -468,133 +582,73 @@ export function WorldView() {
     }
 
     void (async () => {
-      if (shouldRefreshSummary) {
-        console.debug('[WorldView] calling dashboard-summary', { cacheKey, queryOptions });
+      // Fast path: fetch all 3 in one consolidated request when all are missing
+      if (missingAllSelectedPresetData) {
+        console.debug('[WorldView] calling dashboard-world-snapshot', { cacheKey, queryOptions });
         try {
-          const summaryData = await runDrillDownRequest(
-            `world:summary:${cacheKey}`,
-            () => getDashboardSummary(queryOptions),
+          const snapshot = await runDrillDownRequest(
+            `world:snapshot:${cacheKey}`,
+            () => getDashboardWorldSnapshot(queryOptions),
           );
           if (!mounted) return;
-          setWorldSummaryCache(cacheKey, summaryData);
-          setSummary(summaryData);
-          console.debug('[WorldView] summary fetch success', {
-            totalFlights: summaryData.totalFlights,
-            busiestContinent: summaryData.busiestContinent?.label,
+          setWorldSummaryCache(cacheKey, snapshot.summary);
+          setWorldTopRanksCache(cacheKey, snapshot.topRanks);
+          setWorldTopDestinationsCache(cacheKey, snapshot.topDestinations);
+          setSummary(snapshot.summary);
+          setTopRanks(snapshot.topRanks);
+          setTopDestinations(snapshot.topDestinations);
+          console.debug('[WorldView] snapshot fetch success', {
+            totalFlights: snapshot.summary.totalFlights,
+            countries: snapshot.topRanks.countries.length,
+            departures: snapshot.topDestinations.departures.length,
           });
-        } catch (error) {
-          console.warn('[WorldView] Failed to load dashboard data from API, falling back to mock data.', {
-            status: (error as { status?: number }).status,
-            statusText: (error as { statusText?: string }).statusText,
-            message: error instanceof Error ? error.message : String(error),
+        } catch (snapshotError) {
+          console.warn('[WorldView] Snapshot request failed, falling back to individual calls.', {
+            message: snapshotError instanceof Error ? snapshotError.message : String(snapshotError),
           });
           if (!mounted) return;
-          setSummary(null);
+          // Fallthrough to individual calls below on snapshot failure
+          await fetchWorldDataIndividually({
+            mounted: () => mounted,
+            cacheKey,
+            queryOptions,
+            shouldRefreshSummary: true,
+            shouldRefreshTopRanks: true,
+            shouldRefreshTopDestinations: true,
+            cachedTopRanks,
+            setSummary,
+            setTopRanks,
+            setTopDestinations,
+            setLoading,
+            setTopRanksLoading,
+            setTopDestinationsLoading,
+          });
         } finally {
           if (mounted) {
             setLoading(false);
-          }
-        }
-      } else {
-        setLoading(false);
-      }
-
-      if (shouldRefreshTopRanks) {
-        console.debug('[WorldView] calling dashboard-top-ranks', { cacheKey, queryOptions });
-        try {
-          const topRanksData = await runDrillDownRequest(
-            `world:top-ranks:${cacheKey}`,
-            () => getDashboardTopRanks(queryOptions),
-          );
-          if (!mounted) return;
-          setWorldTopRanksCache(cacheKey, topRanksData);
-          setTopRanks(topRanksData);
-          console.debug('[WorldView] top ranks fetch success', {
-            countries: topRanksData.countries.length,
-            airports: topRanksData.airports.length,
-          });
-        } catch (error) {
-          console.warn('[WorldView] Failed to load top ranks from API, attempting backend fallback endpoints.', {
-            status: (error as { status?: number }).status,
-            statusText: (error as { statusText?: string }).statusText,
-            message: error instanceof Error ? error.message : String(error),
-          });
-          if (!mounted) return;
-          try {
-            const [countriesData, airportsData] = await Promise.all([
-              runDrillDownRequest(
-                `world:top-countries:${cacheKey}`,
-                () => getDashboardTopCountries(queryOptions),
-              ),
-              runDrillDownRequest(
-                `world:top-airports:${cacheKey}`,
-                () => getDashboardTopAirports(queryOptions),
-              ),
-            ]);
-            if (!mounted) return;
-
-            const mergedTopRanks: DashboardTopRanksResponse = {
-              centerDate: countriesData.centerDate,
-              windowDays: countriesData.windowDays,
-              periodStart: countriesData.periodStart,
-              periodEnd: countriesData.periodEnd,
-              comparisonStart: countriesData.comparisonStart,
-              comparisonEnd: countriesData.comparisonEnd,
-              countries: countriesData.countries,
-              airports: airportsData.airports,
-            };
-
-            setWorldTopRanksCache(cacheKey, mergedTopRanks);
-            setTopRanks(mergedTopRanks);
-            console.debug('[WorldView] fallback top ranks fetch success', {
-              countries: mergedTopRanks.countries.length,
-              airports: mergedTopRanks.airports.length,
-            });
-          } catch (fallbackError) {
-            console.warn('[WorldView] Failed fallback top countries/airports API.', {
-              message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-            });
-            if (!mounted) return;
-            // Preserve stale cached rows if available instead of blanking the table.
-            if (!cachedTopRanks) {
-              setTopRanks(null);
-            }
-          }
-        } finally {
-          if (mounted) {
             setTopRanksLoading(false);
-          }
-        }
-      }
-
-      if (shouldRefreshTopDestinations) {
-        console.debug('[WorldView] calling dashboard-top-destinations', { cacheKey, queryOptions });
-        try {
-          const topDestinationsData = await runDrillDownRequest(
-            `world:top-destinations:${cacheKey}`,
-            () => getDashboardTopDestinations(queryOptions),
-          );
-          if (!mounted) return;
-          setWorldTopDestinationsCache(cacheKey, topDestinationsData);
-          setTopDestinations(topDestinationsData);
-          console.debug('[WorldView] top destinations fetch success', {
-            departures: topDestinationsData.departures.length,
-            arrivals: topDestinationsData.arrivals.length,
-          });
-        } catch (error) {
-          console.warn('[WorldView] Failed to load top destinations from API, falling back to mock data.', {
-            status: (error as { status?: number }).status,
-            statusText: (error as { statusText?: string }).statusText,
-            message: error instanceof Error ? error.message : String(error),
-          });
-          if (!mounted) return;
-          setTopDestinations(null);
-        } finally {
-          if (mounted) {
             setTopDestinationsLoading(false);
           }
         }
+        return;
       }
+
+      // Partial-miss path: only some caches are stale
+      await fetchWorldDataIndividually({
+        mounted: () => mounted,
+        cacheKey,
+        queryOptions,
+        shouldRefreshSummary,
+        shouldRefreshTopRanks,
+        shouldRefreshTopDestinations,
+        cachedTopRanks,
+        setSummary,
+        setTopRanks,
+        setTopDestinations,
+        setLoading,
+        setTopRanksLoading,
+        setTopDestinationsLoading,
+      });
     })();
 
     return () => {

@@ -611,6 +611,12 @@ export interface DashboardCacheStatusResponse {
   totalEntries: number;
 }
 
+export interface DashboardWorldSnapshotResponse {
+  summary: DashboardSummaryResponse;
+  topRanks: DashboardTopRanksResponse;
+  topDestinations: DashboardTopDestinationsResponse;
+}
+
 export interface DashboardQueryOptions {
   date?: string;
   windowDays?: number;
@@ -1173,6 +1179,26 @@ export class StatisticsApi {
     } = options;
 
     return apiClient.get<DashboardTopDestinationsResponse>('/statistics/dashboard-top-destinations', {
+      date,
+      window_days: windowDays,
+      start_date: startDate,
+      end_date: endDate,
+    }, { signal });
+  }
+
+  /**
+   * Consolidated world snapshot — fetches summary, topRanks, and topDestinations in one request.
+   */
+  async getDashboardWorldSnapshot(options: DashboardQueryOptions = {}): Promise<DashboardWorldSnapshotResponse> {
+    const {
+      date,
+      windowDays = 15,
+      startDate,
+      endDate,
+      signal,
+    } = options;
+
+    return apiClient.get<DashboardWorldSnapshotResponse>('/statistics/dashboard-world-snapshot', {
       date,
       window_days: windowDays,
       start_date: startDate,

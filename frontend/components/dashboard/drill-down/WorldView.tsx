@@ -102,7 +102,10 @@ type TopAirportViewRow = {
   deltaPercent: number;
 };
 
-const PRELOAD_GATE_MAX_WAIT_MS = 15_000;
+// How long to hold the UI before bypassing the preload gate.
+// Must be > time to cold-load the '30' preset (~40s on first startup),
+// otherwise the gate bypasses too early and the user hits a cold 40s API query.
+const PRELOAD_GATE_MAX_WAIT_MS = 55_000;
 
 const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
   focus: '± 15 วัน',

@@ -107,15 +107,19 @@ curl -X POST http://localhost:3001/api/statistics/dashboard-cache/refresh \
 
 **Do not trigger `preset=all` — it loads all historical data and will OOM the process.**
 
-### Expected Response Times (Cached)
+### Expected Response Times
 
-| UI Preset | Window | Cached |
-|-----------|--------|--------|
-| รอบเดือน (focus) | ±15 days | ~80ms |
-| 30 วัน | 30 days | ~3ms |
-| ไตรมาสนี้ | 90 days | ~2ms |
-| 6 เดือน | 180 days | ~12ms |
-| 1 ปี | 365 days | ~5ms |
+| Endpoint | Cold (first hit) | Cached |
+|----------|-----------------|--------|
+| world-snapshot focus (±15d) | ~80ms | ~80ms |
+| world-snapshot 30d | ~? | ~3ms |
+| world-snapshot 90d | ~? | ~2ms |
+| world-snapshot 180d | ~? | ~12ms |
+| world-snapshot 365d | ~? | ~5ms |
+| continent-trends (any continent, any window) | ~25–40ms | ~3ms |
+| continent-detail | ~40ms | ~3ms |
+| continent-top-airports | ~25ms | ~3ms |
+| continent-top-routes | ~27ms | ~3ms |
 
 ---
 

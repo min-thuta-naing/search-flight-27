@@ -1417,23 +1417,20 @@ export class DashboardSummaryService {
     const comparisonStart = formatDateForQuery(comparisonStartDate);
     const comparisonEnd = formatDateForQuery(comparisonEndDate);
 
+    // Each UNION ALL branch previously scanned the table once for dep and once for arr —
+    // 4 scans per period × 2 periods = 8 total.  CROSS JOIN LATERAL reads both columns
+    // in a single pass: 1 scan per table per period = 4 total scans (50% reduction).
     const topCountriesQuery = `
       WITH current_rows AS (
-        SELECT dep_airport_upper AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
+        SELECT v.airport_code
+        FROM departure_flight_paths dfp
+        CROSS JOIN LATERAL (VALUES (dfp.dep_airport_upper), (dfp.arr_airport_upper)) AS v(airport_code)
+        WHERE dfp.departure_date >= $1 AND dfp.departure_date <= $2
         UNION ALL
-        SELECT arr_airport_upper AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT dep_airport_upper AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT arr_airport_upper AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
+        SELECT v.airport_code
+        FROM arrival_flight_paths afp
+        CROSS JOIN LATERAL (VALUES (afp.dep_airport_upper), (afp.arr_airport_upper)) AS v(airport_code)
+        WHERE afp.departure_date >= $1 AND afp.departure_date <= $2
       ),
       current_agg AS (
         SELECT
@@ -1453,21 +1450,15 @@ export class DashboardSummaryService {
         LIMIT 5
       ),
       previous_rows AS (
-        SELECT dep_airport_upper AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $3 AND departure_date <= $4
+        SELECT v.airport_code
+        FROM departure_flight_paths dfp
+        CROSS JOIN LATERAL (VALUES (dfp.dep_airport_upper), (dfp.arr_airport_upper)) AS v(airport_code)
+        WHERE dfp.departure_date >= $3 AND dfp.departure_date <= $4
         UNION ALL
-        SELECT arr_airport_upper AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $3 AND departure_date <= $4
-        UNION ALL
-        SELECT dep_airport_upper AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $3 AND departure_date <= $4
-        UNION ALL
-        SELECT arr_airport_upper AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $3 AND departure_date <= $4
+        SELECT v.airport_code
+        FROM arrival_flight_paths afp
+        CROSS JOIN LATERAL (VALUES (afp.dep_airport_upper), (afp.arr_airport_upper)) AS v(airport_code)
+        WHERE afp.departure_date >= $3 AND afp.departure_date <= $4
       ),
       previous_agg AS (
         SELECT
@@ -1493,21 +1484,15 @@ export class DashboardSummaryService {
 
     const topAirportsQuery = `
       WITH current_rows AS (
-        SELECT dep_airport_upper AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
+        SELECT v.airport_code
+        FROM departure_flight_paths dfp
+        CROSS JOIN LATERAL (VALUES (dfp.dep_airport_upper), (dfp.arr_airport_upper)) AS v(airport_code)
+        WHERE dfp.departure_date >= $1 AND dfp.departure_date <= $2
         UNION ALL
-        SELECT arr_airport_upper AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT dep_airport_upper AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-        UNION ALL
-        SELECT arr_airport_upper AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
+        SELECT v.airport_code
+        FROM arrival_flight_paths afp
+        CROSS JOIN LATERAL (VALUES (afp.dep_airport_upper), (afp.arr_airport_upper)) AS v(airport_code)
+        WHERE afp.departure_date >= $1 AND afp.departure_date <= $2
       ),
       current_agg AS (
         SELECT
@@ -1535,21 +1520,15 @@ export class DashboardSummaryService {
         LIMIT 5
       ),
       previous_rows AS (
-        SELECT dep_airport_upper AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $3 AND departure_date <= $4
+        SELECT v.airport_code
+        FROM departure_flight_paths dfp
+        CROSS JOIN LATERAL (VALUES (dfp.dep_airport_upper), (dfp.arr_airport_upper)) AS v(airport_code)
+        WHERE dfp.departure_date >= $3 AND dfp.departure_date <= $4
         UNION ALL
-        SELECT arr_airport_upper AS airport_code
-        FROM departure_flight_paths
-        WHERE departure_date >= $3 AND departure_date <= $4
-        UNION ALL
-        SELECT dep_airport_upper AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $3 AND departure_date <= $4
-        UNION ALL
-        SELECT arr_airport_upper AS airport_code
-        FROM arrival_flight_paths
-        WHERE departure_date >= $3 AND departure_date <= $4
+        SELECT v.airport_code
+        FROM arrival_flight_paths afp
+        CROSS JOIN LATERAL (VALUES (afp.dep_airport_upper), (afp.arr_airport_upper)) AS v(airport_code)
+        WHERE afp.departure_date >= $3 AND afp.departure_date <= $4
       ),
       previous_agg AS (
         SELECT

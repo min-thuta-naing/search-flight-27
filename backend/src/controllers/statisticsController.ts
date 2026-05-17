@@ -38,7 +38,9 @@ async function loadDashboardCacheSnapshotToMemory(): Promise<void> {
 
 // Initialize in background
 void loadDashboardCacheSnapshotToMemory();
-const DASHBOARD_PRELOAD_PRESETS = ['all', 'focus', '7', '30', '90', '180', '365'] as const;
+// Most-used presets load first so the dashboard is responsive immediately after startup.
+// 'all' loads last — it covers the entire history and takes several minutes.
+const DASHBOARD_PRELOAD_PRESETS = ['30', 'focus', '7', '90', '180', '365', 'all'] as const;
 const DASHBOARD_CACHE_DIR = join(tmpdir(), 'search-flight-27');
 const DASHBOARD_CACHE_FILE = join(DASHBOARD_CACHE_DIR, 'dashboard-query-cache.json');
 
@@ -238,6 +240,24 @@ export async function getDashboardQueryCacheFreshness() {
     hasFreshEntries: freshEntries > 0,
     ttlHours: DASHBOARD_QUERY_CACHE_TTL_MS / (60 * 60 * 1000),
   };
+}
+
+// Returns true only if today's '30' preset summary key is already cached and fresh.
+// Used by the startup preloader to decide whether to skip re-preloading.
+// Checking a date-specific key (not just "any fresh entries") is critical: old entries
+// from yesterday have different start_date/end_date keys and will never match today's requests.
+export function isTodayPresetCached(): boolean {
+  const now = new Date();
+  const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const start = formatDateForKey(utcToday);
+  const end = formatDateForKey(addUtcDays(utcToday, 29));
+  const key = buildDashboardQueryCacheKey('dashboard-summary', {
+    start_date: start,
+    end_date: end,
+    window_days: '30',
+  } as Request['query']);
+  const entry = fastDashboardCache.get(key);
+  return entry !== undefined && entry.expiresAt > Date.now();
 }
 
 function toQueryValue(value: unknown): string {

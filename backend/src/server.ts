@@ -11,7 +11,7 @@ import { queryMonitoringMiddleware } from './middleware/queryMonitoringMiddlewar
 import { schedulerService } from './preload/scheduler';
 import { schedulerService as botSchedulerService } from './services/schedulerService';
 import {
-  getDashboardQueryCacheFreshness,
+  isTodayPresetCached,
   markDashboardPreloadAsCompleted,
   warmDashboardCachesOnStartup,
 } from './controllers/statisticsController';
@@ -111,12 +111,12 @@ async function startServer(): Promise<void> {
 
       if (shouldWarmOnStartup) {
         void (async () => {
-          const freshness = await getDashboardQueryCacheFreshness();
-
-          if (freshness.hasFreshEntries) {
-            console.log(
-              `[dashboard-preload] startup warmup skipped; fresh cache exists (${freshness.freshEntries}/${freshness.totalEntries} entries still valid, ttl=${freshness.ttlHours}h)`
-            );
+          // Check if TODAY's '30' preset key is already cached.
+          // Old freshness check (hasFreshEntries) was wrong: yesterday's entries are still
+          // within TTL but have different start_date/end_date keys, so they never match
+          // today's requests. This check is date-aware and only skips when truly up-to-date.
+          if (isTodayPresetCached()) {
+            console.log('[dashboard-preload] startup warmup skipped; today\'s 30-day preset already cached');
             markDashboardPreloadAsCompleted();
             return;
           }

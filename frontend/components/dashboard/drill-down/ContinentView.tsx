@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useEffect, useState } from 'react';
 import { addDays, subDays } from 'date-fns';
@@ -119,6 +119,11 @@ function parseIsoDateInput(dateInput?: string | null) {
   if (!dateInput) return null;
   const parsed = new Date(`${dateInput.split('T')[0]}T00:00:00.000Z`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getUtcToday(): Date {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
 function formatLocalDateInput(date: Date) {
@@ -298,7 +303,7 @@ export function ContinentView() {
   const continent = selections.continent || CONTINENTS[0];
   const [dashboardDateBounds, setDashboardDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
   const preset = rangePreset;
-  const presetRange = buildWorldLikePresetRange(preset, new Date(), dashboardDateBounds);
+  const presetRange = buildWorldLikePresetRange(preset, getUtcToday(), dashboardDateBounds);
   const startDate = presetRange?.from ? formatLocalDateInput(presetRange.from) : null;
   const endDate = presetRange?.to ? formatLocalDateInput(presetRange.to) : null;
   const hasExplicitRange = Boolean(startDate && endDate);
@@ -341,7 +346,11 @@ export function ContinentView() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [trendsFailed, setTrendsFailed] = useState(false);
   const [topRoutesFailed, setTopRoutesFailed] = useState(false);
-  const coreReady = continentPayload != null && payloadCacheKey === coreCacheKey;
+  // Exact match = fresh data; prefix match = same continent, different date key still loading (stale-while-revalidate)
+  const payloadIsForThisContinent =
+    payloadCacheKey === coreCacheKey ||
+    (payloadCacheKey != null && payloadCacheKey.startsWith(`${continent.name}|`));
+  const coreReady = continentPayload != null && payloadIsForThisContinent;
 
   useEffect(() => {
     let alive = true;

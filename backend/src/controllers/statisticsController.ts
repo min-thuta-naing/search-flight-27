@@ -784,76 +784,124 @@ export async function warmDashboardCachesOnStartup(options?: {
       const now2 = new Date();
       const utcToday2 = new Date(Date.UTC(now2.getUTCFullYear(), now2.getUTCMonth(), now2.getUTCDate()));
       const { startDate: focusStart, endDate: focusEnd } = buildPresetDateRange('focus', bounds.minDate, bounds.recommendedEndDate, utcToday2);
-      const continentQuery = {
+      const { startDate: thirtyStart, endDate: thirtyEnd } = buildPresetDateRange('30', bounds.minDate, bounds.recommendedEndDate, utcToday2);
+
+      // Preload continent endpoints for both 'focus' and '30' preset date ranges.
+      // '30' is the default preset users see when opening ContinentView.
+      const continentPresetRanges = [
+        { startDate: focusStart, endDate: focusEnd, label: 'focus' },
+        { startDate: thirtyStart, endDate: thirtyEnd, label: '30' },
+      ];
+
+      console.log(`[dashboard-preload] continent preload start; presets=${continentPresetRanges.map(p => p.label).join(',')}; continents=${DASHBOARD_PRELOAD_CONTINENTS.length}`);
+
+      for (const { startDate: presetStart, endDate: presetEnd, label: presetLabel } of continentPresetRanges) {
+        const continentQuery = {
+          window_days: '15',
+          start_date: presetStart,
+          end_date: presetEnd,
+        } as Request['query'];
+
+        for (const continentName of DASHBOARD_PRELOAD_CONTINENTS) {
+          const continentTasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
+            {
+              scope: 'dashboard-continent-detail',
+              run: () => DashboardSummaryService.getContinentDetail({
+                continent: continentName,
+                startDateInput: presetStart,
+                endDateInput: presetEnd,
+                includeCore: true,
+                includeSeasonal: false,
+                includeTopRoutes: false,
+              }),
+            },
+            {
+              scope: 'dashboard-top-airports-continent',
+              run: () => DashboardSummaryService.getContinentTopAirports({
+                continent: continentName,
+                startDateInput: presetStart,
+                endDateInput: presetEnd,
+                limit: 10,
+              }),
+            },
+            {
+              scope: 'dashboard-top-routes-continent',
+              run: () => DashboardSummaryService.getContinentTopRoutes({
+                continent: continentName,
+                startDateInput: presetStart,
+                endDateInput: presetEnd,
+                limit: 5,
+              }),
+            },
+            {
+              scope: 'dashboard-continent-trends',
+              run: () => DashboardSummaryService.getContinentTrendAverages({ continent: continentName }),
+            },
+          ];
+
+          for (const task of continentTasks) {
+            attempted += 1;
+            setDashboardPreloadStatus({ attempted, failed });
+            try {
+              const cKey = buildDashboardQueryCacheKey(task.scope, {
+                ...continentQuery,
+                continent: continentName,
+                ...(task.scope === 'dashboard-continent-detail' ? { include_core: 'true', include_seasonal: 'false', include_top_routes: 'false' } : {}),
+                ...(task.scope === 'dashboard-top-airports-continent' ? { limit: '10' } : {}),
+                ...(task.scope === 'dashboard-top-routes-continent' ? { limit: '5' } : {}),
+                ...(task.scope === 'dashboard-continent-trends' ? { window_days: '', start_date: '', end_date: '' } : {}),
+              } as Request['query']);
+              await getOrSetDashboardQueryCache(cKey, task.run);
+              console.log(`[dashboard-preload] continent ${continentName} ${task.scope} (${presetLabel}) done`);
+            } catch {
+              failed += 1;
+              setDashboardPreloadStatus({ attempted, failed });
+              console.warn(`[dashboard-preload] continent ${continentName} ${task.scope} (${presetLabel}) failed`);
+            }
+          }
+        }
+      }
+
+      // Preload 'all' preset continent detail only (not top-airports/routes/trends).
+      // Users expect country cards to render immediately when clicking the 'all' tab.
+      // Dates are the DB bounds (stable), so this cache hit persists across days.
+      const allDetailQuery = {
         window_days: '15',
-        start_date: focusStart,
-        end_date: focusEnd,
+        start_date: bounds.minDate,
+        end_date: bounds.recommendedEndDate,
       } as Request['query'];
 
-      console.log(`[dashboard-preload] continent preload start; range=${focusStart}->${focusEnd}; continents=${DASHBOARD_PRELOAD_CONTINENTS.length}`);
-
       for (const continentName of DASHBOARD_PRELOAD_CONTINENTS) {
-        const continentTasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
-          {
-            scope: 'dashboard-continent-detail',
-            run: () => DashboardSummaryService.getContinentDetail({
-              continent: continentName,
-              startDateInput: focusStart,
-              endDateInput: focusEnd,
-              includeCore: true,
-              includeSeasonal: false,
-              includeTopRoutes: false,
-            }),
-          },
-          {
-            scope: 'dashboard-top-airports-continent',
-            run: () => DashboardSummaryService.getContinentTopAirports({
-              continent: continentName,
-              startDateInput: focusStart,
-              endDateInput: focusEnd,
-              limit: 10,
-            }),
-          },
-          {
-            scope: 'dashboard-top-routes-continent',
-            run: () => DashboardSummaryService.getContinentTopRoutes({
-              continent: continentName,
-              startDateInput: focusStart,
-              endDateInput: focusEnd,
-              limit: 5,
-            }),
-          },
-          {
-            scope: 'dashboard-continent-trends',
-            run: () => DashboardSummaryService.getContinentTrendAverages({ continent: continentName }),
-          },
-        ];
-
-        for (const task of continentTasks) {
-          attempted += 1;
+        attempted += 1;
+        setDashboardPreloadStatus({ attempted, failed });
+        try {
+          const cKey = buildDashboardQueryCacheKey('dashboard-continent-detail', {
+            ...allDetailQuery,
+            continent: continentName,
+            include_core: 'true',
+            include_seasonal: 'false',
+            include_top_routes: 'false',
+          } as Request['query']);
+          await getOrSetDashboardQueryCache(cKey, () => DashboardSummaryService.getContinentDetail({
+            continent: continentName,
+            startDateInput: bounds.minDate,
+            endDateInput: bounds.recommendedEndDate,
+            includeCore: true,
+            includeSeasonal: false,
+            includeTopRoutes: false,
+          }));
+          console.log(`[dashboard-preload] continent ${continentName} dashboard-continent-detail (all) done`);
+        } catch {
+          failed += 1;
           setDashboardPreloadStatus({ attempted, failed });
-          try {
-            const cKey = buildDashboardQueryCacheKey(task.scope, {
-              ...continentQuery,
-              continent: continentName,
-              ...(task.scope === 'dashboard-continent-detail' ? { include_core: 'true', include_seasonal: 'false', include_top_routes: 'false' } : {}),
-              ...(task.scope === 'dashboard-top-airports-continent' ? { limit: '10' } : {}),
-              ...(task.scope === 'dashboard-top-routes-continent' ? { limit: '5' } : {}),
-              ...(task.scope === 'dashboard-continent-trends' ? { window_days: '', start_date: '', end_date: '' } : {}),
-            } as Request['query']);
-            await getOrSetDashboardQueryCache(cKey, task.run);
-            console.log(`[dashboard-preload] continent ${continentName} ${task.scope} done`);
-          } catch {
-            failed += 1;
-            setDashboardPreloadStatus({ attempted, failed });
-            console.warn(`[dashboard-preload] continent ${continentName} ${task.scope} failed`);
-          }
+          console.warn(`[dashboard-preload] continent ${continentName} dashboard-continent-detail (all) failed`);
         }
       }
 
       await waitForDashboardCacheWrites();
       const cleared2 = clearDashboardMemoryCache();
-      console.log(`[dashboard-preload] continent preload done; attempted=${DASHBOARD_PRELOAD_CONTINENTS.length * 4}; memory-cleared=${cleared2.totalCleared}`);
+      const totalContinentTasks = DASHBOARD_PRELOAD_CONTINENTS.length * 4 * continentPresetRanges.length + DASHBOARD_PRELOAD_CONTINENTS.length;
+      console.log(`[dashboard-preload] continent preload done; attempted=${totalContinentTasks}; memory-cleared=${cleared2.totalCleared}`);
     } else {
       console.log('[dashboard-preload] continent preload disabled; skipping');
     }

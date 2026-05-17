@@ -4459,13 +4459,25 @@ export class DashboardSummaryService {
       WITH current_rows AS (
         SELECT dep_airport_upper AS from_airport, arr_airport_upper AS to_airport
         FROM departure_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-          AND (dep_airport_upper = ANY($3::text[]) OR arr_airport_upper = ANY($3::text[]))
+        WHERE dep_airport_upper = ANY($3::text[])
+          AND departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT dep_airport_upper AS from_airport, arr_airport_upper AS to_airport
+        FROM departure_flight_paths
+        WHERE arr_airport_upper = ANY($3::text[])
+          AND NOT (dep_airport_upper = ANY($3::text[]))
+          AND departure_date >= $1 AND departure_date <= $2
         UNION ALL
         SELECT dep_airport_upper AS from_airport, arr_airport_upper AS to_airport
         FROM arrival_flight_paths
-        WHERE departure_date >= $1 AND departure_date <= $2
-          AND (dep_airport_upper = ANY($3::text[]) OR arr_airport_upper = ANY($3::text[]))
+        WHERE dep_airport_upper = ANY($3::text[])
+          AND departure_date >= $1 AND departure_date <= $2
+        UNION ALL
+        SELECT dep_airport_upper AS from_airport, arr_airport_upper AS to_airport
+        FROM arrival_flight_paths
+        WHERE arr_airport_upper = ANY($3::text[])
+          AND NOT (dep_airport_upper = ANY($3::text[]))
+          AND departure_date >= $1 AND departure_date <= $2
       ),
       current_agg AS (
         SELECT
@@ -4486,13 +4498,25 @@ export class DashboardSummaryService {
       previous_rows AS (
         SELECT dep_airport_upper AS from_airport, arr_airport_upper AS to_airport
         FROM departure_flight_paths
-        WHERE departure_date >= $4 AND departure_date <= $5
-          AND (dep_airport_upper = ANY($3::text[]) OR arr_airport_upper = ANY($3::text[]))
+        WHERE dep_airport_upper = ANY($3::text[])
+          AND departure_date >= $4 AND departure_date <= $5
+        UNION ALL
+        SELECT dep_airport_upper AS from_airport, arr_airport_upper AS to_airport
+        FROM departure_flight_paths
+        WHERE arr_airport_upper = ANY($3::text[])
+          AND NOT (dep_airport_upper = ANY($3::text[]))
+          AND departure_date >= $4 AND departure_date <= $5
         UNION ALL
         SELECT dep_airport_upper AS from_airport, arr_airport_upper AS to_airport
         FROM arrival_flight_paths
-        WHERE departure_date >= $4 AND departure_date <= $5
-          AND (dep_airport_upper = ANY($3::text[]) OR arr_airport_upper = ANY($3::text[]))
+        WHERE dep_airport_upper = ANY($3::text[])
+          AND departure_date >= $4 AND departure_date <= $5
+        UNION ALL
+        SELECT dep_airport_upper AS from_airport, arr_airport_upper AS to_airport
+        FROM arrival_flight_paths
+        WHERE arr_airport_upper = ANY($3::text[])
+          AND NOT (dep_airport_upper = ANY($3::text[]))
+          AND departure_date >= $4 AND departure_date <= $5
       ),
       previous_agg AS (
         SELECT

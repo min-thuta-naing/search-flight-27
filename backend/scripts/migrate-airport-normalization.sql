@@ -16,13 +16,11 @@ BEGIN;
 ALTER TABLE airports
   ADD COLUMN IF NOT EXISTS code_upper  TEXT GENERATED ALWAYS AS (UPPER(TRIM(code)))  STORED,
   ADD COLUMN IF NOT EXISTS code_lower  TEXT GENERATED ALWAYS AS (LOWER(TRIM(code)))  STORED,
-  ADD COLUMN IF NOT EXISTS city_upper  TEXT GENERATED ALWAYS AS (UPPER(TRIM(city)))  STORED,
-  ADD COLUMN IF NOT EXISTS iata_upper  TEXT GENERATED ALWAYS AS (UPPER(TRIM(iata)))  STORED;
+  ADD COLUMN IF NOT EXISTS city_upper  TEXT GENERATED ALWAYS AS (UPPER(TRIM(city)))  STORED;
 
 CREATE INDEX IF NOT EXISTS idx_airports_code_upper ON airports (code_upper);
 CREATE INDEX IF NOT EXISTS idx_airports_code_lower ON airports (code_lower);
 CREATE INDEX IF NOT EXISTS idx_airports_city_upper ON airports (city_upper);
-CREATE INDEX IF NOT EXISTS idx_airports_iata_upper ON airports (iata_upper);
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- 2. departure_flight_paths — regular columns + trigger (can't use GENERATED on

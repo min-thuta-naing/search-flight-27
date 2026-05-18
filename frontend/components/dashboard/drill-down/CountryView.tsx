@@ -1578,6 +1578,13 @@ function CountryFlowMapPanel({
             <div className="text-sm text-muted-foreground">{error}</div>
           </div>
         </div>
+      ) : loading ? (
+        <div className="flex h-[500px] items-center justify-center rounded-[14px] border border-border/70 bg-muted/20 lg:h-[580px]">
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <div className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+            <span>Loading flow map...</span>
+          </div>
+        </div>
       ) : (
         <div className="flex h-[500px] items-center justify-center rounded-[14px] border border-dashed border-border bg-muted/20 px-6 text-center lg:h-[580px]">
           <div className="space-y-2">

@@ -24,8 +24,6 @@ export function queryMonitoringMiddleware(req: Request, res: Response, next: Nex
       console.warn(JSON.stringify({ ...logEntry, level: 'SLOW', threshold: SLOW_QUERY_THRESHOLD_MS }));
     } else if (durationMs >= WARN_QUERY_THRESHOLD_MS) {
       console.warn(JSON.stringify({ ...logEntry, level: 'WARN', threshold: WARN_QUERY_THRESHOLD_MS }));
-    } else {
-      console.log(JSON.stringify({ ...logEntry, level: 'INFO' }));
     }
   });
 

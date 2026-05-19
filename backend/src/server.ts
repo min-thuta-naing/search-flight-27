@@ -127,6 +127,7 @@ async function startServer(): Promise<void> {
             preloadCountryOverview: parseBooleanEnv(process.env.DASHBOARD_CACHE_REFRESH_PRELOAD_COUNTRY_OVERVIEW, true),
             countryBatchSize: parsePositiveIntEnv(process.env.DASHBOARD_CACHE_REFRESH_COUNTRY_BATCH_SIZE, 15),
             maxCountryRssMb: parsePositiveIntEnv(process.env.DASHBOARD_CACHE_REFRESH_MAX_RSS_MB, 2048),
+            maxPresetWindowDays: parsePositiveIntEnv(process.env.DASHBOARD_CACHE_REFRESH_MAX_PRESET_DAYS, Infinity),
             cacheMode: parseCacheMode(process.env.DASHBOARD_CACHE_REFRESH_MODE),
           });
         })()

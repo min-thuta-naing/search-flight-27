@@ -670,12 +670,17 @@ const DASHBOARD_PRELOAD_CONTINENTS = [
   'Africa', 'Middle East', 'Oceania', 'Caribbean', 'Central America',
 ] as const;
 
+const PRESET_WINDOW_DAYS: Record<DashboardPreloadPreset, number> = {
+  '7': 7, '30': 30, 'focus': 30, '90': 90, '180': 180, '365': 365, 'all': Infinity,
+};
+
 export async function warmDashboardCachesOnStartup(options?: {
   preloadPresetData?: boolean;
   preloadCountryOverview?: boolean;
   preloadContinentEndpoints?: boolean;
   countryBatchSize?: number;
   maxCountryRssMb?: number;
+  maxPresetWindowDays?: number;
   cacheMode?: PreloadCacheMode;
 }): Promise<{ attempted: number; failed: number; presetPreloadEnabled: boolean; countryPreloadEnabled: boolean }> {
   let attempted = 0;
@@ -685,6 +690,7 @@ export async function warmDashboardCachesOnStartup(options?: {
   const preloadContinentEndpoints = options?.preloadContinentEndpoints ?? true;
   const countryBatchSize = normalizeCountryBatchSize(options?.countryBatchSize, 15);
   const maxCountryRssMb = normalizeRssLimitMb(options?.maxCountryRssMb, 1024);
+  const maxPresetWindowDays = options?.maxPresetWindowDays ?? Infinity;
   const cacheMode = options?.cacheMode ?? 'override';
   const startedAt = beginDashboardPreload();
   console.log(`[dashboard-preload] start at ${startedAt}`);
@@ -708,7 +714,12 @@ export async function warmDashboardCachesOnStartup(options?: {
     const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
     if (preloadPresetData) {
-      for (const preset of DASHBOARD_PRELOAD_PRESETS) {
+      const presetsToRun = DASHBOARD_PRELOAD_PRESETS.filter(p => PRESET_WINDOW_DAYS[p] <= maxPresetWindowDays);
+      if (presetsToRun.length < DASHBOARD_PRELOAD_PRESETS.length) {
+        const skipped = DASHBOARD_PRELOAD_PRESETS.filter(p => PRESET_WINDOW_DAYS[p] > maxPresetWindowDays);
+        console.log(`[dashboard-preload] skipping large presets (maxPresetWindowDays=${maxPresetWindowDays}): ${skipped.join(', ')}`);
+      }
+      for (const preset of presetsToRun) {
         const { startDate, endDate } = buildPresetDateRange(preset, bounds.minDate, bounds.recommendedEndDate, utcToday);
         const chunks = buildPreloadChunks(startDate, endDate, 3);
 

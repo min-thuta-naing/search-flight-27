@@ -27,7 +27,7 @@ services:
       dockerfile: Dockerfile
     container_name: flight_search_backend
     restart: unless-stopped
-    mem_limit: 2048M
+    mem_limit: 4096M
     mem_reservation: 512M
     env_file:
       - ./backend/.env
@@ -44,6 +44,9 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       RATE_LIMIT_WINDOW_MS: 60000
       RATE_LIMIT_MAX_REQUESTS: 1000
+      NODE_OPTIONS: "--max-old-space-size=3072"
+      DASHBOARD_CACHE_REFRESH_MAX_RSS_MB: "3500"
+      DASHBOARD_CACHE_REFRESH_MAX_PRESET_DAYS: "90"
       ENABLE_SCHEDULED_JOBS: "true"
       AUTO_IMPORT_FLIGHTS: "true"
       AUTO_IMPORT_INTL_FLIGHTS: "false"

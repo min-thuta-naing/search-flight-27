@@ -762,11 +762,15 @@ export async function warmDashboardCachesOnStartup(options?: {
             }
           }
 
-          // Flush each 3-month chunk before moving on so the snapshot and RAM stay bounded.
+          // Flush chunk to disk then evict ALL in-memory entries so each preset
+          // starts with a clean heap. Without this, fastDashboardCache accumulates
+          // every prior preset's data and OOMs on large presets (180/365/all).
           await waitForDashboardCacheWrites();
           const cleared = clearDashboardMemoryCache();
+          fastDashboardCache.clear();
 
-          console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} done; dump-flushed=yes; memory-cleared=${cleared.totalCleared}`);
+          const rssMb = process.memoryUsage().rss / 1024 / 1024;
+          console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} done; dump-flushed=yes; memory-cleared=${cleared.totalCleared}; rss=${rssMb.toFixed(0)}MB`);
         }
 
         console.log(`[dashboard-preload] preset ${preset} done; chunked-flush=3-month; chunks=${chunks.length}`);
@@ -911,6 +915,7 @@ export async function warmDashboardCachesOnStartup(options?: {
 
       await waitForDashboardCacheWrites();
       const cleared2 = clearDashboardMemoryCache();
+      fastDashboardCache.clear();
       const totalContinentTasks = DASHBOARD_PRELOAD_CONTINENTS.length * 4 * continentPresetRanges.length + DASHBOARD_PRELOAD_CONTINENTS.length;
       console.log(`[dashboard-preload] continent preload done; attempted=${totalContinentTasks}; memory-cleared=${cleared2.totalCleared}`);
     } else {

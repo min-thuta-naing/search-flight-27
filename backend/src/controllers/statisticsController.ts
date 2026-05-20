@@ -805,6 +805,10 @@ export async function warmDashboardCachesOnStartup(options?: {
   maxPresetWindowDays?: number;
   cacheMode?: PreloadCacheMode;
 }): Promise<{ attempted: number; failed: number; presetPreloadEnabled: boolean; countryPreloadEnabled: boolean }> {
+  if (dashboardPreloadStatus.phase === 'running') {
+    console.log('[dashboard-preload] skipped; another preload is already running');
+    return { attempted: 0, failed: 0, presetPreloadEnabled: false, countryPreloadEnabled: false };
+  }
   let attempted = 0;
   let failed = 0;
   const preloadPresetData = options?.preloadPresetData ?? true;
@@ -850,9 +854,11 @@ export async function warmDashboardCachesOnStartup(options?: {
         type SR = import('../services/dashboardSummaryService').DashboardSummaryResponse;
         type TR = import('../services/dashboardSummaryService').DashboardTopRanksResponse;
         type DR = import('../services/dashboardSummaryService').DashboardTopDestinationsResponse;
-        const summaryChunks: SR[] = [];
-        const topRanksChunks: TR[] = [];
-        const topDestChunks: DR[] = [];
+        // Incremental merge: keep one running result instead of accumulating all chunks in memory.
+        // Avoids OOM when presets span many chunks (365=4 chunks, all=6+ chunks).
+        let mergedSummary: SR | null = null;
+        let mergedTopRanks: TR | null = null;
+        let mergedTopDest: DR | null = null;
 
         for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
           const chunk = chunks[chunkIndex];
@@ -866,9 +872,10 @@ export async function warmDashboardCachesOnStartup(options?: {
               DashboardSummaryService.getWorldTopRanks({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
               DashboardSummaryService.getWorldTopDestinations({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
             ]);
-            summaryChunks.push(summary);
-            topRanksChunks.push(topRanks);
-            topDestChunks.push(topDest);
+            // Merge immediately so previous chunk data can be GC'd
+            mergedSummary  = mergedSummary  ? mergeWorldSummaries([mergedSummary, summary], startDate, endDate)          : summary;
+            mergedTopRanks = mergedTopRanks ? mergeWorldTopRanks([mergedTopRanks, topRanks], startDate, endDate)          : topRanks;
+            mergedTopDest  = mergedTopDest  ? mergeWorldTopDestinations([mergedTopDest, topDest], startDate, endDate)     : topDest;
           } catch {
             failed += 3;
             setDashboardPreloadStatus({ attempted, failed });
@@ -882,9 +889,8 @@ export async function warmDashboardCachesOnStartup(options?: {
           console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} done; rss=${rssMb.toFixed(0)}MB`);
         }
 
-        // Merge chunk results and write ONE canonical key per scope that matches the
-        // full preset range sent by the frontend at runtime. No extra DB query needed.
-        if (summaryChunks.length > 0) {
+        // Write ONE canonical key per scope that matches the full preset range.
+        if (mergedSummary) {
           const presetQuery = { start_date: startDate, end_date: endDate } as Request['query'];
           const summaryKey = buildDashboardQueryCacheKey('dashboard-summary', presetQuery);
           const topRanksKey = buildDashboardQueryCacheKey('dashboard-top-ranks', presetQuery);
@@ -895,9 +901,9 @@ export async function warmDashboardCachesOnStartup(options?: {
           console.log(`[dashboard-preload][key] preset=${preset} scope=dashboard-top-destinations key=${topDestKey}`);
 
           await Promise.all([
-            writeDashboardQueryCache(summaryKey,  mergeWorldSummaries(summaryChunks, startDate, endDate)),
-            writeDashboardQueryCache(topRanksKey, mergeWorldTopRanks(topRanksChunks, startDate, endDate)),
-            writeDashboardQueryCache(topDestKey,  mergeWorldTopDestinations(topDestChunks, startDate, endDate)),
+            writeDashboardQueryCache(summaryKey,  mergedSummary),
+            writeDashboardQueryCache(topRanksKey, mergedTopRanks!),
+            writeDashboardQueryCache(topDestKey,  mergedTopDest!),
           ]);
         }
 
@@ -1075,6 +1081,10 @@ export async function refreshDashboardQueryCacheSnapshot(options?: {
   countryBatchSize?: number;
   maxCountryRssMb?: number;
 }) {
+  if (dashboardPreloadStatus.phase === 'running') {
+    console.log('[dashboard-preload] refresh skipped; another preload is already running');
+    throw new Error('Another dashboard preload is already running');
+  }
   const clearFirst = options?.clearFirst ?? true;
   const preset = options?.preset ?? 'focus';
   const fullPreload = options?.fullPreload ?? false;

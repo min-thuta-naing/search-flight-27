@@ -242,22 +242,27 @@ export async function getDashboardQueryCacheFreshness() {
   };
 }
 
-// Returns true only if today's '30' preset summary key is already cached and fresh.
-// Used by the startup preloader to decide whether to skip re-preloading.
-// Checking a date-specific key (not just "any fresh entries") is critical: old entries
-// from yesterday have different start_date/end_date keys and will never match today's requests.
+// Returns true only if ALL world-preset summary keys are already cached and fresh for today.
+// Checks the smallest ('30') AND largest fixed-window ('180') preset — if either is missing
+// the preload was incomplete (e.g. OOM on a previous run) and must re-run in full.
 export function isTodayPresetCached(): boolean {
   const now = new Date();
   const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const start = formatDateForKey(utcToday);
-  const end = formatDateForKey(addUtcDays(utcToday, 29));
-  const key = buildDashboardQueryCacheKey('dashboard-summary', {
-    start_date: start,
-    end_date: end,
-    window_days: '30',
-  } as Request['query']);
-  const entry = fastDashboardCache.get(key);
-  return entry !== undefined && entry.expiresAt > Date.now();
+  const nowMs = Date.now();
+
+  const checks: Array<{ start: string; end: string }> = [
+    { start: formatDateForKey(utcToday), end: formatDateForKey(addUtcDays(utcToday, 29)) },    // '30'
+    { start: formatDateForKey(utcToday), end: formatDateForKey(addUtcDays(utcToday, 179)) },   // '180'
+  ];
+
+  return checks.every(({ start, end }) => {
+    const key = buildDashboardQueryCacheKey('dashboard-summary', {
+      start_date: start,
+      end_date: end,
+    } as Request['query']);
+    const entry = fastDashboardCache.get(key);
+    return entry !== undefined && entry.expiresAt > nowMs;
+  });
 }
 
 function toQueryValue(value: unknown): string {
@@ -665,6 +670,123 @@ async function getOrSetDashboardQueryCache<T>(key: string, factory: () => Promis
   return request;
 }
 
+// ---------------------------------------------------------------------------
+// Merge helpers — combine per-chunk results into one full-range response.
+// Fields that can be summed (flights) are summed; comparison/delta fields are
+// zeroed because each chunk has its own comparison window that cannot be
+// meaningfully combined. Single-chunk presets pass through unchanged.
+// ---------------------------------------------------------------------------
+
+function mergeWorldSummaries(
+  chunks: import('../services/dashboardSummaryService').DashboardSummaryResponse[],
+  startDate: string,
+  endDate: string,
+): import('../services/dashboardSummaryService').DashboardSummaryResponse {
+  const totalFlights = chunks.reduce((s, c) => s + c.totalFlights, 0);
+  const activeAirports = Math.max(...chunks.map(c => c.activeAirports));
+  const totalDays = Math.round(
+    (new Date(`${endDate}T00:00:00.000Z`).getTime() - new Date(`${startDate}T00:00:00.000Z`).getTime()) / 86400000,
+  ) + 1;
+  const averageFlightsPerDay = totalDays > 0 ? Math.round(totalFlights / totalDays) : 0;
+
+  type CS = import('../services/dashboardSummaryService').DashboardContinentSummary;
+  const continentMap = new Map<string, CS>();
+  for (const chunk of chunks) {
+    for (const row of chunk.continentBreakdown) {
+      const prev = continentMap.get(row.key);
+      continentMap.set(row.key, prev
+        ? { ...prev, flights: prev.flights + row.flights, previousFlights: 0, deltaFlights: 0, deltaPercent: 0 }
+        : { ...row,  previousFlights: 0, deltaFlights: 0, deltaPercent: 0 });
+    }
+  }
+  const continentBreakdown = Array.from(continentMap.values()).sort((a, b) => b.flights - a.flights);
+  const busiestContinent = continentBreakdown[0] ?? chunks[0].busiestContinent;
+
+  return {
+    centerDate: startDate,
+    windowDays: Math.floor(totalDays / 2),
+    periodStart: startDate,
+    periodEnd: endDate,
+    comparisonStart: '',
+    comparisonEnd: '',
+    totalFlights,
+    activeAirports,
+    averageFlightsPerDay,
+    busiestContinent,
+    continentBreakdown,
+  };
+}
+
+function mergeWorldTopRanks(
+  chunks: import('../services/dashboardSummaryService').DashboardTopRanksResponse[],
+  startDate: string,
+  endDate: string,
+): import('../services/dashboardSummaryService').DashboardTopRanksResponse {
+  type CR = import('../services/dashboardSummaryService').DashboardTopCountryRank;
+  type AR = import('../services/dashboardSummaryService').DashboardTopAirportRank;
+  const countryMap = new Map<string, CR>();
+  const airportMap = new Map<string, AR>();
+  for (const chunk of chunks) {
+    for (const c of chunk.countries) {
+      const key = c.countryCode ?? c.name;
+      const prev = countryMap.get(key);
+      countryMap.set(key, prev
+        ? { ...prev, flights: prev.flights + c.flights, previousFlights: 0, deltaFlights: 0, deltaPercent: 0 }
+        : { ...c,    previousFlights: 0, deltaFlights: 0, deltaPercent: 0 });
+    }
+    for (const a of chunk.airports) {
+      const prev = airportMap.get(a.iata);
+      airportMap.set(a.iata, prev
+        ? { ...prev, flights: prev.flights + a.flights, previousFlights: 0, deltaFlights: 0, deltaPercent: 0 }
+        : { ...a,    previousFlights: 0, deltaFlights: 0, deltaPercent: 0 });
+    }
+  }
+  return {
+    centerDate: startDate,
+    windowDays: 0,
+    periodStart: startDate,
+    periodEnd: endDate,
+    comparisonStart: '',
+    comparisonEnd: '',
+    countries: Array.from(countryMap.values()).sort((a, b) => b.flights - a.flights),
+    airports:  Array.from(airportMap.values()).sort((a, b) => b.flights - a.flights),
+  };
+}
+
+function mergeWorldTopDestinations(
+  chunks: import('../services/dashboardSummaryService').DashboardTopDestinationsResponse[],
+  startDate: string,
+  endDate: string,
+): import('../services/dashboardSummaryService').DashboardTopDestinationsResponse {
+  type AR = import('../services/dashboardSummaryService').DashboardTopAirportRank;
+  const depMap = new Map<string, AR>();
+  const arrMap = new Map<string, AR>();
+  for (const chunk of chunks) {
+    for (const a of chunk.departures) {
+      const prev = depMap.get(a.iata);
+      depMap.set(a.iata, prev
+        ? { ...prev, flights: prev.flights + a.flights, previousFlights: 0, deltaFlights: 0, deltaPercent: 0 }
+        : { ...a,    previousFlights: 0, deltaFlights: 0, deltaPercent: 0 });
+    }
+    for (const a of chunk.arrivals) {
+      const prev = arrMap.get(a.iata);
+      arrMap.set(a.iata, prev
+        ? { ...prev, flights: prev.flights + a.flights, previousFlights: 0, deltaFlights: 0, deltaPercent: 0 }
+        : { ...a,    previousFlights: 0, deltaFlights: 0, deltaPercent: 0 });
+    }
+  }
+  return {
+    centerDate: startDate,
+    windowDays: 0,
+    periodStart: startDate,
+    periodEnd: endDate,
+    comparisonStart: '',
+    comparisonEnd: '',
+    departures: Array.from(depMap.values()).sort((a, b) => b.flights - a.flights),
+    arrivals:   Array.from(arrMap.values()).sort((a, b) => b.flights - a.flights),
+  };
+}
+
 const DASHBOARD_PRELOAD_CONTINENTS = [
   'Europe', 'Asia', 'North America', 'South America',
   'Africa', 'Middle East', 'Oceania', 'Caribbean', 'Central America',
@@ -725,55 +847,65 @@ export async function warmDashboardCachesOnStartup(options?: {
 
         console.log(`[dashboard-preload] preset ${preset} start (${startDate} -> ${endDate}); chunks=${chunks.length}`);
 
+        type SR = import('../services/dashboardSummaryService').DashboardSummaryResponse;
+        type TR = import('../services/dashboardSummaryService').DashboardTopRanksResponse;
+        type DR = import('../services/dashboardSummaryService').DashboardTopDestinationsResponse;
+        const summaryChunks: SR[] = [];
+        const topRanksChunks: TR[] = [];
+        const topDestChunks: DR[] = [];
+
         for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
           const chunk = chunks[chunkIndex];
-          const query = {
-            window_days: '15',
-            start_date: chunk.startDate,
-            end_date: chunk.endDate,
-          } as Request['query'];
+          console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} (${chunk.startDate} -> ${chunk.endDate})`);
 
-          console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} start (${chunk.startDate} -> ${chunk.endDate})`);
-
-          const tasks: Array<{ scope: string; run: () => Promise<unknown> }> = [
-            {
-              scope: 'dashboard-summary',
-              run: () => DashboardSummaryService.getWorldSummary({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
-            },
-            {
-              scope: 'dashboard-top-ranks',
-              run: () => DashboardSummaryService.getWorldTopRanks({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
-            },
-            {
-              scope: 'dashboard-top-destinations',
-              run: () => DashboardSummaryService.getWorldTopDestinations({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
-            },
-          ];
-
-          for (const task of tasks) {
-            attempted += 1;
+          attempted += 3;
+          setDashboardPreloadStatus({ attempted, failed });
+          try {
+            const [summary, topRanks, topDest] = await Promise.all([
+              DashboardSummaryService.getWorldSummary({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+              DashboardSummaryService.getWorldTopRanks({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+              DashboardSummaryService.getWorldTopDestinations({ startDateInput: chunk.startDate, endDateInput: chunk.endDate }),
+            ]);
+            summaryChunks.push(summary);
+            topRanksChunks.push(topRanks);
+            topDestChunks.push(topDest);
+          } catch {
+            failed += 3;
             setDashboardPreloadStatus({ attempted, failed });
-            try {
-              const cacheKey = buildDashboardQueryCacheKey(task.scope, query);
-              await getOrSetDashboardQueryCache(cacheKey, task.run);
-            } catch {
-              failed += 1;
-              setDashboardPreloadStatus({ attempted, failed });
-            }
           }
 
-          // Flush chunk to disk then evict ALL in-memory entries so each preset
-          // starts with a clean heap. Without this, fastDashboardCache accumulates
-          // every prior preset's data and OOMs on large presets (180/365/all).
+          // Flush write queue and clear in-memory cache between chunks to keep heap small.
           await waitForDashboardCacheWrites();
-          const cleared = clearDashboardMemoryCache();
+          clearDashboardMemoryCache();
           fastDashboardCache.clear();
-
           const rssMb = process.memoryUsage().rss / 1024 / 1024;
-          console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} done; dump-flushed=yes; memory-cleared=${cleared.totalCleared}; rss=${rssMb.toFixed(0)}MB`);
+          console.log(`[dashboard-preload] preset ${preset} chunk ${chunkIndex + 1}/${chunks.length} done; rss=${rssMb.toFixed(0)}MB`);
         }
 
-        console.log(`[dashboard-preload] preset ${preset} done; chunked-flush=3-month; chunks=${chunks.length}`);
+        // Merge chunk results and write ONE canonical key per scope that matches the
+        // full preset range sent by the frontend at runtime. No extra DB query needed.
+        if (summaryChunks.length > 0) {
+          const presetQuery = { start_date: startDate, end_date: endDate } as Request['query'];
+          const summaryKey = buildDashboardQueryCacheKey('dashboard-summary', presetQuery);
+          const topRanksKey = buildDashboardQueryCacheKey('dashboard-top-ranks', presetQuery);
+          const topDestKey  = buildDashboardQueryCacheKey('dashboard-top-destinations', presetQuery);
+
+          console.log(`[dashboard-preload][key] preset=${preset} scope=dashboard-summary key=${summaryKey}`);
+          console.log(`[dashboard-preload][key] preset=${preset} scope=dashboard-top-ranks key=${topRanksKey}`);
+          console.log(`[dashboard-preload][key] preset=${preset} scope=dashboard-top-destinations key=${topDestKey}`);
+
+          await Promise.all([
+            writeDashboardQueryCache(summaryKey,  mergeWorldSummaries(summaryChunks, startDate, endDate)),
+            writeDashboardQueryCache(topRanksKey, mergeWorldTopRanks(topRanksChunks, startDate, endDate)),
+            writeDashboardQueryCache(topDestKey,  mergeWorldTopDestinations(topDestChunks, startDate, endDate)),
+          ]);
+        }
+
+        await waitForDashboardCacheWrites();
+        const clearedFinal = clearDashboardMemoryCache();
+        fastDashboardCache.clear();
+        const rssFinal = process.memoryUsage().rss / 1024 / 1024;
+        console.log(`[dashboard-preload] preset ${preset} done; chunks=${chunks.length}; merged=yes; memory-cleared=${clearedFinal.totalCleared}; rss=${rssFinal.toFixed(0)}MB`);
       }
     } else {
       console.log('[dashboard-preload] preset preload disabled; skipping world preset warmup');
@@ -1208,6 +1340,53 @@ export async function getDashboardCacheStatus(req: Request, res: Response, next:
 }
 
 /**
+ * Preview preload keys for all world presets without running a preload.
+ * Also checks which keys are present in the disk cache so you can compare
+ * with the key logged by the runtime handlers (fastHit/cacheKey in perf log).
+ * GET /api/statistics/dashboard-cache/key-preview
+ */
+export async function getDashboardCacheKeyPreview(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const now = new Date();
+    const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const bounds = await getOrSetDashboardQueryCache(
+      buildDashboardQueryCacheKey('dashboard-date-bounds', {} as Request['query']),
+      () => DashboardSummaryService.getDashboardDataBounds(),
+    );
+
+    const diskEntries = await readDashboardQueryCacheSnapshot();
+    const nowMs = Date.now();
+
+    const rows = DASHBOARD_PRELOAD_PRESETS.map((preset) => {
+      const { startDate, endDate } = buildPresetDateRange(
+        preset, bounds.minDate ?? '', bounds.recommendedEndDate ?? '', utcToday,
+      );
+      const presetQuery = { start_date: startDate, end_date: endDate } as Request['query'];
+      const scopes = ['dashboard-summary', 'dashboard-top-ranks', 'dashboard-top-destinations'] as const;
+
+      return {
+        preset,
+        dateRange: `${startDate} → ${endDate}`,
+        keys: scopes.map((scope) => {
+          const key = buildDashboardQueryCacheKey(scope, presetQuery);
+          const entry = diskEntries[key];
+          return {
+            scope,
+            key,
+            cached: !!entry,
+            fresh: !!(entry && entry.expiresAt > nowMs),
+          };
+        }),
+      };
+    });
+
+    res.json({ utcToday: formatDateForKey(utcToday), presets: rows });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get real dashboard data bounds for preset 'all'
  * GET /api/statistics/dashboard-date-bounds
  */
@@ -1430,7 +1609,7 @@ export async function getDashboardSummary(req: Request, res: Response, next: Nex
         );
 
     const duration = Date.now() - startMs;
-    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-summary', durationMs: duration, fastHit }));
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-summary', durationMs: duration, fastHit, cacheKey }));
     res.json(summary);
   } catch (error) {
     next(error);
@@ -2010,7 +2189,7 @@ export async function getDashboardTopRanks(req: Request, res: Response, next: Ne
         );
 
     const duration = Date.now() - startMs;
-    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-top-ranks', durationMs: duration, fastHit }));
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-top-ranks', durationMs: duration, fastHit, cacheKey }));
     res.json(topRanks);
   } catch (error) {
     next(error);
@@ -2817,7 +2996,7 @@ export async function getDashboardTopDestinations(req: Request, res: Response, n
         );
 
     const duration = Date.now() - startMs;
-    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-top-destinations', durationMs: duration, fastHit }));
+    console.log(JSON.stringify({ event: 'perf', endpoint: 'dashboard-top-destinations', durationMs: duration, fastHit, cacheKey }));
     res.json(destinations);
   } catch (error) {
     next(error);

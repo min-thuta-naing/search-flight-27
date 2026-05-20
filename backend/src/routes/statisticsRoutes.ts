@@ -32,6 +32,7 @@ import {
   triggerDashboardCacheRefresh,
   getDashboardDateBounds,
   getDashboardCacheStatus,
+  getDashboardCacheKeyPreview,
 } from '../controllers/statisticsController';
 
 const router = Router();
@@ -125,6 +126,9 @@ router.get('/dashboard-date-bounds', getDashboardDateBounds);
 
 // Read dashboard cache status
 router.get('/dashboard-cache/status', getDashboardCacheStatus);
+
+// Preview preload keys vs cached state for all world presets (no preload needed)
+router.get('/dashboard-cache/key-preview', getDashboardCacheKeyPreview);
 
 // Clear dashboard query cache manually
 router.post('/dashboard-cache/clear', clearDashboardCache);

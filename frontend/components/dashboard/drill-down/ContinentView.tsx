@@ -1,6 +1,7 @@
-﻿'use client';
+'use client';
 
 import { useEffect, useState } from 'react';
+import { addDays, subDays } from 'date-fns';
 import { ChevronDown } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -32,7 +33,7 @@ import {
   parsePercentFromDelta,
 } from '@/lib/dashboard/drill-down-data';
 import { KPI_ACCENT } from '@/lib/dashboard/kpi-colors';
-import { getContinentDetail, getContinentTopAirports, getContinentTopRoutes, getContinentTrends } from '@/lib/dashboard/services/drilldown';
+import { getContinentDetail, getContinentTopAirports, getContinentTopRoutes, getContinentTrends, getDashboardDateBounds, type DashboardDateBoundsResponse } from '@/lib/dashboard/services/drilldown';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useDrillDown, KPIRow, BackButton, ChangePill } from './DrillDownDashboard';
@@ -73,7 +74,15 @@ function resolveContinentWindowDays(preset: RangePreset) {
   if (preset === '365') return 365;
   return 3650;
 }
-
+function emojiFlagToCode(flag: string): string {
+  // แปลง emoji ธงเป็น country code เช่น 🇹🇭 → "th"
+  const codePoints = [...flag].map(char => char.codePointAt(0)! - 0x1F1E6);
+  const countryCode = String.fromCharCode(
+    codePoints[0] + 65,
+    codePoints[1] + 65
+  );
+  return countryCode.toLowerCase();
+}
 function resolveContinentDisplayMode(preset: RangePreset): ContinentDisplayMode {
   if (preset === 'focus' || preset === '7') return 'wow';
   if (preset === '30' || preset === '90' || preset === '180') return 'mom';
@@ -104,6 +113,80 @@ function parseContinentCountSummary(airportsText: string) {
     airportCount: airportMatch ? Number(airportMatch[1].replace(/,/g, '')) || 0 : 0,
     countryCount: countryMatch ? Number(countryMatch[1].replace(/,/g, '')) || 0 : 0,
   };
+}
+
+function parseIsoDateInput(dateInput?: string | null) {
+  if (!dateInput) return null;
+  const parsed = new Date(`${dateInput.split('T')[0]}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getUtcToday(): Date {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+function formatLocalDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildContinentRangeCacheKey(
+  continentName: string,
+  startDate: string,
+  endDate: string,
+  includeCore: boolean,
+  includeSeasonal: boolean,
+  includeTopRoutes: boolean,
+) {
+  return [
+    continentName,
+    `range:${startDate}__${endDate}`,
+    `core:${includeCore ? 1 : 0}`,
+    `seasonal:${includeSeasonal ? 1 : 0}`,
+    `routes:${includeTopRoutes ? 1 : 0}`,
+  ].join('|');
+}
+
+function buildWorldLikePresetRange(
+  mode: RangePreset,
+  baseDate = new Date(),
+  bounds?: Pick<DashboardDateBoundsResponse, 'minDate' | 'recommendedEndDate'> | null,
+) {
+  if (mode === 'focus') {
+    return { from: subDays(baseDate, 15), to: addDays(baseDate, 15) };
+  }
+
+  if (mode === '7') {
+    return { from: baseDate, to: addDays(baseDate, 6) };
+  }
+
+  if (mode === '30') {
+    return { from: baseDate, to: addDays(baseDate, 29) };
+  }
+
+  if (mode === '90') {
+    return { from: baseDate, to: addDays(baseDate, 89) };
+  }
+
+  if (mode === '180') {
+    return { from: baseDate, to: addDays(baseDate, 179) };
+  }
+
+  if (mode === '365') {
+    return { from: baseDate, to: addDays(baseDate, 364) };
+  }
+
+  const minDate = parseIsoDateInput(bounds?.minDate || null);
+  const recommendedEndDate = parseIsoDateInput(bounds?.recommendedEndDate || null);
+
+  if (!minDate || !recommendedEndDate) {
+    return null;
+  }
+
+  return { from: minDate, to: recommendedEndDate };
 }
 
 /** Match KPI ref to grid row, or minimal row so drill-down always works for any continent. */
@@ -216,11 +299,19 @@ function ContinentPresetBar({
 
 export function ContinentView() {
   const { drillTo, selections, rangePreset, setRangePreset } = useDrillDown();
+  const [search, setSearch] = useState('');
   const continent = selections.continent || CONTINENTS[0];
+  const [dashboardDateBounds, setDashboardDateBounds] = useState<DashboardDateBoundsResponse | null>(null);
   const preset = rangePreset;
+  const presetRange = buildWorldLikePresetRange(preset, getUtcToday(), dashboardDateBounds);
+  const startDate = presetRange?.from ? formatLocalDateInput(presetRange.from) : null;
+  const endDate = presetRange?.to ? formatLocalDateInput(presetRange.to) : null;
+  const hasExplicitRange = Boolean(startDate && endDate);
   const continentWindowDays = resolveContinentWindowDays(preset);
   const continentTimeMode = resolveContinentDisplayMode(preset);
-  const coreCacheKey = buildContinentCacheKey(continent.name, continentWindowDays, true, false, false);
+  const coreCacheKey = hasExplicitRange && startDate && endDate
+    ? buildContinentRangeCacheKey(continent.name, startDate, endDate, true, false, false)
+    : buildContinentCacheKey(continent.name, continentWindowDays, true, false, false);
   const trendCacheKey = `trend:${continent.name}`;
   const [continentPayload, setContinentPayload] = useState<ContinentDetailPayload | null>(() => {
     return getContinentDetailCacheState(coreCacheKey).value;
@@ -234,8 +325,12 @@ export function ContinentView() {
   const [trendCacheHitKey, setTrendCacheHitKey] = useState<string | null>(() => {
     return getContinentTrendsCacheState(trendCacheKey).value ? trendCacheKey : null;
   });
-  const topAirportsQueryKey = `${continent.name}|window:${continentWindowDays}|limit:10`;
-  const topRoutesRankQueryKey = `${continent.name}|window:${continentWindowDays}|limit:5`;
+  const topAirportsQueryKey = hasExplicitRange && startDate && endDate
+    ? `${continent.name}|range:${startDate}__${endDate}|limit:10`
+    : `${continent.name}|window:${continentWindowDays}|limit:10`;
+  const topRoutesRankQueryKey = hasExplicitRange && startDate && endDate
+    ? `${continent.name}|range:${startDate}__${endDate}|limit:5`
+    : `${continent.name}|window:${continentWindowDays}|limit:5`;
   const [topAirportRows, setTopAirportRows] = useState<ContinentTopAirportRow[] | null>(() => {
     return getContinentTopAirportsCacheState(topAirportsQueryKey).value;
   });
@@ -249,7 +344,37 @@ export function ContinentView() {
     return getContinentTopRouteRanksCacheState(topRoutesRankQueryKey).value ? topRoutesRankQueryKey : null;
   });
   const [detailError, setDetailError] = useState<string | null>(null);
-  const coreReady = continentPayload != null && payloadCacheKey === coreCacheKey;
+  const [trendsFailed, setTrendsFailed] = useState(false);
+  const [topRoutesFailed, setTopRoutesFailed] = useState(false);
+  // Exact match = fresh data; prefix match = same continent, different date key still loading (stale-while-revalidate)
+  const payloadIsForThisContinent =
+    payloadCacheKey === coreCacheKey ||
+    (payloadCacheKey != null && payloadCacheKey.startsWith(`${continent.name}|`));
+  const coreReady = continentPayload != null && payloadIsForThisContinent;
+
+  useEffect(() => {
+    let alive = true;
+
+    const loadBounds = async () => {
+      try {
+        const bounds = await runDrillDownRequest(
+          'continent:date-bounds',
+          () => getDashboardDateBounds(),
+        );
+        if (!alive) return;
+        setDashboardDateBounds(bounds);
+      } catch {
+        if (!alive) return;
+        setDashboardDateBounds(null);
+      }
+    };
+
+    void loadBounds();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -274,12 +399,23 @@ export function ContinentView() {
         setDetailError(null);
         const payload = await runDrillDownRequest(
           `continent:core:${coreCacheKey}`,
-          () => getContinentDetail(continent.name, {
-            windowDays: continentWindowDays,
-            includeCore: true,
-            includeSeasonal: false,
-            includeTopRoutes: false,
-          }),
+          () => getContinentDetail(
+            continent.name,
+            hasExplicitRange && startDate && endDate
+              ? {
+                  startDate,
+                  endDate,
+                  includeCore: true,
+                  includeSeasonal: false,
+                  includeTopRoutes: false,
+                }
+              : {
+                  windowDays: continentWindowDays,
+                  includeCore: true,
+                  includeSeasonal: false,
+                  includeTopRoutes: false,
+                },
+          ),
         );
         if (!alive) return;
         storeContinentDetail(coreCacheKey, payload);
@@ -296,7 +432,7 @@ export function ContinentView() {
     return () => {
       alive = false;
     };
-  }, [continent.name, continentWindowDays, coreCacheKey]);
+  }, [continent.name, continentWindowDays, coreCacheKey, hasExplicitRange, startDate, endDate]);
 
   useEffect(() => {
     let alive = true;
@@ -315,6 +451,7 @@ export function ContinentView() {
       setTrendCacheHitKey(null);
     }
 
+    setTrendsFailed(false);
     const loadTrends = async () => {
       try {
         const payload = await runDrillDownRequest(
@@ -329,6 +466,7 @@ export function ContinentView() {
         setTrendCacheHitKey(trendCacheKey);
       } catch (error) {
         if (!alive) return;
+        setTrendsFailed(true);
         setDetailError(error instanceof Error ? error.message : 'ไม่สามารถโหลดแนวโน้มทวีปได้');
       }
     };
@@ -363,22 +501,41 @@ export function ContinentView() {
   }, [topRoutesRankQueryKey]);
 
   useEffect(() => {
-    if (!coreReady) {
-      return;
-    }
-
     let alive = true;
+    const cacheState = getContinentTopAirportsCacheState(topAirportsQueryKey);
+    const cached = cacheState.value;
+
+    if (cached) {
+      setTopAirportRows(cached);
+      setTopAirportCacheHitKey(topAirportsQueryKey);
+      if (!cacheState.stale) {
+        return () => {
+          alive = false;
+        };
+      }
+    } else {
+      setTopAirportCacheHitKey(null);
+    }
 
     const loadTopAirports = async () => {
       try {
-        setTopAirportCacheHitKey(null);
         const payload: ContinentTopAirportsPayload = await runDrillDownRequest(
           `continent:top-airports:${topAirportsQueryKey}`,
-          () => getContinentTopAirports(continent.name, {
-            windowDays: continentWindowDays,
-            limit: 10,
-            timeoutMs: 45000,
-          }),
+          () => getContinentTopAirports(
+            continent.name,
+            hasExplicitRange && startDate && endDate
+              ? {
+                  startDate,
+                  endDate,
+                  limit: 10,
+                  timeoutMs: 45000,
+                }
+              : {
+                  windowDays: continentWindowDays,
+                  limit: 10,
+                  timeoutMs: 45000,
+                },
+          ),
         );
         if (!alive) return;
         const rows = payload.airports;
@@ -396,25 +553,45 @@ export function ContinentView() {
     return () => {
       alive = false;
     };
-  }, [continent.name, continentWindowDays, coreReady, topAirportsQueryKey]);
+  }, [continent.name, continentWindowDays, topAirportsQueryKey, hasExplicitRange, startDate, endDate]);
 
   useEffect(() => {
-    if (!coreReady) {
-      return;
+    let alive = true;
+    const cacheState = getContinentTopRouteRanksCacheState(topRoutesRankQueryKey);
+    const cached = cacheState.value;
+
+    if (cached) {
+      setTopRouteRankRows(cached);
+      setTopRouteRankCacheHitKey(topRoutesRankQueryKey);
+      if (!cacheState.stale) {
+        return () => {
+          alive = false;
+        };
+      }
+    } else {
+      setTopRouteRankCacheHitKey(null);
     }
 
-    let alive = true;
-
+    setTopRoutesFailed(false);
     const loadTopRoutesRank = async () => {
       try {
-        setTopRouteRankCacheHitKey(null);
         const payload: ContinentTopRoutesPayload = await runDrillDownRequest(
           `continent:top-routes:${topRoutesRankQueryKey}`,
-          () => getContinentTopRoutes(continent.name, {
-            windowDays: continentWindowDays,
-            limit: 5,
-            timeoutMs: 45000,
-          }),
+          () => getContinentTopRoutes(
+            continent.name,
+            hasExplicitRange && startDate && endDate
+              ? {
+                  startDate,
+                  endDate,
+                  limit: 5,
+                  timeoutMs: 45000,
+                }
+              : {
+                  windowDays: continentWindowDays,
+                  limit: 5,
+                  timeoutMs: 45000,
+                },
+          ),
         );
         if (!alive) return;
         const rows = payload.routes;
@@ -424,6 +601,8 @@ export function ContinentView() {
       } catch {
         if (!alive) return;
         setTopRouteRankRows([]);
+        setTopRoutesFailed(true);
+        setTopRouteRankCacheHitKey(topRoutesRankQueryKey);
       }
     };
 
@@ -432,7 +611,7 @@ export function ContinentView() {
     return () => {
       alive = false;
     };
-  }, [continent.name, continentWindowDays, coreReady, topRoutesRankQueryKey]);
+  }, [continent.name, continentWindowDays, topRoutesRankQueryKey, hasExplicitRange, startDate, endDate]);
 
   const payload = continentPayload;
   const hasPayload = coreReady;
@@ -442,6 +621,10 @@ export function ContinentView() {
   const resolvedTopAirportRows = topAirportCacheHitKey === topAirportsQueryKey && topAirportRows ? topAirportRows : [];
   const resolvedTopRouteRankRows = topRouteRankCacheHitKey === topRoutesRankQueryKey && topRouteRankRows ? topRouteRankRows : [];
   const countries = detail?.countries ?? [];
+  const filteredCountries = search
+    ? countries.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
+    : countries;
+  const totalFlightsValue = hasPayload && detail ? detail.totalFlights : continent.flights;
   const parsedCountSummary = parseContinentCountSummary(continent.airports);
   const airportCountFromSummary = parsedCountSummary.airportCount;
   const countryCountFromSummary = parsedCountSummary.countryCount;
@@ -461,7 +644,9 @@ export function ContinentView() {
     !!topByAirports &&
     topByFlights.name === topByAirports.name;
 
-  const continentGrowthTone = growthDeltaTypeFromPct(getChangeForMode(continent, continentTimeMode).pct, continentTimeMode);
+  const continentGrowthTone = hasPayload && detail
+    ? growthDeltaTypeFromPct(detail.totalDeltaPercent, continentTimeMode)
+    : growthDeltaTypeFromPct(getChangeForMode(continent, continentTimeMode).pct, continentTimeMode);
   const busiestPct = detail ? parseFirstSignedPercent(detail.busiestDelta) : null;
   const fastestPct = detail ? parseFirstSignedPercent(detail.fastestDelta) : null;
   const busiestKpiTone =
@@ -473,8 +658,8 @@ export function ContinentView() {
   const kpis: KPIItem[] = [
     {
       label: 'เที่ยวบินทั้งหมด',
-      value: continent.flights.toLocaleString(),
-      delta: continent.delta,
+      value: totalFlightsValue.toLocaleString(),
+      delta: hasPayload && detail ? detail.totalDeltaText : continent.delta,
       deltaType: continentGrowthTone,
       accentColor: KPI_ACCENT.flights,
       ...(hasPayload && topByFlights
@@ -486,9 +671,9 @@ export function ContinentView() {
     },
     {
       label: 'ประเทศที่เปิดน่านฟ้า',
-      value: hasPayload && detail ? (detail.countryCount || '0') : countryCountFromSummary.toLocaleString(),
+      value: hasPayload && detail ? (detail.countryCount || '0' ) : countryCountFromSummary.toLocaleString(),
       delta: hasPayload
-        ? `แสดงรายละเอียด ${countries.length} ประเทศ`
+        ? ` ประเทศ `
         : `สรุปจาก ${airportCountFromSummary.toLocaleString()} สนามบิน`,
       deltaType: 'neutral',
       growthColored: false,
@@ -503,7 +688,7 @@ export function ContinentView() {
     {
       label: 'ประเทศที่คึกคักที่สุด',
       value: hasPayload && detail
-        ? `${detail.busiestCountry.flag} ${detail.busiestCountry.nameTh}`
+        ? ` ${detail.busiestCountry.nameTh}`
         : `${continent.icon} ${continent.name}`,
       delta: hasPayload && detail ? detail.busiestDelta : 'กำลังโหลดรายละเอียดจากฐานข้อมูล',
       deltaType: hasPayload ? busiestKpiTone : 'neutral',
@@ -517,9 +702,9 @@ export function ContinentView() {
         : {}),
     },
     {
-      label: 'เติบโตเร็วที่สุด',
+      label: 'เติบโตมากที่สุด',
       value: hasPayload && detail
-        ? `${detail.fastestGrowing.flag} ${detail.fastestGrowing.nameTh}`
+        ? `${detail.fastestGrowing.nameTh}`
         : `${continent.icon} ${continent.name}`,
       delta: hasPayload && detail ? detail.fastestDelta : 'กำลังโหลดรายละเอียดจากฐานข้อมูล',
       deltaType: hasPayload ? fastestKpiTone : 'neutral',
@@ -538,10 +723,10 @@ export function ContinentView() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0 flex-1">
-          <h2 className="text-xl font-bold mb-1 break-words">{continent.icon} {continent.name}</h2>
-          <p className="text-[15px] text-muted-foreground font-medium break-words">
+          <h2 className="text-xl font-extrabold text-left px-3 py-4 sm:text-2xl sm:px-5 sm:py-5 lg:text-3xl lg:p-7">ทวีป {continent.name}</h2>
+          {/* <p className="text-[15px] text-muted-foreground font-medium break-words">
             คลิกประเทศเพื่อดูสนามบินในภูมิภาค {continent.name} {'\u00B7'} ช่วงปัจจุบัน: {activePresetLabel}
-          </p>
+          </p> */}
         </div>
         <div className="min-w-0 w-full xl:w-auto xl:max-w-[48rem]">
           <div className="mb-2 text-sm font-medium text-muted-foreground">ช่วงวันที่</div>
@@ -558,13 +743,17 @@ export function ContinentView() {
       <KPIRow items={kpis} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-        {trends ? (
+        {trendsFailed ? (
+          <ContinentPanelNoData title="แนวโน้ม" message="ไม่สามารถโหลดข้อมูลแนวโน้มได้" />
+        ) : trends ? (
           <ContinentAverageTrendChart trends={trends} />
         ) : (
           <ContinentPanelRingLoader title="แนวโน้ม" />
         )}
         <div>
-          {topRouteRankCacheHitKey === topRoutesRankQueryKey ? (
+          {topRoutesFailed ? (
+            <ContinentPanelNoData title="5 อันดับเส้นทาง" message="ไม่สามารถโหลดข้อมูลเส้นทางได้" />
+          ) : topRouteRankCacheHitKey === topRoutesRankQueryKey ? (
             <ContinentTopRoutesPanel rows={resolvedTopRouteRankRows} timeMode={continentTimeMode} />
           ) : (
             <ContinentPanelRingLoader title="5 อันดับเส้นทาง" />
@@ -572,8 +761,23 @@ export function ContinentView() {
         </div>
       </div>
 
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-muted-foreground">
+          {hasPayload && detail
+            ? `${filteredCountries.length.toLocaleString()}${search ? ` / ${countries.length.toLocaleString()}` : ''} ประเทศ`
+            : 'กำลังโหลด...'}
+        </div>
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="ค้นหาประเทศ"
+          className="w-full sm:w-52 rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/10"
+        />
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-        {hasPayload && detail ? countries.map((c) => {
+        {hasPayload && detail ? filteredCountries.length > 0 ? filteredCountries.map((c) => {
           const rowPct = parsePercentFromDelta(c.delta);
           const rowTone =
             rowPct != null
@@ -592,7 +796,13 @@ export function ContinentView() {
             }`}
           >
             <div className="flex items-center gap-2 mb-3 min-w-0">
-              <span className="text-2xl">{c.flag}</span>
+              <span className="text-2xl">
+                              <img
+                src={`https://www.worldometers.info/images/flags/original/${emojiFlagToCode(c.flag)}.webp`}
+                alt={`${c.flag} flag`}
+                className="inline-block w-6 h-4"
+              />
+              </span>
               <span className="text-[15px] font-semibold truncate">{c.name}</span>
               <span className="ml-auto bg-muted border border-border rounded-full text-[14px] py-0.5 px-2.5 text-muted-foreground font-medium whitespace-nowrap">
                 {c.airports} สนามบิน
@@ -610,7 +820,11 @@ export function ContinentView() {
             </div>
           </button>
         );
-        }) : Array.from({ length: 4 }).map((_, index) => (
+        }) : (
+          <div className="col-span-full py-10 text-center text-sm text-muted-foreground">
+            ไม่พบประเทศที่ตรงกับ &ldquo;{search}&rdquo;
+          </div>
+        ) : Array.from({ length: 4 }).map((_, index) => (
           <ContinentCountryRingCard key={index} />
         ))}
       </div>
@@ -649,6 +863,17 @@ function ContinentKpiRingLoader() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function ContinentPanelNoData({ title, message }: { title: string; message?: string }) {
+  return (
+    <div className="bg-card border border-border rounded-[10px] p-5">
+      <div className="text-[16px] font-bold mb-4">{title}</div>
+      <div className="flex h-[220px] items-center justify-center rounded-[10px] border border-border/70 bg-muted/20">
+        <span className="text-sm text-muted-foreground">{message ?? 'ไม่พบข้อมูลสำหรับช่วงเวลานี้'}</span>
+      </div>
     </div>
   );
 }
@@ -704,7 +929,7 @@ function ContinentAverageTrendChart({ trends }: { trends: DashboardContinentTren
     <div className="bg-card border border-border rounded-[10px] p-5">
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="text-[16px] font-bold">ค่าเฉลี่ยเที่ยวบินขาเข้า-ขาออกตามช่วงเวลา — {trends.continent.label}</div>
+          <div className="text-[16px] font-bold">ค่าเฉลี่ยเที่ยวบิน เข้า - ออก ตามช่วงเวลาใน {trends.continent.label}</div>
           <div className="text-xs text-muted-foreground">โหมดปัจจุบัน: {modeDescription}</div>
         </div>
         <div className="inline-flex rounded-lg border border-border bg-muted/30 p-1">
@@ -808,9 +1033,13 @@ function ContinentTopRoutesPanel({
   return (
     <div className="bg-card border border-border rounded-[10px] p-5">
       <div className="text-[16px] font-bold mb-4">
-        {'🏆'} 5 อันดับเส้นทางตามจำนวนเที่ยวบิน {'\u2014'} {continentName}
+       อันดับเส้นทางเที่ยวบินสูงสุดใน {continentName}
       </div>
-      {rows.map((r, i) => {
+      {rows.length === 0 ? (
+        <div className="flex h-[180px] items-center justify-center text-sm text-muted-foreground">
+          ไม่พบข้อมูลเส้นทางสำหรับช่วงเวลานี้
+        </div>
+      ) : rows.map((r, i) => {
         const pct = r.deltaPercent;
         const num = r.deltaFlights;
         return (
@@ -888,9 +1117,9 @@ function ContinentTopAirportTable({
           </tbody>
         </table>
       </div>
-      <div className="mt-2 text-xs text-muted-foreground">
+      {/* <div className="mt-2 text-xs text-muted-foreground">
         หมายเหตุ: ตารางนี้ดึงจาก endpoint Top Airport ของทวีปโดยตรงตามช่วงวันที่ที่เลือก
-      </div>
+      </div> */}
     </div>
   );
 }

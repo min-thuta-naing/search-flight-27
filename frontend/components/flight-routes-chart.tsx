@@ -103,6 +103,7 @@ interface FlightRoutesChartProps {
   dateRange: DateRange | undefined
   compareMode: boolean
   isDeparture: boolean
+  chartHeightClass?: string
 }
 
 export function FlightRoutesChart({
@@ -110,6 +111,7 @@ export function FlightRoutesChart({
   compareMode,
   isDeparture,
   dateRange,
+  chartHeightClass,
 }: FlightRoutesChartProps) {
   const { fonts, colors, layout, grid, axis, legend, tooltip, zoomSliders, todayMarker } = chartUiConfig
   const [chartZoomed, setChartZoomed] = useState(false)
@@ -322,8 +324,13 @@ export function FlightRoutesChart({
 
   const yAxisMin = (() => {
     const minVal = yAxisStats.min
+    const maxVal = yAxisStats.max
     const stepFactor = yGapStep / 4
-    if (stepFactor >= 1) return Math.floor(minVal)
+    if (stepFactor >= 1) {
+      // Keep slight bottom headroom so low points are not stuck to the axis floor.
+      const bottomPad = Math.max(1, Math.ceil(Math.max(1, maxVal) * 0.04))
+      return Math.floor(Math.max(0, minVal - bottomPad))
+    }
 
     const range = Math.max(1, yAxisStats.max - minVal)
     const pad = range * 0.2 * (1 - stepFactor)
@@ -339,7 +346,11 @@ export function FlightRoutesChart({
     const minVal = yAxisStats.min
     const maxVal = yAxisStats.max
     const stepFactor = yGapStep / 4
-    if (stepFactor >= 1) return Math.ceil(maxVal)
+    if (stepFactor >= 1) {
+      // Keep a fixed headroom so the peak point never touches the top border.
+      const topPad = Math.max(2, Math.ceil(Math.max(1, maxVal) * 0.06))
+      return Math.ceil(maxVal + topPad)
+    }
 
     const range = Math.max(1, maxVal - minVal)
     const pad = range * 0.2 * (1 - stepFactor)
@@ -438,7 +449,8 @@ export function FlightRoutesChart({
       griddash: (grid.strokeDasharray ? 'dash' : 'solid') as 'dash' | 'solid',
       showgrid: true,
       range: [yAxisMin, yAxisMax],
-      minallowed: -1,
+      minallowed: yAxisMin,
+      maxallowed: yAxisMax,
       zeroline: false,
     },
     showlegend: false,
@@ -516,7 +528,7 @@ export function FlightRoutesChart({
           </div>
         </div>
         <div className="w-full min-w-0 overflow-x-auto overflow-y-visible -mx-1 px-1">
-          <div className={`relative overflow-visible ${layout.chartHeight} w-full ${layout.chartMinWidth} flight-routes-accent`}>
+          <div className={`relative overflow-visible ${chartHeightClass ?? layout.chartHeight} w-full ${layout.chartMinWidth} flight-routes-accent`}>
              <Plot
                data={traces as any}
                layout={plotlyLayout as any}

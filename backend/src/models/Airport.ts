@@ -1,4 +1,5 @@
 import { pool } from '../config/database';
+import { getContinentMeta } from '../utils/continentMapper';
 
 export interface Airport {
   id: number;
@@ -34,6 +35,9 @@ export interface AirportCountrySummary {
   country: string;
   country_code: string | null;
   airport_count: number;
+  continent_key: string;
+  continent_label: string;
+  continent_icon: string;
 }
 
 export class AirportModel {
@@ -197,7 +201,7 @@ export class AirportModel {
    * Get country summaries for airport directory UIs.
    */
   static async getAirportCountries(): Promise<{
-    countries: AirportCountrySummary[];
+    airportCountries: AirportCountrySummary[];
     totalCountries: number;
     totalAirports: number;
   }> {
@@ -212,12 +216,15 @@ export class AirportModel {
     `;
 
     const result = await pool.query(query);
-    const countries = result.rows;
-    const totalCountries = countries.length;
-    const totalAirports = countries.reduce((acc, curr) => acc + curr.airport_count, 0);
+    const airportCountries: AirportCountrySummary[] = (result.rows as Array<{ country: string; country_code: string | null; airport_count: number }>).map((row) => {
+      const meta = getContinentMeta(row.country_code, row.country);
+      return { ...row, continent_key: meta.key, continent_label: meta.label, continent_icon: meta.icon };
+    });
+    const totalCountries = airportCountries.length;
+    const totalAirports = airportCountries.reduce((acc, curr) => acc + curr.airport_count, 0);
 
     return {
-      countries,
+      airportCountries,
       totalCountries,
       totalAirports,
     };
@@ -225,55 +232,43 @@ export class AirportModel {
 
   /**
    * Get all airports for a single country, resolved by country code or country name.
+   * Falls back to a simpler query without flight-activity detection if the flight-path
+   * tables (departure_flight_paths / arrival_flight_paths) haven't been migrated yet.
    */
   static async getAirportsByCountry(countryValue: string): Promise<Airport[]> {
     const normalizedValue = countryValue.trim();
     const isCountryCode = normalizedValue.length <= 3;
+    const whereClause = isCountryCode
+      ? '(country_code = $1 OR country = $1)'
+      : '(country_name = $1 OR country = $1)';
+    const param = isCountryCode ? normalizedValue.toUpperCase() : normalizedValue;
 
-    const query = `
+    const fullQuery = `
       WITH country_airports AS (
-        SELECT *
-        FROM airports
-        WHERE ${isCountryCode
-          ? '(country_code = $1 OR country = $1)'
-          : '(country_name = $1 OR country = $1)'}
+        SELECT * FROM airports WHERE ${whereClause}
       ),
       active_codes AS (
-        SELECT DISTINCT code
-        FROM (
-          SELECT origin AS code
-          FROM routes
+        SELECT DISTINCT code FROM (
+          SELECT origin AS code FROM routes
           WHERE origin IN (SELECT code FROM country_airports)
           UNION ALL
-          SELECT destination AS code
-          FROM routes
+          SELECT destination AS code FROM routes
           WHERE destination IN (SELECT code FROM country_airports)
           UNION ALL
-          SELECT dep_airport AS code
-          FROM departure_flight_paths
-          WHERE dep_airport IN (SELECT code FROM country_airports)
-            AND status != 'cancelled'
+          SELECT dep_airport AS code FROM departure_flight_paths
+          WHERE dep_airport IN (SELECT code FROM country_airports) AND status != 'cancelled'
           UNION ALL
-          SELECT arr_airport AS code
-          FROM departure_flight_paths
-          WHERE arr_airport IN (SELECT code FROM country_airports)
-            AND status != 'cancelled'
+          SELECT arr_airport AS code FROM departure_flight_paths
+          WHERE arr_airport IN (SELECT code FROM country_airports) AND status != 'cancelled'
           UNION ALL
-          SELECT dep_airport AS code
-          FROM arrival_flight_paths
-          WHERE dep_airport IN (SELECT code FROM country_airports)
-            AND status != 'cancelled'
+          SELECT dep_airport AS code FROM arrival_flight_paths
+          WHERE dep_airport IN (SELECT code FROM country_airports) AND status != 'cancelled'
           UNION ALL
-          SELECT arr_airport AS code
-          FROM arrival_flight_paths
-          WHERE arr_airport IN (SELECT code FROM country_airports)
-            AND status != 'cancelled'
-        ) active_pool
-        WHERE code IS NOT NULL
+          SELECT arr_airport AS code FROM arrival_flight_paths
+          WHERE arr_airport IN (SELECT code FROM country_airports) AND status != 'cancelled'
+        ) active_pool WHERE code IS NOT NULL
       )
-      SELECT
-        country_airports.*,
-        (active_codes.code IS NOT NULL) AS has_flight
+      SELECT country_airports.*, (active_codes.code IS NOT NULL) AS has_flight
       FROM country_airports
       LEFT JOIN active_codes ON active_codes.code = country_airports.code
       ORDER BY
@@ -284,7 +279,27 @@ export class AirportModel {
         country_airports.code
     `;
 
-    const result = await pool.query(query, [isCountryCode ? normalizedValue.toUpperCase() : normalizedValue]);
-    return result.rows;
+    try {
+      const result = await pool.query(fullQuery, [param]);
+      return result.rows;
+    } catch (err: any) {
+      // 42P01 = relation does not exist, 42703 = column does not exist
+      // Both indicate pending migrations; fall back to a simple query without flight activity.
+      if (err?.code === '42P01' || err?.code === '42703') {
+        const fallbackQuery = `
+          SELECT *, NULL::boolean AS has_flight
+          FROM airports
+          WHERE ${whereClause}
+          ORDER BY
+            airport_type = 'large_airport' DESC,
+            city NULLS LAST,
+            name,
+            code
+        `;
+        const fallback = await pool.query(fallbackQuery, [param]);
+        return fallback.rows;
+      }
+      throw err;
+    }
   }
 }

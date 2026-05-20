@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useDebounce } from '@/lib/hooks/use-debounce'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Plane, Clock, Calendar, Loader2, AlertTriangle, Leaf } from 'lucide-react'
 import { FlightSearchParams } from '@/components/flight-search-form'
 import { generateFlightsForAirline, Flight as MockFlight } from '@/services/mock/mock-flights'
-import { THAI_AIRLINES, PROVINCES, airportCodes } from '@/services/data/constants'
+import { THAI_AIRLINES, airportCodes } from '@/services/data/constants'
 // Note: getAirportCode is no longer needed - backend converts province names to airport codes automatically
 import { airlineCodes } from '@/services/data/airline-data'
 import { flightService } from '@/lib/services/flight-service'
@@ -51,7 +51,7 @@ const formatTime = (timestamp: string): string => {
 // Use same interface as mock for compatibility
 type Flight = {
   airline: string
-  airlineValue?: string // Store airline value for filtering
+  airlineCode: string // IATA code from backend – stable filter identifier
   flightNumber: string
   departureTime: string
   arrivalTime: string
@@ -239,67 +239,22 @@ export function AirlineFlights({ searchParams, selectedAirlines, onAirlinesChang
         })
       }
 
-      // Filter ตาม selectedAirlines ถ้ามี
+      // Filter ตาม selectedAirlines ถ้ามี (selectedAirlines contains IATA codes)
       if (debouncedSelectedAirlines.length > 0) {
-        const selectedAirlineCodes = debouncedSelectedAirlines
-          .map(value => airlineCodes[value])
-          .filter((code): code is string => !!code)
-
         filteredFlights = filteredFlights.filter(fp =>
-          selectedAirlineCodes.includes(fp.airline_code)
+          debouncedSelectedAirlines.includes(fp.airline_code)
         )
       }
 
       // Transform เป็น Flight format
       const transformedFlights: Flight[] = filteredFlights.map(fp => {
-        // ✅ Use airline_code from propFlightPrices to find matching airline
-        let airlineEntry = null
-        let airlineLabel = fp.airline_name_th || fp.airline_name || 'Unknown'
-        let airlineValue: string | undefined = undefined
-
-        if (fp.airline_code) {
-          // Find airline by code (reverse lookup from airlineCodes)
-          airlineEntry = THAI_AIRLINES.find(a => {
-            const code = airlineCodes[a.value]
-            return code === fp.airline_code
-          })
-
-          // If found, use it; otherwise use API response data directly
-          if (airlineEntry) {
-            airlineValue = airlineEntry.value
-            airlineLabel = airlineEntry.label
-          } else {
-            // Airline code exists in database but not in frontend constants (e.g., W1)
-            // Use API response data directly
-            airlineLabel = fp.airline_name_th || fp.airline_name || 'Unknown'
-            airlineValue = undefined // No matching value in constants
-          }
-        } else {
-          // Fallback: try to match by name if code is not available
-          airlineEntry = THAI_AIRLINES.find(a => {
-            const thaiNames: Record<string, string[]> = {
-              'thai-airways': ['การบินไทย', 'Thai Airways'],
-              'thai-airasia': ['ไทยแอร์เอเชีย', 'Thai AirAsia'],
-              'thai-lion-air': ['ไทยไลอ้อนแอร์', 'Thai Lion Air'],
-              'thai-vietjet': ['ไทยเวียดเจ็ทแอร์', 'Thai Vietjet Air'],
-              'bangkok-airways': ['บางกอกแอร์เวย์', 'Bangkok Airways'],
-              'nok-air': ['นกแอร์', 'Nok Air'],
-            }
-            return thaiNames[a.value]?.some(name =>
-              fp.airline_name_th?.includes(name) ||
-              fp.airline_name?.includes(name)
-            )
-          })
-          airlineLabel = airlineEntry?.label || fp.airline_name_th || fp.airline_name || 'Unknown'
-          airlineValue = airlineEntry?.value
-        }
-
-        // ✅ ใช้ UTC methods เพื่อแสดงวันที่ที่ถูกต้อง (ใช้ utility function)
+        // Always use backend fields for display – do not look up static map
+        const airlineLabel = fp.airline_name_th || fp.airline_name || fp.airline_code || 'Unknown'
         const dateStr = formatDateToUTCString(fp.departure_date) || ''
 
         return {
           airline: airlineLabel,
-          airlineValue,
+          airlineCode: fp.airline_code || '',
           flightNumber: fp.flight_number,
           departureTime: fp.departure_time,
           arrivalTime: fp.arrival_time,
@@ -351,18 +306,19 @@ export function AirlineFlights({ searchParams, selectedAirlines, onAirlinesChang
             ? THAI_AIRLINES.map(a => a.value)
             : debouncedSelectedAirlines
 
-          const mockFlights = airlinesToShow.flatMap(airline =>
+          const mockFlights = airlinesToShow.flatMap(airlineSlug =>
             generateFlightsForAirline(
-              airline,
+              airlineSlug,
               debouncedSearchParams.origin,
               debouncedSearchParams.destination,
               debouncedSearchParams.startDate,
               debouncedSearchParams.endDate
-            )
-          ).map(flight => ({
-            ...flight,
-            price: flight.price * passengerCount
-          }))
+            ).map(flight => ({
+              ...flight,
+              airlineCode: airlineCodes[airlineSlug] || airlineSlug,
+              price: flight.price * passengerCount,
+            }))
+          )
 
           // Check if request was aborted
           if (abortController.signal.aborted || !isMountedRef.current) {
@@ -379,12 +335,8 @@ export function AirlineFlights({ searchParams, selectedAirlines, onAirlinesChang
             // ✅ Backend automatically converts province/country names to airport codes
             // Send province names directly to backend (no need to convert)
 
-            // Convert selectedAirlines from values (thai-airways) to codes (TG) for backend
-            const selectedAirlineCodes = debouncedSelectedAirlines.length > 0
-              ? debouncedSelectedAirlines
-                .map(value => airlineCodes[value])
-                .filter((code): code is string => !!code) // Filter out undefined values
-              : []
+            // selectedAirlines already contains IATA codes – send directly to backend
+            const selectedAirlineCodes = debouncedSelectedAirlines
 
             console.log('🔍 Filtering airlines:', {
               selectedAirlines: debouncedSelectedAirlines,
@@ -422,46 +374,8 @@ export function AirlineFlights({ searchParams, selectedAirlines, onAirlinesChang
 
             // Transform API flights to Flight format
             const transformedFlights: Flight[] = apiFlights.map(fp => {
-              // ✅ Use airline_code from API response to find matching airline
-              // Backend now sends airline_code, airline_name, and airline_name_th
-              let airlineEntry = null
-              let airlineLabel = fp.airline_name_th || fp.airline_name || fp.airline
-              let airlineValue: string | undefined = undefined
-
-              if (fp.airline_code) {
-                // Find airline by code (reverse lookup from airlineCodes)
-                airlineEntry = THAI_AIRLINES.find(a => {
-                  const code = airlineCodes[a.value]
-                  return code === fp.airline_code
-                })
-
-                // If found, use it; otherwise use API response data directly
-                if (airlineEntry) {
-                  airlineValue = airlineEntry.value
-                  airlineLabel = airlineEntry.label
-                } else {
-                  // Airline code exists in database but not in frontend constants (e.g., W1)
-                  // Use API response data directly
-                  airlineLabel = fp.airline_name_th || fp.airline_name || fp.airline
-                  airlineValue = undefined // No matching value in constants
-                }
-              } else {
-                // Fallback: try to match by name if code is not available
-                airlineEntry = THAI_AIRLINES.find(a => {
-                  const thaiNames: Record<string, string[]> = {
-                    'thai-airways': ['การบินไทย', 'Thai Airways'],
-                    'thai-airasia': ['ไทยแอร์เอเชีย', 'Thai AirAsia'],
-                    'thai-lion-air': ['ไทยไลอ้อนแอร์', 'Thai Lion Air'],
-                    'thai-vietjet': ['ไทยเวียดเจ็ทแอร์', 'Thai Vietjet Air'],
-                    'bangkok-airways': ['บางกอกแอร์เวย์', 'Bangkok Airways'],
-                    'nok-air': ['นกแอร์', 'Nok Air'],
-                  }
-                  const names = thaiNames[a.value] || []
-                  return names.some(name => fp.airline.includes(name) || name.includes(fp.airline))
-                })
-                airlineLabel = airlineEntry?.label || fp.airline_name_th || fp.airline_name || fp.airline
-                airlineValue = airlineEntry?.value
-              }
+              // Always use backend fields for display – no static map lookup
+              const airlineLabel = fp.airline_name_th || fp.airline_name || fp.airline || fp.airline_code || 'Unknown'
 
               // Format duration (minutes to "Xชม. Yนาที")
               const hours = Math.floor(fp.duration / 60)
@@ -480,7 +394,7 @@ export function AirlineFlights({ searchParams, selectedAirlines, onAirlinesChang
 
               return {
                 airline: airlineLabel,
-                airlineValue, // Store airline value for filtering
+                airlineCode: fp.airline_code || '', // IATA code as stable identifier
                 flightNumber: fp.flightNumber,
                 departureTime: fp.departureTime,
                 arrivalTime: fp.arrivalTime,
@@ -509,10 +423,9 @@ export function AirlineFlights({ searchParams, selectedAirlines, onAirlinesChang
             // Filter flights by selected airlines (client-side filter as backup)
             let filteredFlights = transformedFlights
             if (debouncedSelectedAirlines.length > 0) {
-              filteredFlights = transformedFlights.filter(flight => {
-                // Check if flight's airline value is in selectedAirlines
-                return flight.airlineValue && debouncedSelectedAirlines.includes(flight.airlineValue)
-              })
+              filteredFlights = transformedFlights.filter(flight =>
+                debouncedSelectedAirlines.includes(flight.airlineCode)
+              )
               console.log(`🔍 Filtered ${filteredFlights.length} flights from ${transformedFlights.length} total (selected: ${debouncedSelectedAirlines.join(', ')})`)
             }
 
@@ -564,36 +477,34 @@ export function AirlineFlights({ searchParams, selectedAirlines, onAirlinesChang
     ? Math.min(...flights.map(flight => flight.price))
     : 0
 
-  // Group flights by airline (สำหรับแสดงจำนวนเที่ยวบิน)
-  const flightsByAirline: Record<string, Flight[]> = {}
-  flights.forEach(flight => {
-    if (!flightsByAirline[flight.airline]) {
-      flightsByAirline[flight.airline] = []
-    }
-    flightsByAirline[flight.airline].push(flight)
-  })
-
   // เรียงลำดับเที่ยวบินตามราคา (ถูกที่สุดก่อน)
   const sortedFlights = [...flights].sort((a, b) => a.price - b.price)
 
-  // Get flight count for each airline
-  const getFlightCount = (airlineValue: string): number => {
-    const airline = THAI_AIRLINES.find(a => a.value === airlineValue)
-    if (!airline) return 0
-    return flightsByAirline[airline.label]?.length || 0
-  }
+  // Derive unique airlines from loaded flights – no static mapping needed
+  const airlinesSidebar = useMemo(() => {
+    const map = new Map<string, { label: string; count: number }>()
+    flights.forEach(f => {
+      if (!f.airlineCode) return
+      const prev = map.get(f.airlineCode)
+      if (prev) { prev.count++ }
+      else { map.set(f.airlineCode, { label: f.airline, count: 1 }) }
+    })
+    return [...map.entries()]
+      .map(([code, { label, count }]) => ({ code, label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'en'))
+  }, [flights])
 
-  const toggleAirline = (airlineValue: string) => {
+  const toggleAirline = (code: string) => {
     if (!onAirlinesChange) return
-    const newSelected = selectedAirlines.includes(airlineValue)
-      ? selectedAirlines.filter(a => a !== airlineValue)
-      : [...selectedAirlines, airlineValue]
+    const newSelected = selectedAirlines.includes(code)
+      ? selectedAirlines.filter(a => a !== code)
+      : [...selectedAirlines, code]
     onAirlinesChange(newSelected)
   }
 
   const selectAllAirlines = () => {
     if (!onAirlinesChange) return
-    onAirlinesChange(THAI_AIRLINES.map(a => a.value))
+    onAirlinesChange(airlinesSidebar.map(a => a.code))
   }
 
   const deselectAllAirlines = () => {
@@ -614,53 +525,40 @@ export function AirlineFlights({ searchParams, selectedAirlines, onAirlinesChang
             <div className="mb-4">
               <h4 className="text-lg font-semibold mb-2">{'สายการบิน'}</h4>
               <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                {[...THAI_AIRLINES]
-                  .sort((a, b) => {
-                    const countA = getFlightCount(a.value)
-                    const countB = getFlightCount(b.value)
-
-                    // Priority 1: Airlines with flights come first
-                    if (countA > 0 && countB === 0) return -1
-                    if (countA === 0 && countB > 0) return 1
-
-                    // Priority 2: Alphabetical order
-                    return a.label.localeCompare(b.label)
-                  })
-                  .map((airline) => {
-                    const flightCount = getFlightCount(airline.value)
-                    const airlineImage = getAirlineImage(airline.label)
-                    return (
-                      <div key={airline.value} className="flex items-center space-x-2 min-h-[2.5rem]">
-                        <Checkbox
-                          id={airline.value}
-                          checked={selectedAirlines.includes(airline.value)}
-                          onCheckedChange={() => toggleAirline(airline.value)}
+                {airlinesSidebar.map(({ code, label, count }) => {
+                  const airlineImage = getAirlineImage(label)
+                  return (
+                    <div key={code} className="flex items-center space-x-2 min-h-[2.5rem]">
+                      <Checkbox
+                        id={code}
+                        checked={selectedAirlines.includes(code)}
+                        onCheckedChange={() => toggleAirline(code)}
+                      />
+                      <label
+                        htmlFor={code}
+                        className="text-sm font-medium leading-none cursor-pointer flex items-center gap-2 flex-1"
+                      >
+                        <img
+                          src={airlineImage}
+                          alt={label}
+                          className="w-6 h-6 object-cover flex-shrink-0 rounded-full bg-muted shadow-sm"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement
+                            if (!target.src.endsWith('/placeholder-logo.png')) {
+                              target.src = `${basePath}/placeholder-logo.png`
+                            }
+                          }}
                         />
-                        <label
-                          htmlFor={airline.value}
-                          className="text-sm font-medium leading-none cursor-pointer flex items-center gap-2 flex-1"
-                        >
-                          <img
-                            src={airlineImage}
-                            alt={airline.label}
-                            className="w-6 h-6 object-cover flex-shrink-0 rounded-full bg-muted shadow-sm"
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement
-                              if (!target.src.endsWith('/placeholder-logo.png')) {
-                                target.src = `${basePath}/placeholder-logo.png`
-                              }
-                            }}
-                          />
-                          <span className="truncate max-w-[140px]">{airline.label}</span>
-                          {flightCount > 0 && (
-                            <span className="text-xs text-muted-foreground ml-auto">
-                              ({flightCount})
-                            </span>
-                          )}
-                        </label>
-                      </div>
-                    )
-                  })}
+                        <span className="truncate max-w-[140px]">{label}</span>
+                        {count > 0 && (
+                          <span className="text-xs text-muted-foreground ml-auto">
+                            ({count})
+                          </span>
+                        )}
+                      </label>
+                    </div>
+                  )
+                })}
               </div>
             </div>
             <div className="flex gap-2 pt-4 border-t">

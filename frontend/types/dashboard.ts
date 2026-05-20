@@ -104,7 +104,7 @@ export interface Top5Data {
 }
 
 // --- Drill-Down Dashboard Types ---
-export type DrillLevel = 'world' | 'continent' | 'country' | 'airport';
+export type DrillLevel = 'world' | 'continent' | 'country' | 'airport' | 'airline';
 export type TimeMode = 'wow' | 'mom' | 'yoy';
 
 export interface KPICard {
@@ -151,6 +151,7 @@ export interface ContinentData {
 export interface CountryData {
   flag: string;
   name: string;
+  countryCode?: string | null;
   airports: number;
   flights: number;
   delta: string;
@@ -258,6 +259,10 @@ export type AirportInfo = MKAirport;
 
 /** Per-continent detail data — plain objects, no JSX */
 export interface ContinentDetailData {
+  totalFlights: number;
+  totalDeltaFlights: number;
+  totalDeltaPercent: number;
+  totalDeltaText: string;
   countryCount: string;
   busiestCountry: { flag: string; nameTh: string };
   busiestDelta: string;

@@ -58,11 +58,9 @@ export class FlightCrossCheckService {
         if (result.newFlights.length > 0) {
             const { FlightModel } = await import('../models/Flight');
             const newFlightRecords: any[] = [];
-            
+
             for (const f of result.newFlights) {
                 const airlineCode = f.flight.substring(0, 2).toUpperCase();
-                const airline = await flightCrossCheckRepository.getAirlineByCode(airlineCode);
-                if (!airline) continue;
 
                 // Determine origin/destination based on direction name or new otherAirport field
                 const otherAirport = f.otherAirport || (f.direction.match(/^([A-Z0-9]{3})/) ? f.direction.match(/^([A-Z0-9]{3})/)![1] : '');
@@ -70,12 +68,13 @@ export class FlightCrossCheckService {
                     console.log(`[DEBUG] Missing other airport for flight ${f.flight}. Direction: ${f.direction}`);
                     continue;
                 }
-                
+
                 const originCode = f.direction === 'arrival' ? otherAirport : airportCode;
                 const destinationCode = f.direction === 'arrival' ? airportCode : otherAirport;
 
-                const routeId = await flightCrossCheckRepository.getRouteId(originCode, destinationCode);
-                if (!routeId) continue;
+                const airline = await FlightModel.getOrCreateAirline(airlineCode, airlineCode, airlineCode);
+                const route = await FlightModel.getOrCreateRoute(originCode, destinationCode, 0, 0);
+                const routeId = route.id;
 
                 const durationMinutes = this.parseDurationToMinutes(f.duration);
                 

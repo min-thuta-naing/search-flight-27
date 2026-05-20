@@ -25,10 +25,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Install system dependencies for the flight scraper
-RUN apk add --no-cache \
+# mkdir -p /usr/share/man prevents postgresql-common trigger from failing (it runs find /usr/share/man)
+# py3-pip removed: bundled with python3 in Alpine 3.21+
+RUN mkdir -p /usr/share/man && \
+    apk update && \
+    apk add --no-cache \
     postgresql-client \
     python3 \
-    py3-pip \
     chromium \
     chromium-chromedriver \
     xvfb \

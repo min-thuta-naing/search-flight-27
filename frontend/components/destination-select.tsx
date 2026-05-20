@@ -109,7 +109,7 @@ export function DestinationSelect({
 
             try {
                 const response = await airportApi.getAirportCountries()
-                const nextGroups = response.countries.map((country: AirportCountrySummary) => ({
+                const nextGroups = response.airportCountries.map((country: AirportCountrySummary) => ({
                     country: country.country,
                     countryCode: country.country_code,
                     airportCount: country.airport_count,

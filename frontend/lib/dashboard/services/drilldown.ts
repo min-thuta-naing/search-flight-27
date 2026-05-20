@@ -15,6 +15,20 @@ import type {
   CountryAirlineShare,
 } from '@/types/dashboard';
 import { statisticsApi } from '@/lib/api/statistics-api';
+export type {
+  DashboardDateBoundsResponse,
+  DashboardCacheStatusResponse,
+  DashboardSummaryResponse,
+  DashboardTopRanksResponse,
+  DashboardCountryOverviewResponse,
+  DashboardCountryFlowMapResponse,
+  DashboardAirportOverviewResponse,
+  DashboardAirportInsightsResponse,
+  DashboardTopCountriesResponse,
+  DashboardTopAirportsResponse,
+  DashboardTopDestinationsResponse,
+  DashboardWorldSnapshotResponse,
+} from '@/lib/api/statistics-api';
 import {
   ROUTES,
   ARRIVALS,
@@ -66,6 +80,70 @@ export async function getContinentTrends(
   return statisticsApi.getDashboardContinentTrends(continentName, options);
 }
 
+export async function getCountryOverview(
+  countryName: string,
+  options?: Parameters<typeof statisticsApi.getDashboardCountryOverview>[1],
+) {
+  return statisticsApi.getDashboardCountryOverview(countryName, options);
+}
+
+export async function getCountryFlowMap(
+  countryName: string,
+  options?: Parameters<typeof statisticsApi.getDashboardCountryFlowMap>[1],
+) {
+  return statisticsApi.getDashboardCountryFlowMap(countryName, options);
+}
+
+// ── Dashboard/World level (date bounds, cache, summaries, ranks, rankings) ──
+
+export async function getDashboardDateBounds(
+  signal?: AbortSignal,
+) {
+  return statisticsApi.getDashboardDateBounds(signal);
+}
+
+export async function getDashboardCacheStatus(
+  signal?: AbortSignal,
+) {
+  return statisticsApi.getDashboardCacheStatus(signal);
+}
+
+export async function getDashboardSummary(
+  options?: Parameters<typeof statisticsApi.getDashboardSummary>[0],
+) {
+  return statisticsApi.getDashboardSummary(options);
+}
+
+export async function getDashboardTopRanks(
+  options?: Parameters<typeof statisticsApi.getDashboardTopRanks>[0],
+) {
+  return statisticsApi.getDashboardTopRanks(options);
+}
+
+export async function getDashboardTopCountries(
+  options?: Parameters<typeof statisticsApi.getDashboardTopCountries>[0],
+) {
+  return statisticsApi.getDashboardTopCountries(options);
+}
+
+export async function getDashboardTopAirports(
+  options?: Parameters<typeof statisticsApi.getDashboardTopAirports>[0],
+) {
+  return statisticsApi.getDashboardTopAirports(options);
+}
+
+export async function getDashboardTopDestinations(
+  options?: Parameters<typeof statisticsApi.getDashboardTopDestinations>[0],
+) {
+  return statisticsApi.getDashboardTopDestinations(options);
+}
+
+export async function getDashboardWorldSnapshot(
+  options?: Parameters<typeof statisticsApi.getDashboardWorldSnapshot>[0],
+) {
+  return statisticsApi.getDashboardWorldSnapshot(options);
+}
+
 // ── Country level ──
 
 export function getCountryAirports(countryName: string): AirportInfo[] {
@@ -111,6 +189,67 @@ export function getCountryAirlineMarketShare(countryName: string): CountryAirlin
       color: airline.color,
     };
   });
+}
+
+export async function getAirportOverview(
+  airportCode: string,
+  options?: Parameters<typeof statisticsApi.getDashboardAirportOverview>[1],
+) {
+  return statisticsApi.getDashboardAirportOverview(airportCode, options);
+}
+
+export async function getAirportInsights(
+  airportCode: string,
+  options?: Parameters<typeof statisticsApi.getDashboardAirportInsights>[1],
+) {
+  return statisticsApi.getDashboardAirportInsights(airportCode, options);
+}
+
+const THAI_MONTH_LABELS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'] as const;
+
+export interface AirportTrendSeries {
+  daily: Array<{ date: string; departureFlights: number; arrivalFlights: number; flights: number; cancelledFlights: number; delta: number | null }>;
+  monthly: Array<{ month: number; departureFlights: number; arrivalFlights: number; flights: number; cancelledFlights: number }>;
+  monthLabels: string[];
+}
+
+export async function getAirportTrends(
+  airportCode: string,
+  options?: Parameters<typeof statisticsApi.getDashboardAirportTrends>[1],
+): Promise<AirportTrendSeries> {
+  const response = await statisticsApi.getDashboardAirportTrends(airportCode, options);
+  const monthly = Array.from({ length: 12 }, (_, idx) => {
+    const monthNumber = idx + 1;
+    const point = response.monthly.find((row) => row.month === monthNumber);
+    return point
+      ? {
+          month: monthNumber,
+          departureFlights: point.departureFlights ?? Math.round(point.flights * 0.5),
+          arrivalFlights: point.arrivalFlights ?? (point.flights - Math.round(point.flights * 0.5)),
+          flights: point.flights,
+          cancelledFlights: point.cancelledFlights ?? 0,
+        }
+      : {
+          month: monthNumber,
+          departureFlights: 0,
+          arrivalFlights: 0,
+          flights: 0,
+          cancelledFlights: 0,
+        };
+  });
+
+  return {
+    daily: response.daily.map((point) => ({
+      date: point.date,
+      departureFlights: point.departureFlights ?? Math.round(point.flights * 0.5),
+      arrivalFlights: point.arrivalFlights ?? (point.flights - Math.round(point.flights * 0.5)),
+      flights: point.flights,
+      cancelledFlights: point.cancelledFlights ?? 0,
+      delta: point.deltaPercent,
+    })),
+    monthly,
+    monthLabels: [...THAI_MONTH_LABELS],
+  };
 }
 
 // ── Airport level ──

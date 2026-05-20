@@ -27,14 +27,14 @@ services:
       dockerfile: Dockerfile
     container_name: flight_search_backend
     restart: unless-stopped
-    mem_limit: 2048M
+    mem_limit: 4096M
     mem_reservation: 512M
     env_file:
       - ./backend/.env
     environment:
       PORT: 3001
       NODE_ENV: production
-      DB_HOST: postgres
+      DB_HOST: host.docker.internal
       DB_PORT: 5432
       DB_NAME: flight_search
       DB_USER: postgres
@@ -44,6 +44,8 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       RATE_LIMIT_WINDOW_MS: 60000
       RATE_LIMIT_MAX_REQUESTS: 1000
+      NODE_OPTIONS: "--max-old-space-size=3072"
+      DASHBOARD_CACHE_REFRESH_MAX_RSS_MB: "3500"
       ENABLE_SCHEDULED_JOBS: "true"
       AUTO_IMPORT_FLIGHTS: "true"
       AUTO_IMPORT_INTL_FLIGHTS: "false"
@@ -51,9 +53,6 @@ services:
       AUTO_SYNC_AIRPORTS: "true"
     ports:
       - "3001:3001"
-    depends_on:
-      postgres:
-        condition: service_healthy
     volumes:
       - ./backend/data:/app/data
     networks:
@@ -91,5 +90,3 @@ volumes:
 networks:
   flight_search_network:
     driver: bridge
-
-

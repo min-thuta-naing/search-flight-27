@@ -11,9 +11,28 @@ import {
   getDashboardTopRoutesContinent,
   getDashboardContinentTrends,
   getDashboardTopRanks,
+  getDashboardCountryOverview,
+  getDashboardCountryAirlineMarket,
+  getDashboardCountryFlowMap,
+  getDashboardAirportOverview,
+  getDashboardAirportInsights,
+  getDashboardAirportTrends,
   getDashboardTopCountries,
   getDashboardTopAirports,
   getDashboardTopDestinations,
+  getDashboardWorldSnapshot,
+  getDashboardAirlines,
+  getDashboardAirlineDetail,
+  getDashboardAirlineTrend,
+  getDashboardAirlineOriginAirports,
+  getDashboardAirlineDestAirports,
+  getDashboardAirlineDestCountries,
+  getDashboardAirlineHomeBase,
+  clearDashboardCache,
+  triggerDashboardCacheRefresh,
+  getDashboardDateBounds,
+  getDashboardCacheStatus,
+  getDashboardCacheKeyPreview,
 } from '../controllers/statisticsController';
 
 const router = Router();
@@ -51,6 +70,24 @@ router.get('/dashboard-continent-trends', getDashboardContinentTrends);
 // Get top rank tables for the world dashboard
 router.get('/dashboard-top-ranks', getDashboardTopRanks);
 
+// Get country overview data for country drill-down dashboard
+router.get('/dashboard-country-overview', getDashboardCountryOverview);
+
+// Get airline market share for a country (standalone panel query)
+router.get('/dashboard-country-airline-market', getDashboardCountryAirlineMarket);
+
+// Get country flow map data for country drill-down dashboard
+router.get('/dashboard-country-flow-map', getDashboardCountryFlowMap);
+
+// Get airport overview data for airport drill-down dashboard
+router.get('/dashboard-airport-overview', getDashboardAirportOverview);
+
+// Get airport insights data for airport drill-down dashboard panels
+router.get('/dashboard-airport-insights', getDashboardAirportInsights);
+
+// Get airport trend data for airport drill-down charts
+router.get('/dashboard-airport-trends', getDashboardAirportTrends);
+
 // Get top countries for the world dashboard
 router.get('/dashboard-top-countries', getDashboardTopCountries);
 
@@ -59,6 +96,45 @@ router.get('/dashboard-top-airports', getDashboardTopAirports);
 
 // Get top destinations for the world dashboard
 router.get('/dashboard-top-destinations', getDashboardTopDestinations);
+
+// Consolidated world snapshot — summary + top-ranks + top-destinations in a single request
+router.get('/dashboard-world-snapshot', getDashboardWorldSnapshot);
+
+// Get paginated airline overview for the dashboard airlines panel
+router.get('/dashboard-airlines', getDashboardAirlines);
+
+// Get full detail for a single airline drill-down
+router.get('/dashboard-airline-detail', getDashboardAirlineDetail);
+
+// Get daily flight frequency trend for an airline
+router.get('/dashboard-airline-trend', getDashboardAirlineTrend);
+
+// Get paginated origin airports for an airline
+router.get('/dashboard-airline-origin-airports', getDashboardAirlineOriginAirports);
+
+// Get paginated destination airports for an airline
+router.get('/dashboard-airline-dest-airports', getDashboardAirlineDestAirports);
+
+// Get paginated destination countries for an airline
+router.get('/dashboard-airline-dest-countries', getDashboardAirlineDestCountries);
+
+// Get airline home base (top origin airport + country + continent) for StatusLine pre-population
+router.get('/dashboard-airline-home-base', getDashboardAirlineHomeBase);
+
+// Get real min/max data bounds for dashboard preset calculations
+router.get('/dashboard-date-bounds', getDashboardDateBounds);
+
+// Read dashboard cache status
+router.get('/dashboard-cache/status', getDashboardCacheStatus);
+
+// Preview preload keys vs cached state for all world presets (no preload needed)
+router.get('/dashboard-cache/key-preview', getDashboardCacheKeyPreview);
+
+// Clear dashboard query cache manually
+router.post('/dashboard-cache/clear', clearDashboardCache);
+
+// Trigger dashboard cache refresh (preload) in the background
+router.post('/dashboard-cache/refresh', triggerDashboardCacheRefresh);
 
 export default router;
 

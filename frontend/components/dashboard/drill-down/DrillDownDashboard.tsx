@@ -1,41 +1,157 @@
 'use client';
 
-import { useState, useCallback, createContext, useContext, useEffect } from 'react';
+import React, { useState, useCallback, createContext, useContext, useEffect, useRef } from 'react';
+import { ArrowUp } from 'lucide-react';
 import type { DrillLevel, TimeMode, ContinentData, CountryData, AirportInfo } from '@/types/dashboard';
 import { growthDeltaTypeFromPct, growthPillSurfaceClasses, growthTextClass } from '@/lib/dashboard/drill-down-data';
+import { usePreloadStatus } from '@/lib/dashboard/preload/usePreloadStatus';
+import { getDashboardAirlineHomeBase, type DashboardAirlineHomeBaseResponse } from '@/lib/api/statistics-api';
 import { readSharedRangePreset, writeSharedRangePreset } from '@/lib/dashboard/range-preset-store';
+import { readPersistedCustomRange, writePersistedCustomRange } from '@/lib/dashboard/filter-store';
+import { Button } from '@/components/ui/button';
 import { WorldView } from './WorldView';
 import { ContinentView } from './ContinentView';
 import { CountryView } from './CountryView';
 import { AirportView } from './AirportView';
+import { AirlineView } from './AirlineView';
+
+const LEVEL_ORDER: DrillLevel[] = ['world', 'continent', 'country', 'airport', 'airline'];
+
+// Explicit data-query scope: set at drillTo time from the active level + merged selections.
+// Never derived by scanning deepest non-null selection — that leaks stale values after back-nav.
+export interface QueryScope { level: DrillLevel; value: string; }
+
+function toQueryScope(level: DrillLevel, sel: SelectionState): QueryScope {
+  if (level === 'continent') return { level, value: sel.continent?.name ?? '' };
+  if (level === 'country')   return { level, value: sel.country?.countryCode ?? sel.country?.name ?? '' };
+  if (level === 'airport')   return { level, value: sel.airport?.iata ?? '' };
+  if (level === 'airline') {
+    if (sel.airport?.iata) return { level: 'airport', value: sel.airport.iata };
+    if (sel.country) return { level: 'country', value: sel.country.countryCode ?? sel.country.name ?? '' };
+    if (sel.continent) return { level: 'continent', value: sel.continent.name };
+  }
+  return { level: 'world', value: '' };
+}
+
+function selectionsEqual(a: SelectionState, b: SelectionState): boolean {
+  return (
+    a.continent?.name === b.continent?.name &&
+    (a.country?.countryCode ?? a.country?.name) === (b.country?.countryCode ?? b.country?.name) &&
+    a.airport?.iata === b.airport?.iata &&
+    a.airline?.id === b.airline?.id
+  );
+}
+
+function scopeEqual(a: QueryScope, b: QueryScope): boolean {
+  return a.level === b.level && a.value === b.value;
+}
+
+// Returns a copy of sel with geo fields deeper than scope.level removed.
+// Used on the airline fallback path so the status line never shows stale
+// airport/country breadcrumbs from a previous navigation branch.
+function selectionsUpToScope(sel: SelectionState, scope: QueryScope): SelectionState {
+  const idx = LEVEL_ORDER.indexOf(scope.level);
+  return {
+    airline:   sel.airline,
+    continent: idx >= 1 ? sel.continent : undefined,
+    country:   idx >= 2 ? sel.country   : undefined,
+    airport:   idx >= 3 ? sel.airport   : undefined,
+  };
+}
 
 // ── Context for drill-down state ──
 interface SelectionState {
   continent?: ContinentData;
   country?: CountryData;
   airport?: AirportInfo;
+  airline?: { id: number; name: string } | null;
+}
+
+function buildAirlinePrefillSelections(
+  base: SelectionState,
+  homeBase: DashboardAirlineHomeBaseResponse,
+): SelectionState {
+  const next: SelectionState = {
+    airline: base.airline ?? null,
+  };
+
+  if (homeBase.continentName) {
+    next.continent = {
+      name: homeBase.continentName,
+      icon: homeBase.continentIcon || '\u{1F310}',
+      airports: '0',
+      flights: 0,
+      delta: '—',
+      yoy: 0,
+      yoyN: 0,
+      mom: 0,
+      momN: 0,
+      wow: 0,
+      wowN: 0,
+    };
+  }
+
+  if (homeBase.countryName) {
+    next.country = {
+      flag: homeBase.flag || '\u{1F3F3}\u{FE0F}',
+      name: homeBase.countryName,
+      countryCode: homeBase.countryCode || null,
+      airports: 0,
+      flights: 0,
+      delta: '—',
+      deltaN: 0,
+      bar: 0,
+    };
+  }
+
+  if (homeBase.iata) {
+    next.airport = {
+      iata: homeBase.iata,
+      name: homeBase.airportName || homeBase.iata,
+      flights: 0,
+      routes: 0,
+      airlines: 0,
+      color: 'var(--chart-1)',
+    };
+  }
+
+  return next;
 }
 
 export type RangePreset = 'focus' | '7' | '30' | 'all' | '90' | '180' | '365';
+
+export interface DrillOptions {
+  /** When false, preserve the current navigation path instead of replacing it with the
+   *  airline's home base. Default true — jump cut is the standard airline drill behavior. */
+  jumpCut?: boolean;
+}
 
 interface DrillDownContextValue {
   level: DrillLevel;
   timeMode: TimeMode;
   rangePreset: RangePreset;
-  drillTo: (level: DrillLevel, selection?: SelectionState) => void;
+  queryScope: QueryScope;
+  drillTo: (level: DrillLevel, selection?: SelectionState, options?: DrillOptions) => void;
   setTimeMode: (mode: TimeMode) => void;
   setRangePreset: (preset: RangePreset) => void;
   selections: SelectionState;
+  customDateRange: { from: Date; to: Date } | undefined;
+  setCustomDateRange: (range: { from: Date; to: Date } | undefined) => void;
+  resetFilters: () => void;
 }
 
 const DrillDownContext = createContext<DrillDownContextValue>({
   level: 'world',
   timeMode: 'yoy',
   rangePreset: 'focus',
+  queryScope: { level: 'world', value: '' },
   drillTo: () => {},
   setTimeMode: () => {},
   setRangePreset: () => {},
   selections: {},
+  customDateRange: undefined,
+  setCustomDateRange: () => {},
+  resetFilters: () => {},
 });
 
 export function useDrillDown() {
@@ -46,57 +162,231 @@ export function useDrillDown() {
 export function DrillDownDashboard() {
   const [level, setLevel] = useState<DrillLevel>('world');
   const [timeMode, setTimeMode] = useState<TimeMode>('yoy');
-  const [rangePreset, setRangePreset] = useState<RangePreset>('focus');
+  const [rangePresetValue, setRangePresetValue] = useState<RangePreset>('focus');
+  const [customDateRange, setCustomDateRangeState] = useState<{ from: Date; to: Date } | undefined>(undefined);
   const [selections, setSelections] = useState<SelectionState>({});
+  const [queryScope, setQueryScope] = useState<QueryScope>({ level: 'world', value: '' });
+  // Refs so handlers can read current state synchronously without stale closures.
+  const levelRef = useRef<DrillLevel>('world');
+  const selectionsRef = useRef<SelectionState>({});
+  const queryScopeRef = useRef<QueryScope>({ level: 'world', value: '' });
+  const airlinePrefillSeqRef = useRef(0);
+  const { cacheStatus, bootstrapError } = usePreloadStatus();
+  const [dismissedFailure, setDismissedFailure] = useState(false);
 
-  const LEVEL_ORDER: DrillLevel[] = ['world', 'continent', 'country', 'airport'];
+  // Additive selections (sticky path/history for breadcrumb UX).
+  // queryScope is set from the target level + merged selections at call time so it is always
+  // exact — never inferred from the deepest non-null selection in history.
+  // For 'airline' drills the scope carries over from the prior geo level.
+  const buildMergedSelections = useCallback((selection?: SelectionState) => {
+    return selection ? { ...selectionsRef.current, ...selection } : selectionsRef.current;
+  }, []);
 
-  const drillTo = useCallback((newLevel: DrillLevel, selection?: SelectionState) => {
-    setLevel(newLevel);
-    setSelections((prev) => {
-      const newIdx = LEVEL_ORDER.indexOf(newLevel);
-      // When drilling backwards, clear forward selections
-      const cleaned: SelectionState = {};
-      if (newIdx >= 1 && prev.continent) cleaned.continent = prev.continent;
-      if (newIdx >= 2 && prev.country) cleaned.country = prev.country;
-      if (newIdx >= 3 && prev.airport) cleaned.airport = prev.airport;
-      // Merge in any new selection
-      return { ...cleaned, ...selection };
-    });
+  const commitDrill = useCallback((newLevel: DrillLevel, merged: SelectionState, explicitScope?: QueryScope) => {
+    const scope = explicitScope ?? toQueryScope(newLevel, merged);
+
+    const levelChanged = newLevel !== levelRef.current;
+    const selectionsChanged = !selectionsEqual(merged, selectionsRef.current);
+    const scopeChanged = !scopeEqual(scope, queryScopeRef.current);
+
+    if (!levelChanged && !selectionsChanged && !scopeChanged) return;
+
+    if (levelChanged) {
+      levelRef.current = newLevel;
+      setLevel(newLevel);
+    }
+    if (selectionsChanged) {
+      selectionsRef.current = merged;
+      setSelections(merged);
+    }
+    if (scopeChanged) {
+      queryScopeRef.current = scope;
+      setQueryScope(scope);
+    }
+
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
+  const drillTo = useCallback((newLevel: DrillLevel, selection?: SelectionState, options?: DrillOptions) => {
+    const merged = buildMergedSelections(selection);
+
+    // Guard: nothing to do if level and selections are already identical.
+    if (newLevel === levelRef.current && selectionsEqual(merged, selectionsRef.current)) return;
+
+    // Jump-cut: the default for airline drills. Fetches the airline's home base and replaces
+    // the current geo context. Pass { jumpCut: false } to preserve the navigation path instead.
+    if (options?.jumpCut !== false && newLevel === 'airline' && merged.airline?.id) {
+      const requestSeq = ++airlinePrefillSeqRef.current;
+      // Freeze the active geo scope synchronously so concurrent navigations don't corrupt it.
+      const airlineScope = queryScopeRef.current;
+
+      void (async () => {
+        try {
+          const homeBase = await getDashboardAirlineHomeBase({ airlineId: merged.airline!.id });
+          if (requestSeq !== airlinePrefillSeqRef.current) return;
+          commitDrill('airline', buildAirlinePrefillSelections(merged, homeBase), airlineScope);
+        } catch {
+          if (requestSeq !== airlinePrefillSeqRef.current) return;
+          commitDrill('airline', selectionsUpToScope(merged, airlineScope), airlineScope);
+        }
+      })();
+
+      return;
+    }
+
+    // Default: preserve the current navigation path as-is.
+    commitDrill(newLevel, merged);
+  }, [buildMergedSelections, commitDrill]);
+
   useEffect(() => {
     const stored = readSharedRangePreset('focus');
-    if (stored !== rangePreset) {
-      setRangePreset(stored);
+    if (stored !== rangePresetValue) {
+      setRangePresetValue(stored);
+    }
+    const persisted = readPersistedCustomRange();
+    if (persisted) {
+      setCustomDateRangeState(persisted);
     }
     // Run once on mount to avoid SSR/CSR mismatch from sessionStorage.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    writeSharedRangePreset(rangePreset);
-  }, [rangePreset]);
+    writeSharedRangePreset(rangePresetValue);
+  }, [rangePresetValue]);
+
+  const handleSetRangePreset = useCallback((preset: RangePreset) => {
+    setRangePresetValue(preset);
+    setCustomDateRangeState(undefined);
+    writePersistedCustomRange(null);
+  }, []);
+
+  const setCustomDateRange = useCallback((range: { from: Date; to: Date } | undefined) => {
+    setCustomDateRangeState(range);
+    writePersistedCustomRange(range ?? null);
+  }, []);
+
+  const resetFilters = useCallback(() => {
+    setRangePresetValue('focus');
+    setCustomDateRangeState(undefined);
+    writePersistedCustomRange(null);
+    writeSharedRangePreset('focus');
+  }, []);
+
+  const preloadPhase = cacheStatus?.preload.phase ?? 'idle';
+  const preloadMinutes = cacheStatus?.preload.durationMinutes ?? 0;
+  const elapsedMinutes = cacheStatus?.preload.startedAt
+    ? Math.max(0, (Date.now() - Date.parse(cacheStatus.preload.startedAt)) / 60000)
+    : 0;
+  const isPreloadReady = preloadPhase === 'completed';
+  const isPreloadFailed = preloadPhase === 'failed';
+  const showBootstrapGate = !isPreloadReady && !(isPreloadFailed && dismissedFailure);
 
   return (
-    <DrillDownContext.Provider value={{ level, timeMode, rangePreset, drillTo, setTimeMode, setRangePreset, selections }}>
+    <DrillDownContext.Provider value={{ level, timeMode, rangePreset: rangePresetValue, queryScope, drillTo, setTimeMode, setRangePreset: handleSetRangePreset, selections, customDateRange, setCustomDateRange, resetFilters }}>
       <div className="space-y-4">
-        {/* Title centered */}
-        {/* <h1 className="text-xl font-bold text-center">ภาพรวมการค้นหาเที่ยวบิน</h1> */}
+        {showBootstrapGate ? (
+          <div className="rounded-2xl border border-border bg-card p-6 shadow-sm">
+            <div className="space-y-4">
+              <div className="space-y-1 text-center">
+                <div className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Preloading dashboard data
+                </div>
+                <div className="text-2xl font-bold">กำลังเตรียมข้อมูลก่อนใช้งาน</div>
+                <div className="text-sm text-muted-foreground">
+                  {preloadPhase === 'running'
+                    ? `ผ่านไปแล้วประมาณ ${elapsedMinutes.toFixed(1)} นาที`
+                    : 'รอ backend เตรียม cache ให้พร้อม'}
+                </div>
+              </div>
 
-        {/* Status line centered */}
-        <div className="flex justify-center">
-          <StatusLine />
-        </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl bg-muted/40 p-4 text-center">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">สถานะ</div>
+                  <div className="mt-1 text-lg font-semibold">{preloadPhase}</div>
+                </div>
+                <div className="rounded-xl bg-muted/40 p-4 text-center">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">เวลารวม</div>
+                  <div className="mt-1 text-lg font-semibold">{preloadMinutes.toFixed(1)} นาที</div>
+                </div>
+                <div className="rounded-xl bg-muted/40 p-4 text-center">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">cached entries</div>
+                  <div className="mt-1 text-lg font-semibold">{cacheStatus?.totalEntries ?? 0}</div>
+                </div>
+              </div>
 
-        {/* Level views */}
-        {level === 'world' && <WorldView />}
-        {level === 'continent' && <ContinentView />}
-        {level === 'country' && <CountryView />}
-        {level === 'airport' && <AirportView />}
+              {isPreloadFailed ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                  <div className="font-semibold">Preload failed</div>
+                  <div className="mt-1 break-words">{bootstrapError ?? cacheStatus?.preload.error ?? 'Unknown error'}</div>
+                  <button
+                    type="button"
+                    onClick={() => setDismissedFailure(true)}
+                    className="mt-3 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700"
+                  >
+                    Continue anyway
+                  </button>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+                  Dashboard is locked until preload completes.
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Status line centered */}
+            <div className="flex justify-center">
+              <StatusLine />
+            </div>
+
+            {/* Level views */}
+            {level === 'world' && <WorldView />}
+            {level === 'continent' && <ContinentView />}
+            {level === 'country' && <CountryView />}
+            {level === 'airport' && <AirportView />}
+            {level === 'airline' && <AirlineView />}
+
+            <DrillScrollToTopButton />
+          </>
+        )}
       </div>
     </DrillDownContext.Provider>
+  );
+}
+
+function DrillScrollToTopButton() {
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const threshold = window.innerHeight * 0.45;
+      setIsVisible(window.scrollY >= threshold);
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll();
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  if (!isVisible) return null;
+
+  return (
+    <div className="fixed bottom-8 right-8 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
+      <Button
+        type="button"
+        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        size="icon"
+        className="h-12 w-12 rounded-full shadow-lg hover:shadow-xl"
+        aria-label="เลื่อนขึ้นบนสุด"
+      >
+        <ArrowUp className="h-5 w-5" />
+      </Button>
+    </div>
   );
 }
 
@@ -137,32 +427,46 @@ function StatusLine() {
   const steps = [
     {
       id: 'world' as DrillLevel,
-      display: '\u0e42\u0e25\u0e01',
+      display: 'โลก',
       icon: '\u{1F30E}',
       step: 1,
     },
     {
       id: 'continent' as DrillLevel,
-      display: selections.continent?.name || '\u0e17\u0e27\u0e35\u0e1b',
+      display: selections.continent?.name || 'ทวีป',
       icon: selections.continent?.icon || '\u{1F310}',
       step: 2,
     },
     {
       id: 'country' as DrillLevel,
-      display: selections.country?.name || '\u0e1b\u0e23\u0e30\u0e40\u0e17\u0e28',
-      icon: selections.country?.flag || '\u{1F3F3}\uFE0F',
+      display: selections.country?.name || 'ประเทศ',
+      icon: selections.country?.flag || '\u{1F3F3}️',
       step: 3,
     },
     {
       id: 'airport' as DrillLevel,
-      display: selections.airport?.iata || '\u0e2a\u0e19\u0e32\u0e21\u0e1a\u0e34\u0e19',
+      display: selections.airport?.iata || 'สนามบิน',
       icon: '\u{1F6EB}',
       step: 4,
     },
+    {
+      id: 'airline' as DrillLevel,
+      display: selections.airline?.name || 'สายการบิน',
+      icon: '✈️',
+      step: 5,
+    },
   ];
 
-  const LEVELS: DrillLevel[] = ['world', 'continent', 'country', 'airport'];
-  const currentIdx = LEVELS.indexOf(level);
+  const currentIdx = LEVEL_ORDER.indexOf(level);
+
+  const hasSelectionForLevel = (stepId: DrillLevel): boolean => {
+    if (stepId === 'world') return true;
+    if (stepId === 'continent') return !!selections.continent;
+    if (stepId === 'country') return !!selections.country;
+    if (stepId === 'airport') return !!selections.airport;
+    if (stepId === 'airline') return !!selections.airline;
+    return false;
+  };
 
   return (
     <div className="w-full px-2 sm:px-4">
@@ -170,30 +474,34 @@ function StatusLine() {
         <div className="flex w-full items-center justify-center overflow-x-auto [scrollbar-width:thin]">
           <div className="flex min-w-max items-center gap-2">
             {steps.map((step, i) => {
-              const isActive = i === currentIdx;
-              const isPast = i < currentIdx;
-              const isClickable = isPast;
+              const globalIdx = LEVEL_ORDER.indexOf(step.id);
+              const isActive = globalIdx === currentIdx;
+              const isClickable = globalIdx < currentIdx || hasSelectionForLevel(step.id);
 
               return (
-                <button
-                  key={step.id}
-                  type="button"
-                  disabled={!isClickable}
-                  onClick={() => isClickable && drillTo(step.id)}
-                  className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-all ${
-                    isActive
-                      ? 'border-primary bg-primary/10 text-primary shadow-sm'
-                      : isPast
-                        ? 'border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:bg-primary/5 hover:text-primary'
-                        : 'border-slate-200 bg-slate-50 text-slate-400'
-                  } ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
-                  aria-pressed={isActive}
-                >
-                  <span className="text-base leading-none" role="img" aria-hidden="true">
-                    {step.icon}
-                  </span>
-                  <span className="whitespace-nowrap">{step.display}</span>
-                </button>
+                <React.Fragment key={step.id}>
+                  {i > 0 && (
+                    <span className="text-slate-400 text-sm select-none" aria-hidden="true">›</span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={!isClickable}
+                    onClick={() => isClickable && drillTo(step.id)}
+                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-all ${
+                      isActive
+                        ? 'border-primary bg-primary/10 text-primary shadow-sm'
+                        : isClickable
+                          ? 'border-slate-200 bg-white text-slate-700 hover:border-primary/30 hover:bg-primary/5 hover:text-primary cursor-pointer'
+                          : 'border-slate-200 bg-slate-50 text-slate-400 cursor-default'
+                    }`}
+                    aria-pressed={isActive}
+                  >
+                    <span className="text-base leading-none" role="img" aria-hidden="true">
+                      {step.icon}
+                    </span>
+                    <span className="whitespace-nowrap">{step.display}</span>
+                  </button>
+                </React.Fragment>
               );
             })}
           </div>
@@ -280,7 +588,7 @@ export function BackButton({ label, onClick }: { label: string; onClick: () => v
       onClick={onClick}
       className="inline-flex max-w-full items-center justify-center gap-1.5 whitespace-normal break-words bg-muted border border-border rounded-lg px-3.5 py-2 text-center text-sm font-medium text-foreground hover:border-primary hover:text-primary transition-all cursor-pointer mb-4"
     >
-      {'\u2190'} {label}
+      {'←'} {label}
     </button>
   );
 }
@@ -300,7 +608,7 @@ export function ChangePill({
   const kind = growthDeltaTypeFromPct(pct, timeMode);
   const cls = growthPillSurfaceClasses(kind);
   const sign = num >= 0 ? '+' : '';
-  const arrow = num >= 0 ? '\u25B2' : '\u25BC';
+  const arrow = num >= 0 ? '▲' : '▼';
 
   return (
     <span
@@ -312,4 +620,3 @@ export function ChangePill({
     </span>
   );
 }
-

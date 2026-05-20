@@ -9,12 +9,12 @@ export class FutureSyncRepository {
     async getNextSyncDate(): Promise<string> {
         const query = `SELECT next_date FROM future_sync_status ORDER BY id DESC LIMIT 1`;
         const { rows } = await pool.query(query);
-        
+
         if (rows.length === 0) {
-            return '2027-01-01';
+            const nextYear = addDays(new Date(), 365);
+            return format(nextYear, 'yyyy-MM-dd');
         }
-        
-        // Ensure we return YYYY-MM-DD
+
         const date = new Date(rows[0].next_date);
         return format(date, 'yyyy-MM-dd');
     }
@@ -80,7 +80,7 @@ export class FutureSyncRepository {
 
         const initDataQuery = `
             INSERT INTO future_sync_status (next_date)
-            SELECT '2027-01-01'
+            SELECT CURRENT_DATE + INTERVAL '1 year'
             WHERE NOT EXISTS (SELECT 1 FROM future_sync_status);
         `;
         await pool.query(initDataQuery);
